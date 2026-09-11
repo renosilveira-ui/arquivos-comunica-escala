@@ -73,21 +73,31 @@ export interface EnvValidationOptions {
 }
 
 /**
- * Integrações externas são opcionais: nenhuma delas entra em
- * REQUIRED_IN_PRODUCTION, e um deploy sem Google ou WeatherKit sobe normal.
+ * Configuração incompleta de integração externa é AVISO, não bloqueio.
  *
- * O que bloqueia o boot é configuração *pela metade* — credencial parcial,
- * redirect inválido, ou OAuth habilitado sem chave de criptografia para
- * guardar o refresh token. Esses estados não falham na inicialização, falham
- * no meio do fluxo do médico, e aí já existe usuário esperando.
+ * A primeira versão disto derrubava o boot quando um provedor estava pela
+ * metade. O raciocínio era "falhar cedo", mas a consequência é
+ * desproporcional: uma chave de previsão do tempo faltando derrubaria o
+ * sistema de escala inteiro de um hospital. Clima é ornamento; Google Agenda
+ * é conveniência. Nenhum dos dois vale a escala parar.
+ *
+ * A recusa continua existindo onde importa — `REQUIRED_IN_PRODUCTION` para
+ * segredo de sessão e banco. Para o resto, o provedor fica indisponível, a
+ * tela diz isso ao usuário, e o boot registra um aviso nomeando a variável.
+ *
+ * Contexto: em 10/09 o staging ficou 3h16 fora do ar por duas variáveis
+ * ausentes. Ampliar o conjunto de coisas capazes de impedir o boot teria
+ * multiplicado esse risco.
  */
-function collectExternalIntegrationIssues(env: NodeJS.ProcessEnv): string[] {
+export function collectExternalIntegrationWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
   const issues = new Set<string>();
   for (const report of externalProviderConfigurations(env)) {
     if (report.state !== PROVIDER_CONFIGURATION_STATES.misconfigured) continue;
     for (const key of report.missing) {
       issues.add(
-        `${key} is required to use ${report.provider} but is empty, invalid or incomplete`,
+        `${key} is incomplete or invalid; ${report.provider} stays unavailable`,
       );
     }
   }
@@ -175,8 +185,6 @@ export function collectProductionSecretIssues(
       );
     }
   }
-
-  issues.push(...collectExternalIntegrationIssues(env));
 
   for (const [key, min] of Object.entries(MIN_LENGTHS)) {
     const value = (env[key] ?? "").trim();

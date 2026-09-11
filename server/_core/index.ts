@@ -18,7 +18,11 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { sessionInstanceConstraintHttpStatus } from "./trpc";
 import { setStaticCacheHeaders } from "./static-cache";
-import { ProductionBootError, assertProductionSecrets } from "./env-validation";
+import {
+  ProductionBootError,
+  assertProductionSecrets,
+  collectExternalIntegrationWarnings,
+} from "./env-validation";
 import { logger } from "./logger";
 import { safeErrorDiagnostic } from "./safe-error";
 import {
@@ -72,6 +76,18 @@ async function startServer() {
   installAsyncRouteForwarding();
   installProcessGuards(logger);
   assertProductionSecrets();
+
+  // Integração pela metade não impede o servidor de subir — só deixa o
+  // provedor indisponível. Mas precisa aparecer no boot, nomeando a
+  // variável: silêncio aqui é o que transforma uma configuração esquecida em
+  // "por que o médico não recebe o aviso?" duas semanas depois.
+  const integrationWarnings = collectExternalIntegrationWarnings();
+  if (integrationWarnings.length > 0) {
+    logger.warn(
+      { event: "external_integration_incomplete", issues: integrationWarnings },
+      "external integrations partially configured",
+    );
+  }
 
   const app = express();
   const server = createServer(app);

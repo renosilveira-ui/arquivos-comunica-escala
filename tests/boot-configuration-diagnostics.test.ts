@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ProductionBootError,
   assertProductionSecrets,
+  collectExternalIntegrationWarnings,
   collectProductionSecretIssues,
 } from "../server/_core/env-validation";
 
@@ -103,9 +104,53 @@ describe("diagnóstico de boot em produção", () => {
     }
   });
 
+  /**
+   * Uma chave de previsão do tempo faltando não pode derrubar o sistema de
+   * escala de um hospital. A recusa de boot fica só onde importa — segredo
+   * de sessão e banco.
+   */
+  it("integração pela metade NÃO impede o boot", () => {
+    const issues = collectProductionSecretIssues({
+      env: {
+        NODE_ENV: "production",
+        COOKIE_SECRET: SECRET_VALUES.COOKIE_SECRET,
+        DATABASE_URL: SECRET_VALUES.DATABASE_URL,
+        AUTH_RECOVERY_ENCRYPTION_CURRENT_KID: "v1",
+        AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET:
+          SECRET_VALUES.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET,
+        // WeatherKit e Google pela metade, de propósito.
+        WEATHERKIT_TEAM_ID: "T",
+        GOOGLE_OAUTH_CLIENT_ID: "id",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it("mas o boot avisa, nomeando a variável incompleta", () => {
+    const warnings = collectExternalIntegrationWarnings({
+      NODE_ENV: "production",
+      WEATHERKIT_TEAM_ID: "T",
+    } as NodeJS.ProcessEnv);
+    expect(warnings.join("\n")).toContain("WEATHERKIT_SERVICE_ID");
+    expect(warnings.join("\n")).toContain("unavailable");
+  });
+
+  it("o aviso também não carrega valor de credencial", () => {
+    const warnings = collectExternalIntegrationWarnings({
+      NODE_ENV: "production",
+      ...SECRET_VALUES,
+      WEATHERKIT_TEAM_ID: "T",
+    } as NodeJS.ProcessEnv);
+    const joined = warnings.join("\n");
+    for (const [key, value] of Object.entries(SECRET_VALUES)) {
+      expect(joined, `${key} não pode aparecer no aviso`).not.toContain(value);
+    }
+  });
+
   it("o boot loga a lista em vez de engolir o motivo", () => {
     expect(bootSource).toContain("ProductionBootError");
     expect(bootSource).toContain("configurationIssues");
     expect(bootSource).toContain('errorCategory: "configuration"');
+    expect(bootSource).toContain("collectExternalIntegrationWarnings");
   });
 });
