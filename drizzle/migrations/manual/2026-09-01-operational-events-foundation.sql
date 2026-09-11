@@ -40,7 +40,13 @@ CREATE TEMPORARY TABLE _operational_events_contract_expected (
   table_name VARCHAR(64) NOT NULL,
   contract_hash CHAR(64) NOT NULL,
   PRIMARY KEY (table_name)
-) ENGINE=MEMORY;
+)
+-- InnoDB, não MEMORY: MySQL gerenciado (DigitalOcean, entre outros) desabilita
+-- o engine MEMORY, e a migração inteira abortava em
+-- "Storage engine MEMORY is disabled" antes de criar qualquer tabela. É só
+-- rascunho de sessão com cinco linhas — o engine é irrelevante para o que ela
+-- faz, e relevante para ela poder rodar onde precisa rodar.
+ENGINE=InnoDB;
 
 INSERT INTO _operational_events_contract_expected (table_name, contract_hash) VALUES
   ('notification_deliveries', '5b6a9aa1e1c0b9f6c7c802e1426dc5a127a89a6a51a32a08df274a45bc831696'),
