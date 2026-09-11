@@ -207,7 +207,12 @@ export async function collectPersonalExports(input: {
     ownerUserId: input.userId,
     window: { fromDate: input.fromDate, toDate: input.toDate },
   });
-  return result.occurrences.slice(0, SYNC_MAX_WRITES_PER_RUN).map((o) => ({
+  // Compromisso que VEIO do Google não volta para o Google. Sem este filtro
+  // o ciclo importa o evento do calendário principal e o exporta de novo
+  // para o calendário Escala+ — o médico vê cada compromisso duas vezes na
+  // própria conta (aconteceu no staging em 11/09: 11 duplicatas).
+  const own = result.occurrences.filter((o) => o.source !== "GOOGLE");
+  return own.slice(0, SYNC_MAX_WRITES_PER_RUN).map((o) => ({
     sourceKind: "PERSONAL_ITEM" as const,
     sourceId: o.itemId,
     occurrenceKey: o.occurrenceKey,
