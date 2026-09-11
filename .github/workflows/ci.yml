@@ -59,6 +59,7 @@ jobs:
       # recibo gravado no schema efêmero casa com este valor, o que impede a
       # prova de rodar contra um banco que ela não criou.
       AUTH_RECOVERY_MIGRATION_TEST_MARKER: ci-auth-recovery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+      CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       # A prova da provisão Unimed também recebe somente o servidor local da
       # CI e cria um schema efêmero prefixado. O comando de produto é
       # read-only e a flag --apply é bloqueada.
@@ -126,6 +127,9 @@ jobs:
         env:
           CAPACITY_MIGRATION_TEST_URL: mysql://root:root@127.0.0.1:3306/
         run: pnpm exec vitest run --config vitest.capacity-migration.config.ts
+
+      - name: Validate core schema reproducibility migration
+        run: pnpm test:core-schema-repro-migration
 
       - name: Validate readiness fence V1 over Drizzle PREPARED schema
         # Exercita o único estado retomável: o schema foi criado pelo Drizzle,
