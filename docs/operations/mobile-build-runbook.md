@@ -15,7 +15,8 @@
 Ambos apontam para `https://app.comunicamais-escala.com.br`. TestFlight,
 Transporter, `eas submit` e Play Store não fazem parte deste runbook. Eles
 requerem uma futura configuração de distribuição de loja aprovada; não usar o
-perfil `production` por inferência.
+perfil `staging-store` por inferência — ele distribui como loja, mas fala com o
+backend de staging.
 
 ## Pré-condições
 
