@@ -5,6 +5,7 @@ import {
   departurePlans,
   hospitals,
   institutions,
+  notifications,
   professionals,
   sectors,
   shiftAssignmentsV2,
@@ -14,6 +15,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { sendDeparture } from "../server/cron/departure-dispatcher";
 import {
   dispatchDueDepartures,
   readTravelOrigin,
@@ -483,6 +485,59 @@ describe("motor de aviso de saída", () => {
       });
       assignmentIds[1] = restored.insertId;
     });
+
+    /**
+     * Troca e remoção pelo gestor não apagam a alocação: marcam
+     * `is_active = 0`. O plano precisa sumir do mesmo jeito.
+     */
+    it("alocação inativa cancela o plano sem apagar a linha", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ isActive: false })
+        .where(eq(shiftAssignmentsV2.id, assignmentIds[1]));
+      try {
+        const summary = await syncDeparturePlans({ db, userId, now: NOW });
+        expect(summary.cancelled).toBe(1);
+        const [plan] = await db
+          .select({ status: departurePlans.status })
+          .from(departurePlans)
+          .where(eq(departurePlans.assignmentId, assignmentIds[1]));
+        expect(plan?.status).toBe("CANCELLED");
+      } finally {
+        await db
+          .update(shiftAssignmentsV2)
+          .set({ isActive: true })
+          .where(eq(shiftAssignmentsV2.id, assignmentIds[1]));
+      }
+    });
+
+    it("conta excluída cancela os planos abertos e não cria novos", async () => {
+      await enable();
+      const before = await syncDeparturePlans({ db, userId, now: NOW });
+      expect(before.created).toBeGreaterThan(0);
+      await db
+        .update(users)
+        .set({ deletedAt: NOW })
+        .where(eq(users.id, userId));
+      try {
+        const summary = await syncDeparturePlans({ db, userId, now: NOW });
+        expect(summary.cancelled).toBe(before.created);
+        expect(summary.created).toBe(0);
+        // E sai da varredura: a preferência é desligada de vez.
+        const [preference] = await db
+          .select({ enabled: userDeparturePreferences.enabled })
+          .from(userDeparturePreferences)
+          .where(eq(userDeparturePreferences.userId, userId));
+        expect(preference?.enabled).toBe(false);
+      } finally {
+        await db
+          .update(users)
+          .set({ deletedAt: null })
+          .where(eq(users.id, userId));
+      }
+    });
   });
 
   describe("cálculo", () => {
@@ -705,11 +760,56 @@ describe("motor de aviso de saída", () => {
       expect(sent).toHaveLength(0);
     });
 
+    it("conta excluída: aviso devido é encerrado sem envio", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await recomputeBoth({
+        locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
+      });
+      const [plan] = await db
+        .select({ noticeAt: departurePlans.noticeAt })
+        .from(departurePlans)
+        .where(eq(departurePlans.assignmentId, assignmentIds[0]))
+        .limit(1);
+      await db
+        .update(users)
+        .set({ deletedAt: NOW })
+        .where(eq(users.id, userId));
+      try {
+        const sent: string[] = [];
+        const summary = await dispatchDueDepartures({
+          db,
+          send: async () => {
+            sent.push("enviou");
+          },
+          now: new Date(plan.noticeAt.getTime() + 1000),
+        });
+        expect(summary.cancelled).toBe(1);
+        expect(summary.sent).toBe(0);
+        expect(sent).toHaveLength(0);
+        const [after] = await db
+          .select({
+            status: departurePlans.status,
+            reason: departurePlans.lastFailureReason,
+          })
+          .from(departurePlans)
+          .where(eq(departurePlans.assignmentId, assignmentIds[0]));
+        expect(after).toEqual({ status: "CANCELLED", reason: "ACCOUNT_DELETED" });
+      } finally {
+        await db
+          .update(users)
+          .set({ deletedAt: null })
+          .where(eq(users.id, userId));
+      }
+    });
+
     /**
      * Os outros médicos do mesmo tick também têm plantão hoje. Uma entrega
-     * que falha não pode derrubar o lote inteiro.
+     * que falha não pode derrubar o lote inteiro — e, como o que falhou foi o
+     * enfileiramento (idempotente por dedupKey), o plano reabre para o tick
+     * seguinte sem risco de aviso duplicado.
      */
-    it("falha de entrega não derruba o lote nem reenvia", async () => {
+    it("falha de enfileiramento não derruba o lote e reabre o plano uma vez", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
       await recomputeBoth({
@@ -739,17 +839,116 @@ describe("motor de aviso de saída", () => {
       expect(summary.failed).toBe(1);
       expect(summary.sent).toBe(1);
 
-      // E nenhum dos dois volta a ser enviado num tick seguinte — o outbox de
-      // push tem retry próprio; reenviar daqui duplicaria o aviso.
+      // O que falhou voltou para a fila com o motivo; o que saiu ficou SENT.
+      const plans = (
+        await db
+          .select({
+            status: departurePlans.status,
+            reason: departurePlans.lastFailureReason,
+            attempts: departurePlans.attemptCount,
+          })
+          .from(departurePlans)
+          .where(eq(departurePlans.userId, userId))
+      ).sort((a, b) => a.status.localeCompare(b.status));
+      expect(plans).toEqual([
+        { status: "SCHEDULED", reason: "SEND_FAILED", attempts: 1 },
+        { status: "SENT", reason: null, attempts: 1 },
+      ]);
+
+      // Tick seguinte: só o reaberto sai, e sai uma vez.
       const again = await dispatchDueDepartures({
+        db,
+        send: async () => {},
+        now: new Date(sendTime.getTime() + 2000),
+      });
+      expect(again.sent).toBe(1);
+      expect(again.failed).toBe(0);
+      const third = await dispatchDueDepartures({
         db,
         send: async () => {
           throw new Error("não deveria reenviar");
         },
-        now: new Date(sendTime.getTime() + 2000),
+        now: new Date(sendTime.getTime() + 3000),
       });
-      expect(again.sent).toBe(0);
-      expect(again.failed).toBe(0);
+      expect(third.sent).toBe(0);
+      expect(third.failed).toBe(0);
+    });
+
+    it("reaberto por falha, o plano só é encerrado quando a janela do aviso passa", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await recomputeBoth({
+        locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
+      });
+      const sendTime = new Date(NOW.getTime() + 60_000);
+      await db
+        .update(departurePlans)
+        .set({ noticeAt: sendTime })
+        .where(eq(departurePlans.userId, userId));
+
+      const failing = async () => {
+        throw new Error("transporte indisponível");
+      };
+      // Cinco ticks dentro da janela: os dois planos reabrem a cada vez.
+      for (let tick = 1; tick <= 5; tick += 1) {
+        const summary = await dispatchDueDepartures({
+          db,
+          send: failing,
+          now: new Date(sendTime.getTime() + tick * 60_000),
+        });
+        expect(summary.failed).toBe(2);
+        expect(summary.sent).toBe(0);
+      }
+      // Passada a janela de 30 minutos: encerra sem enviar, e sem loop.
+      const late = await dispatchDueDepartures({
+        db,
+        send: failing,
+        now: new Date(sendTime.getTime() + 31 * 60_000),
+      });
+      expect(late.expired).toBe(2);
+      expect(late.failed).toBe(0);
+      const plans = await db
+        .select({
+          status: departurePlans.status,
+          reason: departurePlans.lastFailureReason,
+          attempts: departurePlans.attemptCount,
+        })
+        .from(departurePlans)
+        .where(eq(departurePlans.userId, userId));
+      expect(plans).toHaveLength(2);
+      for (const plan of plans) {
+        expect(plan).toEqual({
+          status: "CANCELLED",
+          reason: "EXPIRED",
+          attempts: 5,
+        });
+      }
+    });
+
+    it("retentativa com texto diferente não colide: a intenção gravada vale como enviada", async () => {
+      const dedupKey = `departure-test:${stamp}`;
+      const base = {
+        institutionId: institutionIds[0],
+        userId,
+        shiftInstanceId: shiftIds[0],
+        dedupKey,
+        deepLink: `/shift-details?shiftInstanceId=${shiftIds[0]}`,
+        title: "Horário do plantão se aproxima",
+      };
+      try {
+        await sendDeparture({ ...base, body: "Saia até 10:00." });
+        // O relógio andou: a mesma intenção agora seria "saia agora".
+        await expect(
+          sendDeparture({ ...base, body: "Saia agora." }),
+        ).resolves.toBeUndefined();
+        const rows = await db
+          .select({ id: notifications.id })
+          .from(notifications)
+          .where(eq(notifications.dedupKey, dedupKey));
+        expect(rows).toHaveLength(1);
+      } finally {
+        await db.delete(notifications).where(eq(notifications.dedupKey, dedupKey));
+      }
     });
 
     it("não envia antes da hora", async () => {

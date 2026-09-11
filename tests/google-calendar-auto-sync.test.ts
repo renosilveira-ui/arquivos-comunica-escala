@@ -68,6 +68,7 @@ describe("sincronização automática com o Google Agenda", () => {
   let db: Db;
   let connectedUserId = 0;
   let reauthUserId = 0;
+  let deletedUserId = 0;
   const provider = createFakeCalendarProvider();
 
   async function link(userId: number) {
@@ -96,7 +97,7 @@ describe("sincronização automática com o Google Agenda", () => {
     db = loaded;
     resetGoogleCalendarSyncState();
 
-    for (const suffix of ["conectado", "reauth"]) {
+    for (const suffix of ["conectado", "reauth", "excluido"]) {
       const [user] = await db.insert(users).values({
         name: `Auto ${suffix} ${stamp}`,
         email: `auto-${suffix}-${stamp}@test.local`,
@@ -104,7 +105,8 @@ describe("sincronização automática com o Google Agenda", () => {
         role: "doctor",
       });
       if (suffix === "conectado") connectedUserId = user.insertId;
-      else reauthUserId = user.insertId;
+      else if (suffix === "reauth") reauthUserId = user.insertId;
+      else deletedUserId = user.insertId;
       await persistGoogleAuthorization({
         db,
         userId: user.insertId,
@@ -117,6 +119,12 @@ describe("sincronização automática com o Google Agenda", () => {
       .update(userExternalCredentials)
       .set({ linkState: EXTERNAL_LINK_STATES.reauthRequired })
       .where(eq(userExternalCredentials.userId, reauthUserId));
+    // Conta excluída (soft-delete) com credencial CONNECTED ainda no banco:
+    // o caso que a exclusão antiga deixava para trás.
+    await db
+      .update(users)
+      .set({ deletedAt: new Date() })
+      .where(eq(users.id, deletedUserId));
 
     // Três eventos e páginas de dois: o sync token só vem na segunda página.
     provider.pageSize = 2;
@@ -127,7 +135,7 @@ describe("sincronização automática com o Google Agenda", () => {
 
   afterAll(async () => {
     if (!db) return;
-    const ids = [connectedUserId, reauthUserId].filter(Boolean);
+    const ids = [connectedUserId, reauthUserId, deletedUserId].filter(Boolean);
     if (!ids.length) return;
     await db
       .delete(personalCalendarExternalLinks)
@@ -152,6 +160,7 @@ describe("sincronização automática com o Google Agenda", () => {
     const ids = candidates.map((c) => c.userId);
     expect(ids).toContain(connectedUserId);
     expect(ids).not.toContain(reauthUserId);
+    expect(ids).not.toContain(deletedUserId);
   });
 
   it("primeiro tick: conta conectada sincroniza sem botão, seguindo as páginas", async () => {
