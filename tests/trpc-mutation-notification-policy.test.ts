@@ -27,6 +27,7 @@ const expectedMutationPaths = [
   "confirmations.registerPushToken",
   "confirmations.unregisterPushToken",
   "departure.deleteTravelOrigin",
+  "departure.reportCurrentLocation",
   "departure.saveHospitalLocation",
   "departure.savePreferences",
   "departure.saveTravelOrigin",

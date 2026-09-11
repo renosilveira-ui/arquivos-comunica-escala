@@ -197,3 +197,33 @@ plantão se aproxima… Estimativas de trânsito não disponíveis."
 5. Médico liga o aviso e cadastra a origem (opcional: sem ela o aviso sai
    sem estimativa).
 6. Decidir a questão do §8 antes do piloto depender do aviso.
+
+
+## Origem automática — o médico não digita endereço
+
+Decisão do PO em 11/09/2026: o app pede a permissão de localização **"Sempre"**
+e passa a informar de onde o médico sai, inclusive com o app fechado — que é
+quando o aviso precisa. O endereço digitado continua existindo, mas só
+aparece como plano B, quando a localização não está completa.
+
+| Estado da permissão | O que a tela diz | Trânsito no aviso |
+|---|---|---|
+| nunca perguntado | "Deixe o Escala+ calcular sua saída" + botão | não |
+| só "durante o uso" | "Falta liberar com o app fechado" + abrir ajustes | não |
+| recusado | "Localização desligada" — o aviso continua, sem trânsito | não |
+| "sempre" | "Localização ligada" | **sim** |
+
+O que o sistema guarda: **um** ponto por conta, sob `AUTOMATIC_ORIGIN_LABEL`,
+selado com AAD ligada ao dono. A chave única `(user_id, label)` faz cada
+envio **substituir** o anterior — a garantia de "sem histórico" é do banco,
+não de uma rotina de limpeza. Ponto que mal saiu do lugar (< 300 m) não
+escreve; incerteza acima de 2 km é recusada. Desligar apaga a linha.
+
+Custos declarados da permissão "Sempre": revisão mais rigorosa da Apple
+(justificativa escrita nos textos de permissão), o aviso periódico do iOS
+sobre uso em segundo plano, e bateria — mitigada com precisão `Balanced` e
+`distanceInterval` de 300 m. Foram apresentados ao PO, que escolheu "Sempre".
+
+Textos de permissão (iOS/Android) e orientação da tela são escritos para
+leigo e cobertos por teste que falha se aparecer "GPS", "coordenada",
+"servidor" ou "segundo plano".

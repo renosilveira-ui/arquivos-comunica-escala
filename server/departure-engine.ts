@@ -29,10 +29,16 @@ import {
   type RouteSample,
 } from "./departure-planning";
 import {
+  AUTOMATIC_ORIGIN_LABEL,
   EXTERNAL_PROVIDERS,
+  MAX_ACCEPTED_ACCURACY_METERS,
+  MIN_MOVEMENT_METERS,
   TRAVEL_ORIGIN_SEAL_SCOPE,
 } from "../lib/integration-providers";
-import { openExternalCredential } from "./external-credentials-crypto";
+import {
+  openExternalCredential,
+  sealExternalCredential,
+} from "./external-credentials-crypto";
 import { resolveScheduleTimeZone } from "./institution-time-zone";
 import type { LocationProvider } from "./integrations/providers/location-provider";
 import type { WeatherProvider } from "./integrations/providers/weather-provider";
@@ -40,6 +46,7 @@ import { weatherAdviceLine } from "./integrations/apple/weatherkit-client";
 import {
   coarsenGeoPoint,
   isValidGeoPoint,
+  metersBetween,
   type GeoPoint,
 } from "./integrations/providers/types";
 
@@ -294,6 +301,119 @@ export function needsReset(input: {
   // religando o recurso. Cancelado com aviso vencido fica no passado.
   return input.notice.getTime() > input.now.getTime();
 }
+
+/**
+ * Ponto de partida informado pelo próprio aparelho.
+ *
+ * Uma linha por conta, sob `AUTOMATIC_ORIGIN_LABEL`: a chave única
+ * `(user_id, label)` faz cada envio SUBSTITUIR o anterior. É assim que o
+ * sistema guarda onde o médico está agora sem guardar por onde ele andou — a
+ * garantia é do banco, não de uma rotina de limpeza.
+ *
+ * Envio que mal saiu do lugar (< `MIN_MOVEMENT_METERS`) não escreve: o
+ * aparelho reporta a cada poucas centenas de metros e regravar o selo a cada
+ * quarteirão gastaria escrita sem mudar nenhuma estimativa. Incerteza acima
+ * de `MAX_ACCEPTED_ACCURACY_METERS` é recusada: uma estimativa de trânsito
+ * sobre "é por aqui, num raio de quilômetros" teria a mesma aparência de uma
+ * precisa.
+ */
+export type RecordAutomaticOriginResult =
+  | { stored: true; reason: null }
+  | { stored: false; reason: "INVALID" | "IMPRECISE" | "UNCHANGED" };
+
+export async function recordAutomaticOrigin(input: {
+  db: EngineDb;
+  userId: number;
+  point: GeoPoint;
+  accuracyMeters: number | null;
+  now?: Date;
+}): Promise<RecordAutomaticOriginResult> {
+  const now = input.now ?? new Date();
+  // (0, 0) é o que aparelho sem sinal devolve e fica no Atlântico. Passa em
+  // qualquer validação de faixa — e mandaria o médico sair de casa para o
+  // golfo da Guiné. O cliente já recusa; o servidor recusa de novo, porque
+  // é ele que grava.
+  if (
+    !isValidGeoPoint(input.point) ||
+    (input.point.latitude === 0 && input.point.longitude === 0)
+  ) {
+    return { stored: false, reason: "INVALID" };
+  }
+  if (
+    input.accuracyMeters !== null &&
+    input.accuracyMeters > MAX_ACCEPTED_ACCURACY_METERS
+  ) {
+    return { stored: false, reason: "IMPRECISE" };
+  }
+
+  const current = await readTravelOrigin(input.db, input.userId, null);
+  if (
+    current &&
+    current.label === AUTOMATIC_ORIGIN_LABEL &&
+    metersBetween(current.location, input.point) < MIN_MOVEMENT_METERS
+  ) {
+    return { stored: false, reason: "UNCHANGED" };
+  }
+
+  const sealed = sealExternalCredential(
+    JSON.stringify({
+      placeId: null,
+      latitude: input.point.latitude,
+      longitude: input.point.longitude,
+      formattedAddress: null,
+    }),
+    { userId: input.userId, scope: TRAVEL_ORIGIN_SEAL_SCOPE },
+  );
+
+  await input.db.transaction(async (tx) => {
+    await tx
+      .update(userTravelOrigins)
+      .set({ isDefault: false })
+      .where(eq(userTravelOrigins.userId, input.userId));
+    await tx
+      .insert(userTravelOrigins)
+      .values({
+        userId: input.userId,
+        label: AUTOMATIC_ORIGIN_LABEL,
+        sealedLocation: sealed,
+        encryptionKid: "current",
+        consentGrantedAt: now,
+        consentVersion: AUTOMATIC_ORIGIN_CONSENT_VERSION,
+        isDefault: true,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          sealedLocation: sealed,
+          encryptionKid: "current",
+          consentGrantedAt: now,
+          consentVersion: AUTOMATIC_ORIGIN_CONSENT_VERSION,
+          isDefault: true,
+          version: sql`${userTravelOrigins.version} + 1`,
+        },
+      });
+  });
+
+  // A localização automática passa a ser a origem em uso. Sem isto, uma
+  // preferência que apontava para um endereço digitado continuaria mandando
+  // o cálculo partir de lá — e o médico, que acabou de ligar a localização,
+  // receberia um trânsito de um lugar onde não está. NULL = "usar a padrão",
+  // e a padrão agora é a automática.
+  await input.db
+    .update(userDeparturePreferences)
+    .set({
+      travelOriginId: null,
+      version: sql`${userDeparturePreferences.version} + 1`,
+    })
+    .where(eq(userDeparturePreferences.userId, input.userId));
+
+  // O plano guarda a assinatura da origem: mudou o ponto, o cálculo anterior
+  // descreve outro mundo e precisa refazer.
+  await syncDeparturePlans({ db: input.db, userId: input.userId, now });
+  return { stored: true, reason: null };
+}
+
+/** Versão do consentimento dado pela permissão do sistema operacional. */
+export const AUTOMATIC_ORIGIN_CONSENT_VERSION = "localizacao-automatica-v1";
 
 export type SyncPlansSummary = {
   created: number;

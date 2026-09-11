@@ -18,12 +18,17 @@ import {
   dispatchDueDepartures,
   readTravelOrigin,
   reconcileEnabledUsers,
+  recordAutomaticOrigin,
   recomputeDuePlans,
   syncDeparturePlans,
   truncateToStoredSecond,
 } from "../server/departure-engine";
 import { sealExternalCredential } from "../server/external-credentials-crypto";
-import { TRAVEL_ORIGIN_SEAL_SCOPE } from "../lib/integration-providers";
+import {
+  AUTOMATIC_ORIGIN_LABEL,
+  MAX_ACCEPTED_ACCURACY_METERS,
+  TRAVEL_ORIGIN_SEAL_SCOPE,
+} from "../lib/integration-providers";
 import {
   ROUTE_ESTIMATE_QUALITY,
   type LocationProvider,
@@ -221,6 +226,19 @@ describe("motor de aviso de saída", () => {
 
   beforeEach(async () => {
     await db.delete(departurePlans).where(eq(departurePlans.userId, userId));
+    await db
+      .delete(userTravelOrigins)
+      .where(
+        and(
+          eq(userTravelOrigins.userId, userId),
+          eq(userTravelOrigins.label, AUTOMATIC_ORIGIN_LABEL),
+        ),
+      );
+    // A origem fixa da fixture volta a ser a padrão.
+    await db
+      .update(userTravelOrigins)
+      .set({ isDefault: true })
+      .where(eq(userTravelOrigins.id, originId));
   });
 
   afterAll(async () => {
@@ -939,6 +957,150 @@ describe("motor de aviso de saída", () => {
       });
       expect(last.scanned).toBe(0);
       expect(last.nextCursor).toBe(0);
+    });
+  });
+
+  /**
+   * O ponto de partida vem do aparelho e substitui o anterior: uma linha por
+   * conta, nunca histórico. Saber por onde um médico andou não é necessário
+   * para dizer a que horas ele deve sair de casa.
+   */
+  describe("origem automática (do aparelho)", () => {
+    const CASA = { latitude: -3.74, longitude: -38.53 };
+
+    async function automaticRows() {
+      return db
+        .select({
+          id: userTravelOrigins.id,
+          isDefault: userTravelOrigins.isDefault,
+          version: userTravelOrigins.version,
+        })
+        .from(userTravelOrigins)
+        .where(
+          and(
+            eq(userTravelOrigins.userId, userId),
+            eq(userTravelOrigins.label, AUTOMATIC_ORIGIN_LABEL),
+          ),
+        );
+    }
+
+    it("grava selado, como padrão, sob o rótulo fixo", async () => {
+      const result = await recordAutomaticOrigin({
+        db,
+        userId,
+        point: CASA,
+        accuracyMeters: 30,
+      });
+      expect(result).toEqual({ stored: true, reason: null });
+      const rows = await automaticRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].isDefault).toBe(true);
+      const opened = await readTravelOrigin(db, userId, null);
+      expect(opened?.label).toBe(AUTOMATIC_ORIGIN_LABEL);
+      expect(opened?.location.latitude).toBeCloseTo(CASA.latitude, 5);
+    });
+
+    it("mal saiu do lugar: não regrava", async () => {
+      await recordAutomaticOrigin({
+        db,
+        userId,
+        point: CASA,
+        accuracyMeters: 30,
+      });
+      const [before] = await automaticRows();
+      const result = await recordAutomaticOrigin({
+        db,
+        userId,
+        point: { latitude: CASA.latitude + 0.0005, longitude: CASA.longitude }, // ~55 m
+        accuracyMeters: 30,
+      });
+      expect(result).toEqual({ stored: false, reason: "UNCHANGED" });
+      const [after] = await automaticRows();
+      expect(after.version).toBe(before.version);
+    });
+
+    /** A garantia de "sem histórico" é do banco: a chave única substitui. */
+    it("deslocamento real substitui a MESMA linha — nunca acrescenta", async () => {
+      await recordAutomaticOrigin({
+        db,
+        userId,
+        point: CASA,
+        accuracyMeters: 30,
+      });
+      const [before] = await automaticRows();
+      const result = await recordAutomaticOrigin({
+        db,
+        userId,
+        point: { latitude: CASA.latitude + 0.02, longitude: CASA.longitude }, // ~2,2 km
+        accuracyMeters: 30,
+      });
+      expect(result).toEqual({ stored: true, reason: null });
+      const rows = await automaticRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe(before.id);
+      expect(rows[0].version).toBeGreaterThan(before.version);
+      const opened = await readTravelOrigin(db, userId, null);
+      expect(opened?.location.latitude).toBeCloseTo(CASA.latitude + 0.02, 5);
+    });
+
+    it("ponto impreciso demais é recusado sem escrever", async () => {
+      const result = await recordAutomaticOrigin({
+        db,
+        userId,
+        point: CASA,
+        accuracyMeters: MAX_ACCEPTED_ACCURACY_METERS + 1,
+      });
+      expect(result).toEqual({ stored: false, reason: "IMPRECISE" });
+      expect(await automaticRows()).toHaveLength(0);
+    });
+
+    it("coordenada inválida é recusada sem escrever", async () => {
+      const result = await recordAutomaticOrigin({
+        db,
+        userId,
+        point: { latitude: 0, longitude: 0 },
+        accuracyMeters: 10,
+      });
+      expect(result.stored).toBe(false);
+      expect(await automaticRows()).toHaveLength(0);
+    });
+
+    /**
+     * O plano guarda a assinatura da origem. Mudou o ponto de partida, o
+     * cálculo anterior descreve outro mundo — e precisa refazer.
+     */
+    it("mudar o ponto invalida o plano calculado", async () => {
+      await enable();
+      await recordAutomaticOrigin({
+        db,
+        userId,
+        point: CASA,
+        accuracyMeters: 30,
+      });
+      await recomputeBoth({
+        locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
+      });
+      const [scheduled] = await db
+        .select({ status: departurePlans.status })
+        .from(departurePlans)
+        .where(eq(departurePlans.assignmentId, assignmentIds[0]));
+      expect(scheduled.status).toBe("SCHEDULED");
+
+      await recordAutomaticOrigin({
+        db,
+        userId,
+        point: { latitude: CASA.latitude + 0.02, longitude: CASA.longitude },
+        accuracyMeters: 30,
+      });
+      const [reset] = await db
+        .select({
+          status: departurePlans.status,
+          departAt: departurePlans.departAt,
+        })
+        .from(departurePlans)
+        .where(eq(departurePlans.assignmentId, assignmentIds[0]));
+      expect(reset.status).toBe("PENDING");
+      expect(reset.departAt).toBeNull();
     });
   });
 

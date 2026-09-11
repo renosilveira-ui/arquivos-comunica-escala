@@ -21,6 +21,7 @@ import { DEFAULT_TRAVEL_MODE } from "./departure-planning";
 import { getDb } from "./db";
 import {
   readDeparturePreferences,
+  recordAutomaticOrigin,
   syncDeparturePlans,
 } from "./departure-engine";
 import { sealExternalCredential } from "./external-credentials-crypto";
@@ -205,6 +206,47 @@ export const departureRouter = router({
    * próprio (`TRAVEL_ORIGIN`) — não com o escopo de um provedor, porque ele
    * não pertence a provedor nenhum.
    */
+  /**
+   * Ponto de partida vindo do próprio aparelho.
+   *
+   * É o caminho principal: o médico não digita endereço nenhum. O app pede a
+   * permissão uma vez e passa a informar de onde ele está, inclusive com o
+   * app fechado — que é quando o aviso precisa sair.
+   *
+   * ## O que este endpoint NÃO faz
+   *
+   * Não guarda histórico. Existe **uma** linha por conta para a localização
+   * automática, e cada envio substitui a anterior — a chave única
+   * `(user_id, label)` garante isso no banco, não na aplicação. Rastrear por
+   * onde um médico andou seria um compromisso de privacidade completamente
+   * diferente do que este produto assumiu, e não é necessário para dizer a
+   * que horas sair de casa.
+   *
+   * Envio que mal saiu do lugar é descartado sem escrever: o aparelho reporta
+   * a cada algumas centenas de metros, e regravar o selo a cada quarteirão
+   * gastaria escrita para não mudar nenhuma estimativa.
+   */
+  reportCurrentLocation: sessionProcedure
+    .input(
+      z
+        .object({
+          latitude: z.number().min(-90).max(90),
+          longitude: z.number().min(-180).max(180),
+          /** Raio de incerteza informado pelo aparelho, em metros. */
+          accuracyMeters: z.number().positive().nullable().default(null),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      return recordAutomaticOrigin({
+        db,
+        userId: ctx.user.id,
+        point: { latitude: input.latitude, longitude: input.longitude },
+        accuracyMeters: input.accuracyMeters,
+      });
+    }),
+
   saveTravelOrigin: sessionProcedure
     .input(
       z

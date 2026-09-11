@@ -237,6 +237,21 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  /**
+   * A posição vinda do aparelho chega a cada poucas centenas de metros. Push
+   * aqui seria o app avisando o médico de que sabe onde ele está — ruído, e
+   * dos inquietantes. Fica em auditoria silenciosa, como as demais escritas
+   * que o próprio usuário provoca.
+   */
+  "departure.reportCurrentLocation": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o aparelho do próprio usuário informa o ponto de partida atual",
+        audience: [],
+      },
+    ],
+  },
   "departure.saveTravelOrigin": {
     targets: [
       {

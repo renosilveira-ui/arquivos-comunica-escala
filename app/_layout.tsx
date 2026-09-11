@@ -2,7 +2,13 @@ import { CreateShiftAccessBoundary } from "@/components/OnboardingDirection";
 import { isUnlinkedAccountRoute } from "@/lib/onboarding-direction";
 import "@/global.css";
 import { theme } from "@/lib/theme";
-import { MutationCache, QueryCache, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -36,7 +42,10 @@ import {
 import type { EdgeInsets, Metrics, Rect } from "react-native-safe-area-context";
 
 import { trpc, createTRPCClient } from "@/lib/trpc";
-import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
+import {
+  initManusRuntime,
+  subscribeSafeAreaInsets,
+} from "@/lib/_core/manus-runtime";
 import {
   getActiveTenantSnapshot,
   TenantStateProvider,
@@ -44,6 +53,10 @@ import {
 } from "@/lib/tenant-state";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
+// Efeito colateral de propósito: registra a tarefa de localização em segundo
+// plano no carregamento. Quando o sistema acorda o app fechado, não há
+// componente montado para fazer isso.
+import "@/lib/location-origin-task";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { useLogoutAction } from "@/hooks/use-logout-action";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -76,7 +89,10 @@ import {
   type TenantAuthorizationReceipt,
   type TenantAuthorizationSubject,
 } from "@/lib/tenant-authorization";
-import { emitSessionUnauthorized, isUnauthorizedError } from "@/lib/session-events";
+import {
+  emitSessionUnauthorized,
+  isUnauthorizedError,
+} from "@/lib/session-events";
 import Constants from "expo-constants";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -164,7 +180,8 @@ type TenantAuthorizationAttestation = Readonly<{
   isCurrent: () => boolean;
 }>;
 
-const TenantAuthorizationContext = createContext<TenantAuthorizationAttestation | null>(null);
+const TenantAuthorizationContext =
+  createContext<TenantAuthorizationAttestation | null>(null);
 
 function AuthorizationUnavailableScreen({
   retry,
@@ -216,7 +233,9 @@ function AuthorizationUnavailableScreen({
           backgroundColor: theme.colors.primary,
         }}
       >
-        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>Tentar novamente</Text>
+        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
+          Tentar novamente
+        </Text>
       </TouchableOpacity>
     </View>
   );
@@ -239,7 +258,11 @@ function subjectKeyOf(subject: TenantAuthorizationSubject): string {
  * Fronteira real do cache tenant-bound: nem Stack, nem integrações, nem o
  * restore montam antes de uma prova fresca de sessão + membership.
  */
-function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }) {
+function TenantAuthorizationBoundary({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const { user, refetch, sessionValidation } = useAuth();
   const {
     activeInstitutionId,
@@ -277,11 +300,12 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     status: "CHECKING",
     subjectKey,
   });
-  const currentSessionProof = sessionValidation.status === "VERIFIED" &&
+  const currentSessionProof =
+    sessionValidation.status === "VERIFIED" &&
     user?.id === sessionValidation.userId &&
     sessionValidation.isCurrent()
-    ? sessionValidation
-    : null;
+      ? sessionValidation
+      : null;
   const requiresHandshake = canStartTenantAuthorizationHandshake({
     user,
     sessionValidation,
@@ -308,41 +332,47 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     activityReady: activity.visible && activity.online,
   });
 
-  const getCurrentSubject = useCallback((): TenantAuthorizationSubject => ({
-    userId: currentSubjectRef.current.userId,
-    // O módulo muda antes do React. Consultá-lo aqui fecha também a janela
-    // entre a publicação B e o rerender do boundary.
-    tenant: getActiveTenantSnapshot(),
-  }), []);
+  const getCurrentSubject = useCallback(
+    (): TenantAuthorizationSubject => ({
+      userId: currentSubjectRef.current.userId,
+      // O módulo muda antes do React. Consultá-lo aqui fecha também a janela
+      // entre a publicação B e o rerender do boundary.
+      tenant: getActiveTenantSnapshot(),
+    }),
+    [],
+  );
 
-  const updateActivity = useCallback((
-    patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
-  ) => {
-    const transition = applyTenantAuthorizationActivityPatch(
-      activityRef.current,
-      patch,
-      Platform.OS,
-    );
-    if (transition.action === "NONE") return;
-    activityRef.current = transition.state;
+  const updateActivity = useCallback(
+    (
+      patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
+    ) => {
+      const transition = applyTenantAuthorizationActivityPatch(
+        activityRef.current,
+        patch,
+        Platform.OS,
+      );
+      if (transition.action === "NONE") return;
+      activityRef.current = transition.state;
 
-    if (transition.action === "CLOSE") {
-      // O evento de lifecycle fecha a autoridade antes do próximo paint.
-      verifiedTreeSubjectKeyRef.current = null;
-      coordinatorRef.current.invalidate();
-      fenceQueryCachePersistence();
-      queryClient.clear();
-      setGateState({
-        status: "CHECKING",
-        subjectKey: subjectKeyOf(currentSubjectRef.current),
-      });
-    } else if (transition.action === "REVALIDATE") {
-      // Reconnect/volta ao foreground só reabre o handshake institucional.
-      // Um `/me` aqui era o equivalente nativo do #287: o NetInfo do Android
-      // flapava no seletor de apps e o 401 seguinte mandava para o login.
-    }
-    setActivity(transition.state);
-  }, [queryClient]);
+      if (transition.action === "CLOSE") {
+        // O evento de lifecycle fecha a autoridade antes do próximo paint.
+        verifiedTreeSubjectKeyRef.current = null;
+        coordinatorRef.current.invalidate();
+        fenceQueryCachePersistence();
+        queryClient.clear();
+        setGateState({
+          status: "CHECKING",
+          subjectKey: subjectKeyOf(currentSubjectRef.current),
+        });
+      } else if (transition.action === "REVALIDATE") {
+        // Reconnect/volta ao foreground só reabre o handshake institucional.
+        // Um `/me` aqui era o equivalente nativo do #287: o NetInfo do Android
+        // flapava no seletor de apps e o 401 seguinte mandava para o login.
+      }
+      setActivity(transition.state);
+    },
+    [queryClient],
+  );
 
   useEffect(() => {
     // Web: visibilitychange/pagehide/freeze/pageshow/NetInfo/online não
@@ -355,30 +385,35 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     // no disco (force-close relogava). Revogação real: /me soft no resume e
     // 401 do tRPC. Flap de NetInfo também não move o gate (#287 nativo).
     let nativeWasBackground = !isNativeAppSessionVisible(AppState.currentState);
-    const appStateSubscription = AppState.addEventListener("change", (nextState) => {
-      const inBackground = !isNativeAppSessionVisible(nextState);
-      if (
-        shouldSoftRevalidateNativeSessionOnForeground(Platform.OS) &&
-        nativeWasBackground &&
-        !inBackground
-      ) {
-        void refetch();
-      }
-      nativeWasBackground = inBackground;
-    });
+    const appStateSubscription = AppState.addEventListener(
+      "change",
+      (nextState) => {
+        const inBackground = !isNativeAppSessionVisible(nextState);
+        if (
+          shouldSoftRevalidateNativeSessionOnForeground(Platform.OS) &&
+          nativeWasBackground &&
+          !inBackground
+        ) {
+          void refetch();
+        }
+        nativeWasBackground = inBackground;
+      },
+    );
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
       updateActivity({
         online: isNetInfoOnline(state),
       });
     });
-    void NetInfo.fetch().then((state) => {
-      updateActivity({
-        online: isNetInfoOnline(state),
+    void NetInfo.fetch()
+      .then((state) => {
+        updateActivity({
+          online: isNetInfoOnline(state),
+        });
+      })
+      .catch(() => {
+        // Probe falhou: mantém online otimista para não travar o handshake.
+        updateActivity({ online: true });
       });
-    }).catch(() => {
-      // Probe falhou: mantém online otimista para não travar o handshake.
-      updateActivity({ online: true });
-    });
 
     return () => {
       appStateSubscription.remove();
@@ -410,7 +445,8 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       setGateState((current) => {
         const nextStatus =
           treeIntent === "unavailable" ? "UNAVAILABLE" : "CHECKING";
-        return current.subjectKey === subjectKey && current.status === nextStatus
+        return current.subjectKey === subjectKey &&
+          current.status === nextStatus
           ? current
           : { status: nextStatus, subjectKey };
       });
@@ -427,15 +463,27 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     setGateState({ status: "CHECKING", subjectKey });
 
     void (async () => {
-      let capabilities: Awaited<ReturnType<typeof utils.client.professionals.getMyCapabilities.query>> | undefined;
-      let managerScope: Awaited<ReturnType<typeof utils.client.professionals.getManagerScope.query>> | undefined;
+      let capabilities:
+        | Awaited<
+            ReturnType<
+              typeof utils.client.professionals.getMyCapabilities.query
+            >
+          >
+        | undefined;
+      let managerScope:
+        | Awaited<
+            ReturnType<typeof utils.client.professionals.getManagerScope.query>
+          >
+        | undefined;
       try {
         const result = await runTenantAuthorizationAttempt({
           coordinator,
           ticket,
           currentSubject: getCurrentSubject,
           loadInstitutions: () =>
-            utils.client.professionals.listMyInstitutions.query() as Promise<readonly AuthorizedInstitution[]>,
+            utils.client.professionals.listMyInstitutions.query() as Promise<
+              readonly AuthorizedInstitution[]
+            >,
           loadCurrentTenantAuthority: async () => {
             [capabilities, managerScope] = await Promise.all([
               utils.client.professionals.getMyCapabilities.query(),
@@ -449,27 +497,35 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
 
         const activeId = ticket.subject.tenant.institutionId;
         if (activeId !== null) {
-          const membership = result.receipt.institutions.find(({ id }) => id === activeId);
+          const membership = result.receipt.institutions.find(
+            ({ id }) => id === activeId,
+          );
           if (!membership || !capabilities || !managerScope) {
             throw new Error("Prova institucional incompleta.");
           }
-          if (!tenantAuthorityMatchesMembership({
-            institutionId: activeId,
-            membership,
-            capabilities,
-            managerScope,
-          })) {
-            throw new Error("Autoridade institucional mudou durante o handshake.");
+          if (
+            !tenantAuthorityMatchesMembership({
+              institutionId: activeId,
+              membership,
+              capabilities,
+              managerScope,
+            })
+          ) {
+            throw new Error(
+              "Autoridade institucional mudou durante o handshake.",
+            );
           }
         }
 
         if (!coordinator.isCurrent(ticket, getCurrentSubject())) return;
-        utils.professionals.listMyInstitutions.setData(
-          undefined,
-          [...result.receipt.institutions],
-        );
+        utils.professionals.listMyInstitutions.setData(undefined, [
+          ...result.receipt.institutions,
+        ]);
         if (capabilities) {
-          utils.professionals.getMyCapabilities.setData(undefined, capabilities);
+          utils.professionals.getMyCapabilities.setData(
+            undefined,
+            capabilities,
+          );
         }
         if (managerScope) {
           utils.professionals.getManagerScope.setData(undefined, managerScope);
@@ -500,7 +556,8 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
           attestation: { receipt: result.receipt, isCurrent },
         });
       } catch (error) {
-        if (cancelled || !coordinator.isCurrent(ticket, getCurrentSubject())) return;
+        if (cancelled || !coordinator.isCurrent(ticket, getCurrentSubject()))
+          return;
         if (isUnauthorizedError(error)) emitSessionUnauthorized();
         verifiedTreeSubjectKeyRef.current = null;
         setGateState({ status: "UNAVAILABLE", subjectKey });
@@ -573,11 +630,14 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   }
 
   if (user && !currentSessionProof) {
-    if (
-      sessionValidation.status === "UNAVAILABLE" ||
-      sessionProofStalled
-    ) {
-      return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
+    if (sessionValidation.status === "UNAVAILABLE" || sessionProofStalled) {
+      return (
+        <AuthorizationUnavailableScreen
+          retry={() => {
+            void refetch();
+          }}
+        />
+      );
     }
     return <BootScreen />;
   }
@@ -591,7 +651,13 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   }
 
   if (gateState.status === "UNAVAILABLE") {
-    return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
+    return (
+      <AuthorizationUnavailableScreen
+        retry={() => {
+          void refetch();
+        }}
+      />
+    );
   }
   if (
     isHydrating ||
@@ -633,7 +699,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       setAdmissionStalled(false);
       return;
     }
-    const timer = setTimeout(() => setAdmissionStalled(true), AUTHORIZATION_GATE_STALL_MS);
+    const timer = setTimeout(
+      () => setAdmissionStalled(true),
+      AUTHORIZATION_GATE_STALL_MS,
+    );
     return () => clearTimeout(timer);
   }, [sessionValidation.sequence, waitingDurableAdmission]);
 
@@ -682,9 +751,11 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (user.mustChangePassword) {
-    return pathname === "/change-password"
-      ? <>{children}</>
-      : <Redirect href="/change-password" />;
+    return pathname === "/change-password" ? (
+      <>{children}</>
+    ) : (
+      <Redirect href="/change-password" />
+    );
   }
 
   if (!attestation || !attestation.isCurrent()) return <BootScreen />;
@@ -730,7 +801,10 @@ export const unstable_settings = {
 function TenantScope({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const queryClient = useQueryClient();
-  const clearTenantBoundMemory = useCallback(() => queryClient.clear(), [queryClient]);
+  const clearTenantBoundMemory = useCallback(
+    () => queryClient.clear(),
+    [queryClient],
+  );
   // Só monta a árvore (Stack, guard, listeners) quando já se sabe quem é
   // o usuário. Antes, o provider nascia como "anon" e era REMONTADO meio
   // segundo depois com o id vindo do cache local — o navigator inteiro
@@ -830,7 +904,10 @@ export default function RootLayout() {
 
   // Ensure minimum 8px padding for top and bottom on mobile
   const providerInitialMetrics = useMemo(() => {
-    const metrics = initialWindowMetrics ?? { insets: initialInsets, frame: initialFrame };
+    const metrics = initialWindowMetrics ?? {
+      insets: initialInsets,
+      frame: initialFrame,
+    };
     return {
       ...metrics,
       insets: {
@@ -843,38 +920,68 @@ export default function RootLayout() {
 
   const content = (
     <AppErrorBoundary>
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <trpc.Provider client={trpcClient} queryClient={queryClient}>
-        <QueryClientProvider client={queryClient}>
-          <AuthProvider>
-            <ToastProvider>
-              <TenantScope>
-                {/* Account-scoped e estável: a troca A→B não pode desmontar
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <trpc.Provider client={trpcClient} queryClient={queryClient}>
+          <QueryClientProvider client={queryClient}>
+            <AuthProvider>
+              <ToastProvider>
+                <TenantScope>
+                  {/* Account-scoped e estável: a troca A→B não pode desmontar
                     o próprio listener antes de ele concluir a navegação. */}
-                <NotificationListener />
-                <TenantAuthorizationBoundary>
-                  <AuthGuard>
+                  <NotificationListener />
+                  <TenantAuthorizationBoundary>
+                    <AuthGuard>
                       {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
                       {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
                       {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
                       <Stack screenOptions={{ headerShown: false }}>
-                        <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-                        <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-                        <Stack.Screen name="forgot-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-                        <Stack.Screen name="reset-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-                        <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen
+                          name="login"
+                          options={{
+                            presentation: "fullScreenModal",
+                            animation: "fade",
+                          }}
+                        />
+                        <Stack.Screen
+                          name="signup"
+                          options={{
+                            presentation: "fullScreenModal",
+                            animation: "fade",
+                          }}
+                        />
+                        <Stack.Screen
+                          name="forgot-password"
+                          options={{
+                            presentation: "fullScreenModal",
+                            animation: "fade",
+                          }}
+                        />
+                        <Stack.Screen
+                          name="reset-password"
+                          options={{
+                            presentation: "fullScreenModal",
+                            animation: "fade",
+                          }}
+                        />
+                        <Stack.Screen
+                          name="select-institution"
+                          options={{
+                            presentation: "fullScreenModal",
+                            animation: "fade",
+                          }}
+                        />
                         <Stack.Screen name="(tabs)" />
                         <Stack.Screen name="oauth/callback" />
                       </Stack>
                       <StatusBar style="auto" />
-                  </AuthGuard>
-                </TenantAuthorizationBoundary>
-              </TenantScope>
-            </ToastProvider>
-          </AuthProvider>
-        </QueryClientProvider>
-      </trpc.Provider>
-    </GestureHandlerRootView>
+                    </AuthGuard>
+                  </TenantAuthorizationBoundary>
+                </TenantScope>
+              </ToastProvider>
+            </AuthProvider>
+          </QueryClientProvider>
+        </trpc.Provider>
+      </GestureHandlerRootView>
     </AppErrorBoundary>
   );
 
@@ -896,7 +1003,9 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider>
-      <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
+      <SafeAreaProvider initialMetrics={providerInitialMetrics}>
+        {content}
+      </SafeAreaProvider>
     </ThemeProvider>
   );
 }

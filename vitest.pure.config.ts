@@ -211,6 +211,7 @@ export default defineConfig({
       "tests/migration-engine-guard.test.ts",
       "tests/provision-hospital-locations-source.test.ts",
       "tests/weather-greeting.test.ts",
+      "tests/location-origin.test.ts",
     ],
     env: {
       NODE_ENV: "test",
