@@ -12,9 +12,9 @@ SET SESSION group_concat_max_len = 65535;
 -- nenhum digest mágico pode ocultar um objeto extra ou ausente.
 SET @auth_recovery_expected_columns_manifest := CONCAT_WS('|',
   '1:id:int:NO:<NULL>:auto_increment:<NULL>:<NULL>',
-  '2:kind:enum(''SELF_SERVICE'',''ADMIN_INITIATED''):NO:<NULL>::utf8mb4:<TABLE_DEFAULT>',
-  '3:request_actor_kind:enum(''UNAUTHENTICATED'',''AUTHENTICATED_ADMIN''):NO:<NULL>::utf8mb4:<TABLE_DEFAULT>',
-  '4:state:enum(''QUEUED'',''PROCESSING'',''ACTIVE'',''USED'',''REVOKED'',''SKIPPED'',''DEAD''):NO:QUEUED::utf8mb4:<TABLE_DEFAULT>',
+  '2:kind:enum(''self_service'',''admin_initiated''):NO:<NULL>::utf8mb4:<TABLE_DEFAULT>',
+  '3:request_actor_kind:enum(''unauthenticated'',''authenticated_admin''):NO:<NULL>::utf8mb4:<TABLE_DEFAULT>',
+  '4:state:enum(''queued'',''processing'',''active'',''used'',''revoked'',''skipped'',''dead''):NO:QUEUED::utf8mb4:<TABLE_DEFAULT>',
   '5:target_user_id:int:YES:<NULL>::<NULL>:<NULL>',
   '6:target_membership_id:int:YES:<NULL>::<NULL>:<NULL>',
   '7:requested_by_user_id:int:YES:<NULL>::<NULL>:<NULL>',
@@ -58,29 +58,31 @@ SET @auth_recovery_expected_indexes_manifest := CONCAT_WS('|',
   'uniq_auth_recovery_token_hash:0:1:token_hash:A:<NULL>:BTREE:YES'
 );
 SET @auth_recovery_expected_fks_manifest := CONCAT_WS('|',
-  'fk_auth_recovery_actor_membership:1:requested_by_membership_id:<CURRENT_SCHEMA>:professional_institutions:id:NONE:RESTRICT:RESTRICT',
-  'fk_auth_recovery_actor_user:1:requested_by_user_id:<CURRENT_SCHEMA>:users:id:NONE:RESTRICT:RESTRICT',
-  'fk_auth_recovery_institution:1:institution_id:<CURRENT_SCHEMA>:institutions:id:NONE:RESTRICT:RESTRICT',
-  'fk_auth_recovery_target_membership:1:target_membership_id:<CURRENT_SCHEMA>:professional_institutions:id:NONE:RESTRICT:RESTRICT',
-  'fk_auth_recovery_target_user:1:target_user_id:<CURRENT_SCHEMA>:users:id:NONE:RESTRICT:RESTRICT'
+  'fk_auth_recovery_actor_membership:1:requested_by_membership_id:<CURRENT_SCHEMA>:professional_institutions:id:NONE:NO ACTION:NO ACTION',
+  'fk_auth_recovery_actor_user:1:requested_by_user_id:<CURRENT_SCHEMA>:users:id:NONE:NO ACTION:NO ACTION',
+  'fk_auth_recovery_institution:1:institution_id:<CURRENT_SCHEMA>:institutions:id:NONE:NO ACTION:NO ACTION',
+  'fk_auth_recovery_target_membership:1:target_membership_id:<CURRENT_SCHEMA>:professional_institutions:id:NONE:NO ACTION:NO ACTION',
+  'fk_auth_recovery_target_user:1:target_user_id:<CURRENT_SCHEMA>:users:id:NONE:NO ACTION:NO ACTION'
 );
--- CHECK_CLAUSE é normalizado removendo quoting, charset e whitespace, mas
--- preservando operadores, ordem e parênteses. O runner efêmero deve comparar
--- este manifesto ao catálogo antes de qualquer aplicação em staging.
+-- MySQL 8.0.46 serializa CHECK_CLAUSE com escapes de aspas, agrupamento
+-- explícito de predicados e REGEXP_LIKE. O manifesto fixa essa variante exata;
+-- a normalização remove somente quoting de catálogo, charset, o escape de
+-- serialização e whitespace. Operadores, ordem e agrupamento semântico ficam
+-- no contrato fail-closed.
 SET @auth_recovery_expected_checks_manifest := CONCAT_WS('|',
-  'chk_auth_recovery_active_binding:(STATE NOT IN (''ACTIVE'',''USED'') OR (TARGET_USER_ID IS NOT NULL AND ((KIND = ''SELF_SERVICE'' AND TARGET_MEMBERSHIP_ID IS NULL) OR (KIND = ''ADMIN_INITIATED'' AND TARGET_MEMBERSHIP_ID IS NOT NULL)) AND EXPECTED_TARGET_SESSION_VERSION IS NOT NULL AND EMAIL_HASH IS NOT NULL AND TOKEN_HASH IS NOT NULL AND EXPIRES_AT IS NOT NULL AND PROVIDER_ACCEPTED_AT IS NOT NULL AND SEALED_PAYLOAD IS NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL)):YES',
-  'chk_auth_recovery_active_slot:((STATE = ''ACTIVE'' AND ACTIVE_SLOT = 1) OR (STATE <> ''ACTIVE'' AND ACTIVE_SLOT IS NULL)):YES',
-  'chk_auth_recovery_actor_binding:((KIND = ''SELF_SERVICE'' AND REQUEST_ACTOR_KIND = ''UNAUTHENTICATED'' AND REQUESTED_BY_USER_ID IS NULL AND REQUESTED_BY_MEMBERSHIP_ID IS NULL AND INSTITUTION_ID IS NULL AND EXPECTED_ACTOR_SESSION_VERSION IS NULL AND TARGET_MEMBERSHIP_ID IS NULL) OR (KIND = ''ADMIN_INITIATED'' AND REQUEST_ACTOR_KIND = ''AUTHENTICATED_ADMIN'' AND TARGET_USER_ID IS NOT NULL AND TARGET_MEMBERSHIP_ID IS NOT NULL AND REQUESTED_BY_USER_ID IS NOT NULL AND REQUESTED_BY_MEMBERSHIP_ID IS NOT NULL AND INSTITUTION_ID IS NOT NULL AND EXPECTED_TARGET_SESSION_VERSION IS NOT NULL AND EXPECTED_ACTOR_SESSION_VERSION IS NOT NULL AND EMAIL_HASH IS NOT NULL AND TOKEN_HASH IS NOT NULL)):YES',
-  'chk_auth_recovery_attempts:(ATTEMPT_COUNT >= 0 AND ATTEMPT_COUNT <= 5):YES',
+  'chk_auth_recovery_active_binding:((STATE NOT IN (''ACTIVE'',''USED'')) OR ((TARGET_USER_ID IS NOT NULL) AND (((KIND = ''SELF_SERVICE'') AND (TARGET_MEMBERSHIP_ID IS NULL)) OR ((KIND = ''ADMIN_INITIATED'') AND (TARGET_MEMBERSHIP_ID IS NOT NULL))) AND (EXPECTED_TARGET_SESSION_VERSION IS NOT NULL) AND (EMAIL_HASH IS NOT NULL) AND (TOKEN_HASH IS NOT NULL) AND (EXPIRES_AT IS NOT NULL) AND (PROVIDER_ACCEPTED_AT IS NOT NULL) AND (SEALED_PAYLOAD IS NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL))):YES',
+  'chk_auth_recovery_active_slot:(((STATE = ''ACTIVE'') AND (ACTIVE_SLOT = 1)) OR ((STATE <> ''ACTIVE'') AND (ACTIVE_SLOT IS NULL))):YES',
+  'chk_auth_recovery_actor_binding:(((KIND = ''SELF_SERVICE'') AND (REQUEST_ACTOR_KIND = ''UNAUTHENTICATED'') AND (REQUESTED_BY_USER_ID IS NULL) AND (REQUESTED_BY_MEMBERSHIP_ID IS NULL) AND (INSTITUTION_ID IS NULL) AND (EXPECTED_ACTOR_SESSION_VERSION IS NULL) AND (TARGET_MEMBERSHIP_ID IS NULL)) OR ((KIND = ''ADMIN_INITIATED'') AND (REQUEST_ACTOR_KIND = ''AUTHENTICATED_ADMIN'') AND (TARGET_USER_ID IS NOT NULL) AND (TARGET_MEMBERSHIP_ID IS NOT NULL) AND (REQUESTED_BY_USER_ID IS NOT NULL) AND (REQUESTED_BY_MEMBERSHIP_ID IS NOT NULL) AND (INSTITUTION_ID IS NOT NULL) AND (EXPECTED_TARGET_SESSION_VERSION IS NOT NULL) AND (EXPECTED_ACTOR_SESSION_VERSION IS NOT NULL) AND (EMAIL_HASH IS NOT NULL) AND (TOKEN_HASH IS NOT NULL))):YES',
+  'chk_auth_recovery_attempts:((ATTEMPT_COUNT >= 0) AND (ATTEMPT_COUNT <= 5)):YES',
   'chk_auth_recovery_deadline:(DELIVERY_DEADLINE_AT > AVAILABLE_AT):YES',
-  'chk_auth_recovery_hashes:(TOKEN_HASH REGEXP ''^[0-9a-f]{64}$'' AND (EMAIL_HASH IS NULL OR EMAIL_HASH REGEXP ''^[0-9a-f]{64}$'')):YES',
-  'chk_auth_recovery_state_payload:((STATE = ''QUEUED'' AND SEALED_PAYLOAD IS NOT NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL AND PROVIDER_ACCEPTED_AT IS NULL AND EXPIRES_AT IS NULL AND USED_AT IS NULL AND FINISHED_AT IS NULL AND ATTEMPT_COUNT < 5) OR (STATE = ''PROCESSING'' AND SEALED_PAYLOAD IS NOT NULL AND LEASE_TOKEN IS NOT NULL AND LEASE_UNTIL IS NOT NULL AND PROVIDER_ACCEPTED_AT IS NULL AND EXPIRES_AT IS NULL AND USED_AT IS NULL AND FINISHED_AT IS NULL AND ATTEMPT_COUNT >= 1) OR (STATE = ''ACTIVE'' AND SEALED_PAYLOAD IS NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL AND USED_AT IS NULL AND FINISHED_AT IS NULL AND EXPIRES_AT > PROVIDER_ACCEPTED_AT) OR (STATE = ''USED'' AND SEALED_PAYLOAD IS NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL AND USED_AT IS NOT NULL AND FINISHED_AT IS NOT NULL AND USED_AT = FINISHED_AT) OR (STATE = ''REVOKED'' AND SEALED_PAYLOAD IS NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL AND USED_AT IS NULL AND FINISHED_AT IS NOT NULL) OR (STATE IN (''SKIPPED'',''DEAD'') AND SEALED_PAYLOAD IS NULL AND LEASE_TOKEN IS NULL AND LEASE_UNTIL IS NULL AND PROVIDER_ACCEPTED_AT IS NULL AND EXPIRES_AT IS NULL AND USED_AT IS NULL AND FINISHED_AT IS NOT NULL)):YES'
+  'chk_auth_recovery_hashes:(REGEXP_LIKE(TOKEN_HASH, ''^[0-9A-F]{64}$'') AND ((EMAIL_HASH IS NULL) OR REGEXP_LIKE(EMAIL_HASH, ''^[0-9A-F]{64}$''))):YES',
+  'chk_auth_recovery_state_payload:(((STATE = ''QUEUED'') AND (SEALED_PAYLOAD IS NOT NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL) AND (PROVIDER_ACCEPTED_AT IS NULL) AND (EXPIRES_AT IS NULL) AND (USED_AT IS NULL) AND (FINISHED_AT IS NULL) AND (ATTEMPT_COUNT < 5)) OR ((STATE = ''PROCESSING'') AND (SEALED_PAYLOAD IS NOT NULL) AND (LEASE_TOKEN IS NOT NULL) AND (LEASE_UNTIL IS NOT NULL) AND (PROVIDER_ACCEPTED_AT IS NULL) AND (EXPIRES_AT IS NULL) AND (USED_AT IS NULL) AND (FINISHED_AT IS NULL) AND (ATTEMPT_COUNT >= 1)) OR ((STATE = ''ACTIVE'') AND (SEALED_PAYLOAD IS NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL) AND (USED_AT IS NULL) AND (FINISHED_AT IS NULL) AND (EXPIRES_AT > PROVIDER_ACCEPTED_AT)) OR ((STATE = ''USED'') AND (SEALED_PAYLOAD IS NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL) AND (USED_AT IS NOT NULL) AND (FINISHED_AT IS NOT NULL) AND (USED_AT = FINISHED_AT)) OR ((STATE = ''REVOKED'') AND (SEALED_PAYLOAD IS NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL) AND (USED_AT IS NULL) AND (FINISHED_AT IS NOT NULL)) OR ((STATE IN (''SKIPPED'',''DEAD'')) AND (SEALED_PAYLOAD IS NULL) AND (LEASE_TOKEN IS NULL) AND (LEASE_UNTIL IS NULL) AND (PROVIDER_ACCEPTED_AT IS NULL) AND (EXPIRES_AT IS NULL) AND (USED_AT IS NULL) AND (FINISHED_AT IS NOT NULL))):YES'
 );
 SET @auth_recovery_expected_columns_hash := SHA2(@auth_recovery_expected_columns_manifest, 256);
 SET @auth_recovery_expected_indexes_hash := SHA2(@auth_recovery_expected_indexes_manifest, 256);
 SET @auth_recovery_expected_fks_hash := SHA2(@auth_recovery_expected_fks_manifest, 256);
 SET @auth_recovery_expected_checks_hash := SHA2(
-  REPLACE(UPPER(@auth_recovery_expected_checks_manifest), ' ', ''),
+  REPLACE(@auth_recovery_expected_checks_manifest, ' ', ''),
   256
 );
 
@@ -198,8 +200,12 @@ SET @auth_recovery_checks_hash := (
           REPLACE(
             REPLACE(
               REPLACE(
-                REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
-                '_UTF8MB4',
+                REPLACE(
+                  REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
+                  '_UTF8MB4',
+                  ''
+                ),
+                CHAR(92),
                 ''
               ),
               ' ',
@@ -464,8 +470,8 @@ SET @auth_recovery_post_fks_hash := (
 );
 SET @auth_recovery_post_checks_hash := (
   SELECT SHA2(GROUP_CONCAT(CONCAT_WS(':', tc.CONSTRAINT_NAME,
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cc.CHECK_CLAUSE), CHAR(96), ''),
-      '_UTF8MB4', ''), ' ', ''), CHAR(10), ''), CHAR(13), ''),
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cc.CHECK_CLAUSE), CHAR(96), ''),
+      '_UTF8MB4', ''), CHAR(92), ''), ' ', ''), CHAR(10), ''), CHAR(13), ''),
     COALESCE(tc.ENFORCED, '<NULL>'))
     ORDER BY tc.CONSTRAINT_NAME SEPARATOR '|'), 256)
   FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
