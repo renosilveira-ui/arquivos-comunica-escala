@@ -10,7 +10,15 @@
 // - cron: discovery due-based (startAt futuro e dueAt <= agora) é
 //   idempotente.
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { DrizzleQueryError } from "drizzle-orm/errors";
 import {
@@ -45,14 +53,19 @@ import {
   transitionDutyConfirmation,
 } from "../server/confirmation-state";
 import { enqueueAutoSsoPush, triggerAutoSso } from "../server/sso/auto-sso";
-import { enqueueDutySync, processPendingDutySyncs } from "../server/sso/duty-sync";
+import {
+  enqueueDutySync,
+  processPendingDutySyncs,
+} from "../server/sso/duty-sync";
 import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
 } from "./helpers/open-test-scale";
 
 const dutySyncMockState = vi.hoisted(() => ({ useReal: false }));
-const orgMappingState = vi.hoisted(() => ({ organizationId: null as string | null }));
+const orgMappingState = vi.hoisted(() => ({
+  organizationId: null as string | null,
+}));
 
 vi.mock("../server/sso/auto-sso", () => ({
   enqueueAutoSsoPush: vi.fn(async () => null),
@@ -63,19 +76,23 @@ vi.mock("../server/sso/org-mapping", () => ({
   hasMappingFor: vi.fn(() => orgMappingState.organizationId !== null),
 }));
 vi.mock("../server/sso/duty-sync", async () => {
-  const actual = await vi.importActual<typeof import("../server/sso/duty-sync")>(
-    "../server/sso/duty-sync",
-  );
+  const actual = await vi.importActual<
+    typeof import("../server/sso/duty-sync")
+  >("../server/sso/duty-sync");
   return {
     ...actual,
-    enqueueDutySync: vi.fn((...args: Parameters<typeof actual.enqueueDutySync>) =>
-      dutySyncMockState.useReal
-        ? actual.enqueueDutySync(...args)
-        : Promise.resolve(1)),
-    processPendingDutySyncs: vi.fn((...args: Parameters<typeof actual.processPendingDutySyncs>) =>
-      dutySyncMockState.useReal
-        ? actual.processPendingDutySyncs(...args)
-        : Promise.resolve(0)),
+    enqueueDutySync: vi.fn(
+      (...args: Parameters<typeof actual.enqueueDutySync>) =>
+        dutySyncMockState.useReal
+          ? actual.enqueueDutySync(...args)
+          : Promise.resolve(1),
+    ),
+    processPendingDutySyncs: vi.fn(
+      (...args: Parameters<typeof actual.processPendingDutySyncs>) =>
+        dutySyncMockState.useReal
+          ? actual.processPendingDutySyncs(...args)
+          : Promise.resolve(0),
+    ),
   };
 });
 const trackedPushMock = vi.hoisted(() =>
@@ -96,10 +113,27 @@ const queuedPushMock = vi.hoisted(() =>
     providerAccepted: false,
   })),
 );
+const findTrackedByDedupMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ id: number; status: string } | null> => null),
+);
+// A classe precisa ser real: o dispatcher decide por `instanceof`.
+const TrackedIntentCollisionErrorMock = vi.hoisted(
+  () =>
+    class TrackedIntentCollisionError extends Error {
+      readonly dedupKey: string;
+      constructor(dedupKey: string) {
+        super(`Colisão de dedupKey em notificação rastreada: ${dedupKey}`);
+        this.name = "TrackedIntentCollisionError";
+        this.dedupKey = dedupKey;
+      }
+    },
+);
 vi.mock("../server/push-delivery", () => ({
   sendTrackedPushNotification: trackedPushMock,
   enqueueTrackedPushNotification: queuedPushMock,
   processPendingPushDeliveries: vi.fn(async () => 0),
+  findTrackedNotificationByDedupKey: findTrackedByDedupMock,
+  TrackedIntentCollisionError: TrackedIntentCollisionErrorMock,
 }));
 
 describe("confirmação pré-plantão e indicação de substituto", () => {
@@ -126,7 +160,17 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   const end = new Date(`${shiftDay}T19:00:00-03:00`);
 
   const ctx = (userId: number) =>
-    ({ user: { id: userId, role: "doctor", name: "T", email: `${userId}@t.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
+    ({
+      user: {
+        id: userId,
+        role: "doctor",
+        name: "T",
+        email: `${userId}@t.local`,
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    }) as any;
 
   async function setRosterStatus(
     date: Date,
@@ -134,21 +178,54 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   ) {
     await db
       .insert(monthlyRosters)
-      .values({ institutionId, hospitalId, yearMonth: yearMonthBrt(date), status })
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: yearMonthBrt(date),
+        status,
+      })
       .onDuplicateKeyUpdate({ set: { status } });
   }
 
   async function person(tag: string) {
-    const [u] = await db.insert(users).values({ name: `CN ${tag} ${stamp}`, email: `cn-${tag}-${stamp}@test.local`, passwordHash: "test", role: "doctor" }).$returningId();
-    const [p] = await db.insert(professionals).values({
-      userId: u.id,
-      name: `CN ${tag} ${stamp}`,
-      role: "Médico",
-      userRole: "USER",
-      medicalSpecialtyId: anesthesiaSpecialtyId,
-    }).$returningId();
-    await db.insert(professionalInstitutions).values({ professionalId: p.id, userId: u.id, institutionId, roleInInstitution: "USER", isPrimary: true, active: true });
-    await db.insert(professionalAccess).values({ institutionId, professionalId: p.id, hospitalId, sectorId, canAccess: true });
+    const [u] = await db
+      .insert(users)
+      .values({
+        name: `CN ${tag} ${stamp}`,
+        email: `cn-${tag}-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+      })
+      .$returningId();
+    const [p] = await db
+      .insert(professionals)
+      .values({
+        userId: u.id,
+        name: `CN ${tag} ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+      })
+      .$returningId();
+    await db
+      .insert(professionalInstitutions)
+      .values({
+        professionalId: p.id,
+        userId: u.id,
+        institutionId,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      });
+    await db
+      .insert(professionalAccess)
+      .values({
+        institutionId,
+        professionalId: p.id,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      });
     userIds.push(u.id);
     proIds.push(p.id);
     return { userId: u.id, proId: p.id };
@@ -158,16 +235,40 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const [s] = await db
       .insert(shiftInstances)
       // Historical fixtures intentionally overlap with distinct shift records.
-      .values({ institutionId, hospitalId, sectorId, scheduleContextId, requiredCapacity: null, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        requiredCapacity: null,
+        label: `CN ${stamp}`,
+        startAt: start,
+        endAt: end,
+        status: "OCUPADO",
+      })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)
-      .values({ shiftInstanceId: s.id, institutionId, hospitalId, sectorId, professionalId: titularProId, assignmentType: type, status: "OCUPADO", isActive: true, createdBy: titularUserId })
+      .values({
+        shiftInstanceId: s.id,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: titularProId,
+        assignmentType: type,
+        status: "OCUPADO",
+        isActive: true,
+        createdBy: titularUserId,
+      })
       .$returningId();
     return { shiftId: s.id, assignmentId: a.id };
   }
 
-  async function nominated(assignmentId: number, shiftId: number, recheckAt = new Date(Date.now() - 60_000)) {
+  async function nominated(
+    assignmentId: number,
+    shiftId: number,
+    recheckAt = new Date(Date.now() - 60_000),
+  ) {
     const [c] = await db
       .insert(dutyConfirmations)
       .values({
@@ -184,7 +285,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationToken: crypto.randomUUID(),
       })
       .$returningId();
-    const [row] = await db.select().from(dutyConfirmations).where(eq(dutyConfirmations.id, c.id));
+    const [row] = await db
+      .select()
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, c.id));
     return row;
   }
 
@@ -220,7 +324,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationToken: crypto.randomUUID(),
       })
       .$returningId();
-    const [row] = await db.select().from(dutyConfirmations).where(eq(dutyConfirmations.id, c.id));
+    const [row] = await db
+      .select()
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, c.id));
     return row;
   }
 
@@ -252,8 +359,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     targetUserId: number;
     action: "CONFIRM" | "WITHDRAW";
     reason:
-      | "UNMAPPED_COMUNICA_ORGANIZATION"
-      | "MISSING_CANONICAL_EXTERNAL_SUBJECT";
+      "UNMAPPED_COMUNICA_ORGANIZATION" | "MISSING_CANONICAL_EXTERNAL_SUBJECT";
     organizationId?: string;
     externalSubject?: string;
     processedCount?: number;
@@ -294,7 +400,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     } else {
       expect(outbox.providerReceipt).not.toHaveProperty("externalSubject");
     }
-    await expect(processPendingDutySyncs()).resolves.toBe(input.processedCount ?? 0);
+    await expect(processPendingDutySyncs()).resolves.toBe(
+      input.processedCount ?? 0,
+    );
   }
 
   async function expectAuditEvidence(
@@ -352,12 +460,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       );
 
     await expect(
-      confirmationRouter
-        .createCaller(ctx(titularUserId))
-        .nominateReplacement({
-          confirmationToken: input.confirmationToken,
-          replacementProfessionalId: input.replacementProfessionalId,
-        }),
+      confirmationRouter.createCaller(ctx(titularUserId)).nominateReplacement({
+        confirmationToken: input.confirmationToken,
+        replacementProfessionalId: input.replacementProfessionalId,
+      }),
     ).rejects.toMatchObject({
       code: input.code,
       ...(input.message ? { message: input.message } : {}),
@@ -413,7 +519,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const mockedPushResult: pushService.PushSendResult = {
       status: "TICKETS_ACCEPTED",
       message: "Ticket mock aceito; receipt pendente",
-      tickets: [{ state: "TICKET_ACCEPTED", pushTokenId: 1, ticketId: "mock-ticket" }],
+      tickets: [
+        { state: "TICKET_ACCEPTED", pushTokenId: 1, ticketId: "mock-ticket" },
+      ],
       acceptedCount: 1,
       rejectedCount: 0,
     };
@@ -422,12 +530,30 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       .mockResolvedValue(mockedPushResult);
     const [inst] = await db
       .insert(institutions)
-      .values({ name: `CN Tenant ${stamp}`, cnpj: `${stamp}`.slice(-14).padStart(14, "0"), legalName: `CN ${stamp}`, tradeName: `CN${stamp}`.slice(0, 20), isActive: true })
+      .values({
+        name: `CN Tenant ${stamp}`,
+        cnpj: `${stamp}`.slice(-14).padStart(14, "0"),
+        legalName: `CN ${stamp}`,
+        tradeName: `CN${stamp}`.slice(0, 20),
+        isActive: true,
+      })
       .$returningId();
     institutionId = inst.id;
-    const [h] = await db.insert(hospitals).values({ institutionId, name: `CN Hospital ${stamp}` }).$returningId();
+    const [h] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `CN Hospital ${stamp}` })
+      .$returningId();
     hospitalId = h.id;
-    const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `CN Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
+    const [sec] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `CN Setor ${stamp}`,
+        category: "cirurgico",
+        color: "#2563EB",
+      })
+      .$returningId();
     sectorId = sec.id;
     anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
     scheduleContextId = await openTestScale(db, {
@@ -446,15 +572,26 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   beforeEach(async () => {
     dutySyncMockState.useReal = false;
     orgMappingState.organizationId = null;
-    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
-    const mine = await db.select({ id: shiftInstances.id }).from(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    const mine = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
     const ids = mine.map((s) => s.id);
     if (ids.length) {
-      await db.delete(dutyConfirmations).where(inArray(dutyConfirmations.shiftInstanceId, ids));
-      await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
+      await db
+        .delete(dutyConfirmations)
+        .where(inArray(dutyConfirmations.shiftInstanceId, ids));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
-    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
     await setRosterStatus(start, "PUBLISHED");
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     await db
@@ -484,21 +621,40 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   });
 
   afterAll(async () => {
-    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
-    const mine = await db.select({ id: shiftInstances.id }).from(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    const mine = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
     const ids = mine.map((s) => s.id);
     if (ids.length) {
-      await db.delete(dutyConfirmations).where(inArray(dutyConfirmations.shiftInstanceId, ids));
-      await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
+      await db
+        .delete(dutyConfirmations)
+        .where(inArray(dutyConfirmations.shiftInstanceId, ids));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
-    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
-    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
-    await db.delete(professionalAccess).where(inArray(professionalAccess.professionalId, proIds));
-    await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, proIds));
+    await db
+      .delete(auditTrail)
+      .where(eq(auditTrail.institutionId, institutionId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, proIds));
+    await db
+      .delete(professionalInstitutions)
+      .where(inArray(professionalInstitutions.professionalId, proIds));
     await db.delete(professionals).where(inArray(professionals.id, proIds));
-    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -541,25 +697,39 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       expect.anything(),
     );
     const active = await db
-      .select({ professionalId: shiftAssignmentsV2.professionalId, assignmentType: shiftAssignmentsV2.assignmentType })
+      .select({
+        professionalId: shiftAssignmentsV2.professionalId,
+        assignmentType: shiftAssignmentsV2.assignmentType,
+      })
       .from(shiftAssignmentsV2)
-      .where(and(eq(shiftAssignmentsV2.shiftInstanceId, shiftId), eq(shiftAssignmentsV2.isActive, true)));
-    expect(active).toEqual([{ professionalId: subProId, assignmentType: "ON_CALL" }]);
-    const [shift] = await db.select({ status: shiftInstances.status }).from(shiftInstances).where(eq(shiftInstances.id, shiftId));
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(active).toEqual([
+      { professionalId: subProId, assignmentType: "ON_CALL" },
+    ]);
+    const [shift] = await db
+      .select({ status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftId));
     expect(shift.status).toBe("OCUPADO");
-    await expect(sub.acceptNomination(nominationInput)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(sub.acceptNomination(nominationInput)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
   });
 
   it("confirm preserva verdade local e auditoria quando o tenant não tem organização Comunica+", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = null;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
     try {
       await expect(
@@ -594,22 +764,19 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("decline preserva verdade local e auditoria quando o mapa Comunica+ é inválido", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = "not-a-canonical-uuid";
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
     try {
       await expect(
-        confirmationRouter
-          .createCaller(ctx(titularUserId))
-          .decline({
-            confirmationToken: conf.confirmationToken,
-            reason: "Indisponível",
-          }),
+        confirmationRouter.createCaller(ctx(titularUserId)).decline({
+          confirmationToken: conf.confirmationToken,
+          reason: "Indisponível",
+        }),
       ).resolves.toMatchObject({
         ok: true,
         status: "DECLINED",
@@ -638,13 +805,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("acceptNomination preserva troca local e auditoria sem organização Comunica+", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular("ON_CALL");
     const conf = await nominated(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = null;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
     try {
       await expect(
@@ -698,15 +864,17 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const organizationId = "00000000-0000-4000-8000-000000000001";
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
-    await db.update(users).set({ email: null }).where(eq(users.id, titularUserId));
+    await db
+      .update(users)
+      .set({ email: null })
+      .where(eq(users.id, titularUserId));
     try {
       await expect(
         confirmationRouter
@@ -745,23 +913,23 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const organizationId = "00000000-0000-4000-8000-000000000001";
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
-    await db.update(users).set({ email: "   " }).where(eq(users.id, titularUserId));
+    await db
+      .update(users)
+      .set({ email: "   " })
+      .where(eq(users.id, titularUserId));
     try {
       await expect(
-        confirmationRouter
-          .createCaller(ctx(titularUserId))
-          .decline({
-            confirmationToken: conf.confirmationToken,
-            reason: "Indisponível",
-          }),
+        confirmationRouter.createCaller(ctx(titularUserId)).decline({
+          confirmationToken: conf.confirmationToken,
+          reason: "Indisponível",
+        }),
       ).resolves.toMatchObject({
         ok: true,
         status: "DECLINED",
@@ -795,13 +963,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const organizationId = "00000000-0000-4000-8000-000000000001";
     const { shiftId, assignmentId } = await shiftWithTitular("ON_CALL");
     const conf = await nominated(assignmentId, shiftId);
-    const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
+    const dedupKey = `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
 
     await db
       .update(users)
@@ -910,12 +1077,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const conf = await declined(assignmentId, shiftId);
 
     await expect(
-      confirmationRouter
-        .createCaller(ctx(titularUserId))
-        .nominateReplacement({
-          confirmationToken: conf.confirmationToken,
-          replacementProfessionalId: subProId,
-        }),
+      confirmationRouter.createCaller(ctx(titularUserId)).nominateReplacement({
+        confirmationToken: conf.confirmationToken,
+        replacementProfessionalId: subProId,
+      }),
     ).resolves.toMatchObject({ status: "NOMINATED" });
     const [stored] = await db
       .select({
@@ -998,10 +1163,23 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("acceptNomination: origem já removida → CONFLICT sem criar alocação; mês LOCKED → FORBIDDEN", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);
-    await db.update(shiftAssignmentsV2).set({ isActive: false }).where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
     const sub = confirmationRouter.createCaller(ctx(subUserId));
-    await expect(sub.acceptNomination(nominationRouteInput(conf))).rejects.toMatchObject({ code: "CONFLICT" });
-    const rows = await db.select({ id: shiftAssignmentsV2.id }).from(shiftAssignmentsV2).where(and(eq(shiftAssignmentsV2.shiftInstanceId, shiftId), eq(shiftAssignmentsV2.isActive, true)));
+    await expect(
+      sub.acceptNomination(nominationRouteInput(conf)),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const rows = await db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
     expect(rows).toHaveLength(0);
     const [rolledBack] = await db
       .select({ status: dutyConfirmations.status })
@@ -1015,7 +1193,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const s2 = await shiftWithTitular();
     const conf2 = await nominated(s2.assignmentId, s2.shiftId);
     await setRosterStatus(start, "LOCKED");
-    await expect(sub.acceptNomination(nominationRouteInput(conf2))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      sub.acceptNomination(nominationRouteInput(conf2)),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("acceptNomination não transforma escala DRAFT em troca operacional", async () => {
@@ -1167,8 +1347,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       sub.acceptNomination(nominationRouteInput(secondConf)),
     ]);
 
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
     const activeReplacementAssignments = await db
       .select({ id: shiftAssignmentsV2.id })
       .from(shiftAssignmentsV2)
@@ -1176,7 +1360,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         and(
           eq(shiftAssignmentsV2.professionalId, subProId),
           eq(shiftAssignmentsV2.isActive, true),
-          inArray(shiftAssignmentsV2.shiftInstanceId, [first.shiftId, second.shiftId]),
+          inArray(shiftAssignmentsV2.shiftInstanceId, [
+            first.shiftId,
+            second.shiftId,
+          ]),
         ),
       );
     expect(activeReplacementAssignments).toHaveLength(1);
@@ -1187,28 +1374,38 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("aceites em meses distintos do mesmo hospital não fazem upgrade S→X na topologia", async () => {
     const createAt = async (startAt: Date, endAt: Date) => {
       await setRosterStatus(startAt, "PUBLISHED");
-      const [shift] = await db.insert(shiftInstances).values({
-        institutionId,
-        hospitalId,
-        sectorId,
-        scheduleContextId,
-        label: `CN cross-month ${startAt.toISOString()} ${stamp}`,
-        startAt,
-        endAt,
-        status: "OCUPADO",
-      }).$returningId();
-      const [assignment] = await db.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: shift.id,
-        institutionId,
-        hospitalId,
-        sectorId,
-        professionalId: titularProId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-        createdBy: titularUserId,
-      }).$returningId();
-      return nominated(assignment.id, shift.id, new Date(Date.now() + 30 * 60_000));
+      const [shift] = await db
+        .insert(shiftInstances)
+        .values({
+          institutionId,
+          hospitalId,
+          sectorId,
+          scheduleContextId,
+          label: `CN cross-month ${startAt.toISOString()} ${stamp}`,
+          startAt,
+          endAt,
+          status: "OCUPADO",
+        })
+        .$returningId();
+      const [assignment] = await db
+        .insert(shiftAssignmentsV2)
+        .values({
+          shiftInstanceId: shift.id,
+          institutionId,
+          hospitalId,
+          sectorId,
+          professionalId: titularProId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: titularUserId,
+        })
+        .$returningId();
+      return nominated(
+        assignment.id,
+        shift.id,
+        new Date(Date.now() + 30 * 60_000),
+      );
     };
     const january = await createAt(
       new Date("2034-01-10T13:00:00-03:00"),
@@ -1242,27 +1439,33 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("corrida cross-month sobreposta vê o commit após conquistar o mutex profissional", async () => {
     const createAt = async (startAt: Date, endAt: Date) => {
       await setRosterStatus(startAt, "PUBLISHED");
-      const [shift] = await db.insert(shiftInstances).values({
-        institutionId,
-        hospitalId,
-        sectorId,
-        scheduleContextId,
-        label: `CN RC overlap ${startAt.toISOString()} ${stamp}`,
-        startAt,
-        endAt,
-        status: "OCUPADO",
-      }).$returningId();
-      const [assignment] = await db.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: shift.id,
-        institutionId,
-        hospitalId,
-        sectorId,
-        professionalId: titularProId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-        createdBy: titularUserId,
-      }).$returningId();
+      const [shift] = await db
+        .insert(shiftInstances)
+        .values({
+          institutionId,
+          hospitalId,
+          sectorId,
+          scheduleContextId,
+          label: `CN RC overlap ${startAt.toISOString()} ${stamp}`,
+          startAt,
+          endAt,
+          status: "OCUPADO",
+        })
+        .$returningId();
+      const [assignment] = await db
+        .insert(shiftAssignmentsV2)
+        .values({
+          shiftInstanceId: shift.id,
+          institutionId,
+          hospitalId,
+          sectorId,
+          professionalId: titularProId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: titularUserId,
+        })
+        .$returningId();
       return {
         shiftId: shift.id,
         confirmation: await nominated(
@@ -1287,8 +1490,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       sub.acceptNomination(nominationRouteInput(february.confirmation)),
     ]);
 
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
     const activeReplacementAssignments = await db
       .select({ id: shiftAssignmentsV2.id })
       .from(shiftAssignmentsV2)
@@ -1296,7 +1503,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         and(
           eq(shiftAssignmentsV2.professionalId, subProId),
           eq(shiftAssignmentsV2.isActive, true),
-          inArray(shiftAssignmentsV2.shiftInstanceId, [january.shiftId, february.shiftId]),
+          inArray(shiftAssignmentsV2.shiftInstanceId, [
+            january.shiftId,
+            february.shiftId,
+          ]),
         ),
       );
     expect(activeReplacementAssignments).toHaveLength(1);
@@ -1304,13 +1514,21 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("acceptNomination serializa com lockMonth e não realoca depois do LOCKED", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
-    const conf = await nominated(assignmentId, shiftId, new Date(Date.now() + 30 * 60_000));
+    const conf = await nominated(
+      assignmentId,
+      shiftId,
+      new Date(Date.now() + 30 * 60_000),
+    );
     await setRosterStatus(start, "PUBLISHED");
 
     let releaseLock!: () => void;
     let rowLocked!: () => void;
-    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
-    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      rowLocked = resolve;
+    });
     const locker = db.transaction(async (tx) => {
       await tx
         .update(monthlyRosters)
@@ -1335,7 +1553,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
       )
-      .finally(() => { settled = true; });
+      .finally(() => {
+        settled = true;
+      });
     try {
       await new Promise((resolve) => setTimeout(resolve, 75));
       expect(settled).toBe(false);
@@ -1369,13 +1589,21 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("acceptNomination revalida vínculo dentro da transação após esperar o lock mensal", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
-    const conf = await nominated(assignmentId, shiftId, new Date(Date.now() + 30 * 60_000));
+    const conf = await nominated(
+      assignmentId,
+      shiftId,
+      new Date(Date.now() + 30 * 60_000),
+    );
     await setRosterStatus(start, "PUBLISHED");
 
     let releaseLock!: () => void;
     let rowLocked!: () => void;
-    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
-    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      rowLocked = resolve;
+    });
     const locker = db.transaction(async (tx) => {
       await tx
         .select({ id: monthlyRosters.id })
@@ -1434,10 +1662,18 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   });
 
   it("máquina de estados: grafo é fechado e affectedRows=0 falha com CONFLICT", async () => {
-    expect(isAllowedDutyConfirmationTransition("PENDING", "CONFIRMED")).toBe(true);
-    expect(isAllowedDutyConfirmationTransition("PENDING", "AUTO_CONFIRMED")).toBe(false);
-    expect(isAllowedDutyConfirmationTransition("PENDING", "REPLACEMENT_CONFIRMED")).toBe(false);
-    expect(isAllowedDutyConfirmationTransition("CONFIRMED", "DECLINED")).toBe(true);
+    expect(isAllowedDutyConfirmationTransition("PENDING", "CONFIRMED")).toBe(
+      true,
+    );
+    expect(
+      isAllowedDutyConfirmationTransition("PENDING", "AUTO_CONFIRMED"),
+    ).toBe(false);
+    expect(
+      isAllowedDutyConfirmationTransition("PENDING", "REPLACEMENT_CONFIRMED"),
+    ).toBe(false);
+    expect(isAllowedDutyConfirmationTransition("CONFIRMED", "DECLINED")).toBe(
+      true,
+    );
 
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
@@ -1560,92 +1796,105 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     "nominateReplacement",
     "acceptNomination",
     "declineNomination",
-  ] as const)("%s revalida a versão da sessão após esperar o mutex operacional", async (operation) => {
-    const { shiftId, assignmentId } = await shiftWithTitular();
-    const conf = operation === "nominateReplacement"
-      ? await declined(assignmentId, shiftId)
-      : operation === "acceptNomination" || operation === "declineNomination"
-        ? await nominated(assignmentId, shiftId)
-        : await pending(assignmentId, shiftId);
-    const actorUserId = operation === "acceptNomination" || operation === "declineNomination"
-      ? subUserId
-      : titularUserId;
-    const caller = confirmationRouter.createCaller(ctx(actorUserId));
+  ] as const)(
+    "%s revalida a versão da sessão após esperar o mutex operacional",
+    async (operation) => {
+      const { shiftId, assignmentId } = await shiftWithTitular();
+      const conf =
+        operation === "nominateReplacement"
+          ? await declined(assignmentId, shiftId)
+          : operation === "acceptNomination" ||
+              operation === "declineNomination"
+            ? await nominated(assignmentId, shiftId)
+            : await pending(assignmentId, shiftId);
+      const actorUserId =
+        operation === "acceptNomination" || operation === "declineNomination"
+          ? subUserId
+          : titularUserId;
+      const caller = confirmationRouter.createCaller(ctx(actorUserId));
 
-    let signalLocked!: () => void;
-    const locked = new Promise<void>((resolve) => {
-      signalLocked = resolve;
-    });
-    let releaseShift!: () => void;
-    const release = new Promise<void>((resolve) => {
-      releaseShift = resolve;
-    });
-    let released = false;
-    const blocker = db.transaction(async (tx) => {
-      await tx
-        .select({ id: shiftInstances.id })
-        .from(shiftInstances)
-        .where(eq(shiftInstances.id, shiftId))
-        .limit(1)
-        .for("update");
-      signalLocked();
-      await release;
-    });
-    await locked;
-
-    try {
-      const decision = operation === "confirm"
-        ? caller.confirm({ confirmationToken: conf.confirmationToken })
-        : operation === "decline"
-          ? caller.decline({ confirmationToken: conf.confirmationToken, reason: "Sessão revogada" })
-          : operation === "nominateReplacement"
-            ? caller.nominateReplacement({
-                confirmationToken: conf.confirmationToken,
-                replacementProfessionalId: subProId,
-              })
-            : operation === "acceptNomination"
-              ? caller.acceptNomination(nominationRouteInput(conf))
-              : caller.declineNomination(nominationRouteInput(conf));
-      let settled = false;
-      const outcome = decision.then(
-        (value) => ({ ok: true as const, value }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ).finally(() => {
-        settled = true;
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        signalLocked = resolve;
       });
+      let releaseShift!: () => void;
+      const release = new Promise<void>((resolve) => {
+        releaseShift = resolve;
+      });
+      let released = false;
+      const blocker = db.transaction(async (tx) => {
+        await tx
+          .select({ id: shiftInstances.id })
+          .from(shiftInstances)
+          .where(eq(shiftInstances.id, shiftId))
+          .limit(1)
+          .for("update");
+        signalLocked();
+        await release;
+      });
+      await locked;
 
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(settled).toBe(false);
-      await db
-        .update(users)
-        .set({ sessionVersion: 2 })
-        .where(eq(users.id, actorUserId));
+      try {
+        const decision =
+          operation === "confirm"
+            ? caller.confirm({ confirmationToken: conf.confirmationToken })
+            : operation === "decline"
+              ? caller.decline({
+                  confirmationToken: conf.confirmationToken,
+                  reason: "Sessão revogada",
+                })
+              : operation === "nominateReplacement"
+                ? caller.nominateReplacement({
+                    confirmationToken: conf.confirmationToken,
+                    replacementProfessionalId: subProId,
+                  })
+                : operation === "acceptNomination"
+                  ? caller.acceptNomination(nominationRouteInput(conf))
+                  : caller.declineNomination(nominationRouteInput(conf));
+        let settled = false;
+        const outcome = decision
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          .finally(() => {
+            settled = true;
+          });
 
-      released = true;
-      releaseShift();
-      await blocker;
-      const result = await outcome;
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toMatchObject({ code: "FORBIDDEN" });
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(settled).toBe(false);
+        await db
+          .update(users)
+          .set({ sessionVersion: 2 })
+          .where(eq(users.id, actorUserId));
 
-      const [unchanged] = await db
-        .select({ status: dutyConfirmations.status })
-        .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.id, conf.id));
-      expect(unchanged.status).toBe(conf.status);
-      expect(queuedPushMock).not.toHaveBeenCalled();
-      expect(vi.mocked(enqueueDutySync)).not.toHaveBeenCalled();
-      expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
-      expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
-    } finally {
-      if (!released) releaseShift();
-      await blocker;
-      await db
-        .update(users)
-        .set({ sessionVersion: 1 })
-        .where(eq(users.id, actorUserId));
-    }
-  });
+        released = true;
+        releaseShift();
+        await blocker;
+        const result = await outcome;
+        expect(result.ok).toBe(false);
+        if (!result.ok)
+          expect(result.error).toMatchObject({ code: "FORBIDDEN" });
+
+        const [unchanged] = await db
+          .select({ status: dutyConfirmations.status })
+          .from(dutyConfirmations)
+          .where(eq(dutyConfirmations.id, conf.id));
+        expect(unchanged.status).toBe(conf.status);
+        expect(queuedPushMock).not.toHaveBeenCalled();
+        expect(vi.mocked(enqueueDutySync)).not.toHaveBeenCalled();
+        expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
+        expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
+      } finally {
+        if (!released) releaseShift();
+        await blocker;
+        await db
+          .update(users)
+          .set({ sessionVersion: 1 })
+          .where(eq(users.id, actorUserId));
+      }
+    },
+  );
 
   it("corrida confirm × decline: um único estado e somente efeitos do vencedor", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
@@ -1654,7 +1903,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
     const results = await Promise.allSettled([
       titular.confirm({ confirmationToken: conf.confirmationToken }),
-      titular.decline({ confirmationToken: conf.confirmationToken, reason: "Indisponível" }),
+      titular.decline({
+        confirmationToken: conf.confirmationToken,
+        reason: "Indisponível",
+      }),
     ]);
     expect(results.some((result) => result.status === "fulfilled")).toBe(true);
 
@@ -1678,7 +1930,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     } else {
       expect(after.status).toBe("DECLINED");
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
-        expect.objectContaining({ confirmationId: conf.id, action: "WITHDRAW" }),
+        expect.objectContaining({
+          confirmationId: conf.id,
+          action: "WITHDRAW",
+        }),
         expect.any(Date),
         expect.anything(),
       );
@@ -1717,8 +1972,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         replacementProfessionalId: subProId,
       }),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
     expect(pushSpy).not.toHaveBeenCalled();
     expect(queuedPushMock).toHaveBeenCalledTimes(1);
     expect(queuedPushMock).toHaveBeenCalledWith(
@@ -1745,15 +2004,23 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("corrida accept × declineNomination nunca separa confirmação e alocação", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
-    const conf = await nominated(assignmentId, shiftId, new Date(Date.now() + 30 * 60_000));
+    const conf = await nominated(
+      assignmentId,
+      shiftId,
+      new Date(Date.now() + 30 * 60_000),
+    );
     const sub = confirmationRouter.createCaller(ctx(subUserId));
 
     const results = await Promise.allSettled([
       sub.acceptNomination(nominationRouteInput(conf)),
       sub.declineNomination(nominationRouteInput(conf)),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
 
     const [after] = await db
       .select({ status: dutyConfirmations.status })
@@ -1778,7 +2045,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
-        expect.objectContaining({ confirmationId: conf.id, action: "WITHDRAW" }),
+        expect.objectContaining({
+          confirmationId: conf.id,
+          action: "WITHDRAW",
+        }),
         expect.any(Date),
         expect.anything(),
       );
@@ -1799,7 +2069,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("recusa do substituto preserva linhagem, respondedAt e auditoria canônica", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const previousResponse = new Date("2026-01-01T10:00:00.000Z");
-    const conf = await nominated(assignmentId, shiftId, new Date(Date.now() + 30 * 60_000));
+    const conf = await nominated(
+      assignmentId,
+      shiftId,
+      new Date(Date.now() + 30 * 60_000),
+    );
     await db
       .update(dutyConfirmations)
       .set({ respondedAt: previousResponse })
@@ -1823,7 +2097,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       replacementProfessionalId: subProId,
       replacementUserId: subUserId,
     });
-    expect(after.respondedAt?.getTime()).toBeGreaterThan(previousResponse.getTime());
+    expect(after.respondedAt?.getTime()).toBeGreaterThan(
+      previousResponse.getTime(),
+    );
 
     const [audit] = await db
       .select({
@@ -1968,13 +2244,16 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
           (intent) =>
             intent.authority?.kind === "DUTY_CONFIRMATION" &&
             intent.authority.purpose === "NOMINATION_REQUEST" &&
-            intent.authority.confirmationToken === secondCycle.confirmationToken,
+            intent.authority.confirmationToken ===
+              secondCycle.confirmationToken,
         );
 
       expect(secondCycle.recheckAt?.toISOString()).toBe(
         firstCycle.recheckAt?.toISOString(),
       );
-      expect(secondCycle.confirmationToken).not.toBe(firstCycle.confirmationToken);
+      expect(secondCycle.confirmationToken).not.toBe(
+        firstCycle.confirmationToken,
+      );
       expect(secondIntent).toBeDefined();
       expect(secondIntent?.dedupKey).not.toBe(firstIntent?.dedupKey);
       await expect(
@@ -2054,11 +2333,16 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       .$returningId();
     const titular = confirmationRouter.createCaller(ctx(titularUserId));
 
-    await expect(titular.decline({ confirmationToken: token, reason: "Indisponível" })).resolves.toMatchObject({
+    await expect(
+      titular.decline({ confirmationToken: token, reason: "Indisponível" }),
+    ).resolves.toMatchObject({
       status: "DECLINED",
     });
     expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
-      expect.objectContaining({ confirmationId: inserted.id, action: "WITHDRAW" }),
+      expect.objectContaining({
+        confirmationId: inserted.id,
+        action: "WITHDRAW",
+      }),
       expect.any(Date),
       expect.anything(),
     );
@@ -2205,7 +2489,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       })
       .$returningId();
     await expect(
-      sub.decline({ confirmationToken: declineToken, reason: "Não deveria alterar" }),
+      sub.decline({
+        confirmationToken: declineToken,
+        reason: "Não deveria alterar",
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const second = await shiftWithTitular();
@@ -2233,7 +2520,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const rows = await db
       .select({ id: dutyConfirmations.id, status: dutyConfirmations.status })
       .from(dutyConfirmations)
-      .where(inArray(dutyConfirmations.id, [declinePoisoned.id, nominatePoisoned.id]));
+      .where(
+        inArray(dutyConfirmations.id, [
+          declinePoisoned.id,
+          nominatePoisoned.id,
+        ]),
+      );
     expect(new Map(rows.map((row) => [row.id, row.status]))).toEqual(
       new Map([
         [declinePoisoned.id, "PENDING"],
@@ -2248,7 +2540,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);
     await processRechecks(new Date());
-    const [row] = await db.select().from(dutyConfirmations).where(eq(dutyConfirmations.id, conf.id));
+    const [row] = await db
+      .select()
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, conf.id));
     expect(row.status).toBe("NOMINATED");
     expect(row.replacementUserId).toBe(subUserId);
     expect(row.replacementProfessionalId).toBe(subProId);
@@ -2261,7 +2556,15 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueDutySync)).not.toHaveBeenCalled();
     // Titular continua sendo o alocado.
-    const active = await db.select({ professionalId: shiftAssignmentsV2.professionalId }).from(shiftAssignmentsV2).where(and(eq(shiftAssignmentsV2.shiftInstanceId, shiftId), eq(shiftAssignmentsV2.isActive, true)));
+    const active = await db
+      .select({ professionalId: shiftAssignmentsV2.professionalId })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
     expect(active).toEqual([{ professionalId: titularProId }]);
   });
 
@@ -2295,7 +2598,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await processRechecks(new Date());
 
     const [after] = await db
-      .select({ status: dutyConfirmations.status, recheckAt: dutyConfirmations.recheckAt })
+      .select({
+        status: dutyConfirmations.status,
+        recheckAt: dutyConfirmations.recheckAt,
+      })
       .from(dutyConfirmations)
       .where(eq(dutyConfirmations.id, inserted.id));
     expect(after.status).toBe("PENDING");
@@ -2334,18 +2640,22 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       .select({ recheckAt: dutyConfirmations.recheckAt })
       .from(dutyConfirmations)
       .where(eq(dutyConfirmations.id, inserted.id));
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const transactionSpy = vi
       .spyOn(db as any, "transaction")
-      .mockImplementationOnce(async (callback: any) => callback({
-        select: () => {
-          throw new DrizzleQueryError(
-            "select duty_confirmations where confirmation_token = ?",
-            [sentinel],
-            new Error(sentinel),
-          );
-        },
-      }));
+      .mockImplementationOnce(async (callback: any) =>
+        callback({
+          select: () => {
+            throw new DrizzleQueryError(
+              "select duty_confirmations where confirmation_token = ?",
+              [sentinel],
+              new Error(sentinel),
+            );
+          },
+        }),
+      );
 
     try {
       try {
@@ -2355,11 +2665,16 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       }
 
       const [after] = await db
-        .select({ status: dutyConfirmations.status, recheckAt: dutyConfirmations.recheckAt })
+        .select({
+          status: dutyConfirmations.status,
+          recheckAt: dutyConfirmations.recheckAt,
+        })
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, inserted.id));
       expect(after.status).toBe("PENDING");
-      expect(after.recheckAt?.toISOString()).toBe(before.recheckAt?.toISOString());
+      expect(after.recheckAt?.toISOString()).toBe(
+        before.recheckAt?.toISOString(),
+      );
       expect(JSON.stringify(errorLog.mock.calls)).not.toContain(sentinel);
       expect(queuedPushMock).not.toHaveBeenCalled();
     } finally {
@@ -2371,15 +2686,38 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const [c] = await db
       .insert(dutyConfirmations)
-      .values({ institutionId, shiftInstanceId: shiftId, assignmentId, professionalId: titularProId, userId: titularUserId, status: "PENDING", notifiedAt: new Date(), recheckAt: new Date(Date.now() - 60_000), confirmationToken: crypto.randomUUID() })
+      .values({
+        institutionId,
+        shiftInstanceId: shiftId,
+        assignmentId,
+        professionalId: titularProId,
+        userId: titularUserId,
+        status: "PENDING",
+        notifiedAt: new Date(),
+        recheckAt: new Date(Date.now() - 60_000),
+        confirmationToken: crypto.randomUUID(),
+      })
       .$returningId();
-    await db.update(shiftAssignmentsV2).set({ isActive: false }).where(eq(shiftAssignmentsV2.id, assignmentId));
-    const [conf] = await db.select().from(dutyConfirmations).where(eq(dutyConfirmations.id, c.id));
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    const [conf] = await db
+      .select()
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, c.id));
 
-    await expect(confirmationRouter.createCaller(ctx(titularUserId)).confirm({ confirmationToken: conf.confirmationToken })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .confirm({ confirmationToken: conf.confirmationToken }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await processRechecks(new Date());
-    const [row] = await db.select().from(dutyConfirmations).where(eq(dutyConfirmations.id, c.id));
+    const [row] = await db
+      .select()
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, c.id));
     expect(row.status).toBe("PENDING");
     expect(row.recheckAt).toBeNull();
     expect(pushSpy).not.toHaveBeenCalled();
@@ -2440,15 +2778,22 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       })
       .$returningId();
     await expect(
-      confirmationRouter.createCaller(ctx(titularUserId)).confirm({ confirmationToken: pendingToken }),
+      confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .confirm({ confirmationToken: pendingToken }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    await db.delete(dutyConfirmations).where(eq(dutyConfirmations.id, pending.id));
+    await db
+      .delete(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, pending.id));
 
     await db
       .update(shiftAssignmentsV2)
       .set({ status: "OCUPADO" })
       .where(eq(shiftAssignmentsV2.id, assignment.id));
-    await db.update(shiftInstances).set({ status: "OCUPADO" }).where(eq(shiftInstances.id, shift.id));
+    await db
+      .update(shiftInstances)
+      .set({ status: "OCUPADO" })
+      .where(eq(shiftInstances.id, shift.id));
     await db
       .update(professionalAccess)
       .set({ canAccess: false })
@@ -2479,7 +2824,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const at1107 = new Date(`${shiftDay}T11:07:00-03:00`);
     await dispatchConfirmations(at1107);
     await dispatchConfirmations(new Date(at1107.getTime() + 60_000));
-    const rows = await db.select({ id: dutyConfirmations.id }).from(dutyConfirmations).where(eq(dutyConfirmations.assignmentId, assignmentId));
+    const rows = await db
+      .select({ id: dutyConfirmations.id })
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.assignmentId, assignmentId));
     expect(rows).toHaveLength(1);
     expect(trackedPushMock).toHaveBeenCalledTimes(1);
     expect(queuedPushMock).toHaveBeenCalledWith(
@@ -2505,17 +2853,19 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await person("batch-4"),
       await person("batch-5"),
     ];
-    await db.insert(shiftAssignmentsV2).values(additional.map((personRow) => ({
-      shiftInstanceId: shiftId,
-      institutionId,
-      hospitalId,
-      sectorId,
-      professionalId: personRow.proId,
-      assignmentType: "ON_DUTY" as const,
-      status: "OCUPADO" as const,
-      isActive: true,
-      createdBy: titularUserId,
-    })));
+    await db.insert(shiftAssignmentsV2).values(
+      additional.map((personRow) => ({
+        shiftInstanceId: shiftId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: personRow.proId,
+        assignmentType: "ON_DUTY" as const,
+        status: "OCUPADO" as const,
+        isActive: true,
+        createdBy: titularUserId,
+      })),
+    );
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
     let inFlight = 0;
     let maxInFlight = 0;
@@ -2618,13 +2968,15 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { assignmentId } = await shiftWithTitular();
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
 
-    await db.delete(monthlyRosters).where(
-      and(
-        eq(monthlyRosters.institutionId, institutionId),
-        eq(monthlyRosters.hospitalId, hospitalId),
-        eq(monthlyRosters.yearMonth, yearMonthBrt(start)),
-      ),
-    );
+    await db
+      .delete(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonthBrt(start)),
+        ),
+      );
     await dispatchConfirmations(dispatchAt);
     expect(
       await db
@@ -2724,7 +3076,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
     queuedPushMock.mockRejectedValueOnce(new Error("outbox indisponível"));
 
-    await expect(dispatchConfirmations(dispatchAt)).rejects.toThrow("outbox indisponível");
+    await expect(dispatchConfirmations(dispatchAt)).rejects.toThrow(
+      "outbox indisponível",
+    );
     expect(
       await db
         .select({ id: dutyConfirmations.id })
@@ -2749,7 +3103,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationToken: crypto.randomUUID(),
       })
       .$returningId();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("SSO_TARGET_URL", "https://user:secret@comunica.example");
     try {
@@ -2768,23 +3124,31 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("push token: troca de conta reatribui; desregistro remove", async () => {
     const token = `ExponentPushToken[cn-${stamp}]`;
-    await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-      token,
-      platform: "ios",
-      expectedUserId: titularUserId,
-    });
+    await confirmationRouter
+      .createCaller(ctx(titularUserId))
+      .registerPushToken({
+        token,
+        platform: "ios",
+        expectedUserId: titularUserId,
+      });
     await confirmationRouter.createCaller(ctx(subUserId)).registerPushToken({
       token,
       platform: "ios",
       expectedUserId: subUserId,
     });
-    const [row] = await db.select({ userId: pushTokens.userId }).from(pushTokens).where(eq(pushTokens.token, token));
+    const [row] = await db
+      .select({ userId: pushTokens.userId })
+      .from(pushTokens)
+      .where(eq(pushTokens.token, token));
     expect(row.userId).toBe(subUserId);
     await confirmationRouter.createCaller(ctx(subUserId)).unregisterPushToken({
       token,
       expectedUserId: subUserId,
     });
-    const left = await db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, token));
+    const left = await db
+      .select({ id: pushTokens.id })
+      .from(pushTokens)
+      .where(eq(pushTokens.token, token));
     expect(left).toHaveLength(0);
   });
 
@@ -2803,9 +3167,15 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
           platform: "ios",
           expectedUserId: titularUserId,
         }),
-      ).resolves.toEqual({ success: true, message: "Token registrado com sucesso" });
+      ).resolves.toEqual({
+        success: true,
+        message: "Token registrado com sucesso",
+      });
       const rows = await db
-        .select({ userId: pushTokens.userId, institutionId: pushTokens.institutionId })
+        .select({
+          userId: pushTokens.userId,
+          institutionId: pushTokens.institutionId,
+        })
         .from(pushTokens)
         .where(eq(pushTokens.token, token));
       expect(rows).toEqual([{ userId: titularUserId, institutionId: null }]);
@@ -2836,13 +3206,17 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         .select({ token: pushTokens.token, userId: pushTokens.userId })
         .from(pushTokens)
         .where(inArray(pushTokens.token, [previousToken, currentToken]));
-      expect(rows).toEqual(expect.arrayContaining([
-        { token: previousToken, userId: subUserId },
-        { token: currentToken, userId: titularUserId },
-      ]));
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          { token: previousToken, userId: subUserId },
+          { token: currentToken, userId: titularUserId },
+        ]),
+      );
       expect(rows).toHaveLength(2);
     } finally {
-      await db.delete(pushTokens).where(inArray(pushTokens.token, [previousToken, currentToken]));
+      await db
+        .delete(pushTokens)
+        .where(inArray(pushTokens.token, [previousToken, currentToken]));
     }
   });
 
@@ -2851,11 +3225,13 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const otherDevice = `ExponentPushToken[cn-other-device-${stamp}]`;
     const currentToken = `ExponentPushToken[cn-unknown-current-${stamp}]`;
     try {
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: otherDevice,
-        platform: "android",
-        expectedUserId: titularUserId,
-      });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: otherDevice,
+          platform: "android",
+          expectedUserId: titularUserId,
+        });
       await expect(
         confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
           token: currentToken,
@@ -2868,12 +3244,26 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       const rows = await db
         .select({ token: pushTokens.token })
         .from(pushTokens)
-        .where(inArray(pushTokens.token, [unknownPrevious, otherDevice, currentToken]));
-      expect(rows.map((row) => row.token).sort()).toEqual([currentToken, otherDevice].sort());
+        .where(
+          inArray(pushTokens.token, [
+            unknownPrevious,
+            otherDevice,
+            currentToken,
+          ]),
+        );
+      expect(rows.map((row) => row.token).sort()).toEqual(
+        [currentToken, otherDevice].sort(),
+      );
     } finally {
       await db
         .delete(pushTokens)
-        .where(inArray(pushTokens.token, [unknownPrevious, otherDevice, currentToken]));
+        .where(
+          inArray(pushTokens.token, [
+            unknownPrevious,
+            otherDevice,
+            currentToken,
+          ]),
+        );
     }
   });
 
@@ -2884,37 +3274,47 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const otherDevice = `ExponentPushToken[cn-rollover-other-${stamp}]`;
     const tokens = [tokenT1, tokenT2, tokenT3, otherDevice];
     try {
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: tokenT1,
-        platform: "ios",
-        expectedUserId: titularUserId,
-      });
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: otherDevice,
-        platform: "android",
-        expectedUserId: titularUserId,
-      });
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: tokenT2,
-        previousToken: tokenT1,
-        platform: "ios",
-        expectedUserId: titularUserId,
-      });
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: tokenT3,
-        previousToken: tokenT2,
-        platform: "ios",
-        expectedUserId: titularUserId,
-      });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: tokenT1,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: otherDevice,
+          platform: "android",
+          expectedUserId: titularUserId,
+        });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: tokenT2,
+          previousToken: tokenT1,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: tokenT3,
+          previousToken: tokenT2,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        });
 
       const rows = await db
         .select({ token: pushTokens.token, userId: pushTokens.userId })
         .from(pushTokens)
         .where(inArray(pushTokens.token, tokens));
-      expect(rows).toEqual(expect.arrayContaining([
-        { token: tokenT3, userId: titularUserId },
-        { token: otherDevice, userId: titularUserId },
-      ]));
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          { token: tokenT3, userId: titularUserId },
+          { token: otherDevice, userId: titularUserId },
+        ]),
+      );
       expect(rows).toHaveLength(2);
     } finally {
       await db.delete(pushTokens).where(inArray(pushTokens.token, tokens));
@@ -2935,10 +3335,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
       await expect(
-        confirmationRouter.createCaller(ctx(titularUserId)).unregisterPushToken({
-          token,
-          expectedUserId: titularUserId,
-        }),
+        confirmationRouter
+          .createCaller(ctx(titularUserId))
+          .unregisterPushToken({
+            token,
+            expectedUserId: titularUserId,
+          }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
       await expect(
         confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
@@ -2969,15 +3371,20 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(
-        confirmationRouter.createCaller(ctx(titularUserId)).unregisterPushToken({
-          token,
-          expectedUserId: subUserId,
-        }),
+        confirmationRouter
+          .createCaller(ctx(titularUserId))
+          .unregisterPushToken({
+            token,
+            expectedUserId: subUserId,
+          }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       expect(registerSpy).not.toHaveBeenCalled();
       expect(unregisterSpy).not.toHaveBeenCalled();
       await expect(
-        db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, token)),
+        db
+          .select({ id: pushTokens.id })
+          .from(pushTokens)
+          .where(eq(pushTokens.token, token)),
       ).resolves.toHaveLength(0);
     } finally {
       registerSpy.mockRestore();
@@ -2995,10 +3402,17 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await expect(
         confirmationRouter
           .createCaller(ctx(titularUserId))
-          .registerPushToken({ token, platform: "ios", expectedUserId: titularUserId }),
+          .registerPushToken({
+            token,
+            platform: "ios",
+            expectedUserId: titularUserId,
+          }),
       ).resolves.toMatchObject({ success: false, message: "Sessão revogada" });
       await expect(
-        db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, token)),
+        db
+          .select({ id: pushTokens.id })
+          .from(pushTokens)
+          .where(eq(pushTokens.token, token)),
       ).resolves.toHaveLength(0);
     } finally {
       await db
@@ -3032,7 +3446,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
     await confirmationRouter
       .createCaller(ctx(subUserId))
-      .registerPushToken({ token, platform: "android", expectedUserId: subUserId });
+      .registerPushToken({
+        token,
+        platform: "android",
+        expectedUserId: subUserId,
+      });
     const [canonical] = await db
       .select({ userId: pushTokens.userId })
       .from(pushTokens)
@@ -3058,24 +3476,32 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
       expect(serviceSpy).not.toHaveBeenCalled();
 
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: upper,
-        platform: "ios",
-        expectedUserId: titularUserId,
-      });
-      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
-        token: lower,
-        platform: "ios",
-        expectedUserId: titularUserId,
-      });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: upper,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        });
+      await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .registerPushToken({
+          token: lower,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        });
       const rows = await db
         .select({ token: pushTokens.token })
         .from(pushTokens)
         .where(inArray(pushTokens.token, [upper, lower]));
-      expect(rows.map((row) => row.token).sort()).toEqual([upper, lower].sort());
+      expect(rows.map((row) => row.token).sort()).toEqual(
+        [upper, lower].sort(),
+      );
     } finally {
       serviceSpy.mockRestore();
-      await db.delete(pushTokens).where(inArray(pushTokens.token, [upper, lower]));
+      await db
+        .delete(pushTokens)
+        .where(inArray(pushTokens.token, [upper, lower]));
     }
   });
 
@@ -3099,11 +3525,21 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         `INSERT INTO \`${fixture}\` (institution_id, user_id, token)
          VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?)`,
         [
-          institutionId, 101, "CaseAlias",
-          institutionId, 202, "casealias",
-          institutionId, 303, "DuplicateToken",
-          institutionId, 404, "DuplicateToken",
-          institutionId, 505, "WhitespaceToken ",
+          institutionId,
+          101,
+          "CaseAlias",
+          institutionId,
+          202,
+          "casealias",
+          institutionId,
+          303,
+          "DuplicateToken",
+          institutionId,
+          404,
+          "DuplicateToken",
+          institutionId,
+          505,
+          "WhitespaceToken ",
         ],
       );
 
@@ -3127,7 +3563,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         INNER JOIN \`${duplicateIds}\` AS duplicated ON duplicated.id = \`${fixture}\`.id
       `);
       await connection.query(`DROP TEMPORARY TABLE \`${duplicateIds}\``);
-      await connection.query(`DELETE FROM \`${fixture}\` WHERE token REGEXP '[[:space:]]'`);
+      await connection.query(
+        `DELETE FROM \`${fixture}\` WHERE token REGEXP '[[:space:]]'`,
+      );
       await connection.query(`
         ALTER TABLE \`${fixture}\`
           MODIFY COLUMN institution_id INT NULL,
@@ -3179,14 +3617,18 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         `,
         [fixture, fixture],
       );
-      expect(columnContract).toEqual(expect.arrayContaining([
-        { nullable: "YES", collationName: null },
-        { nullable: "NO", collationName: "utf8mb4_bin" },
-      ]));
+      expect(columnContract).toEqual(
+        expect.arrayContaining([
+          { nullable: "YES", collationName: null },
+          { nullable: "NO", collationName: "utf8mb4_bin" },
+        ]),
+      );
     } finally {
       try {
         await connection.query(`UNLOCK TABLES`);
-        await connection.query(`DROP TEMPORARY TABLE IF EXISTS \`${duplicateIds}\``);
+        await connection.query(
+          `DROP TEMPORARY TABLE IF EXISTS \`${duplicateIds}\``,
+        );
         await connection.query(`DROP TABLE IF EXISTS \`${fixture}\``);
       } finally {
         connection.release();

@@ -873,10 +873,42 @@ function assertSameTrackedIntent(
     !suppliedRecipientIsCompatible ||
     (!storedMatchesCanonical && !storedMatchesExactLegacy)
   ) {
-    throw new Error(
-      `Colisão de dedupKey em notificação rastreada: ${input.dedupKey}`,
-    );
+    throw new TrackedIntentCollisionError(input.dedupKey);
   }
+}
+
+/**
+ * A mesma `dedupKey` já existe com outra intenção.
+ *
+ * Tipado porque quem chama precisa distinguir isto de falha de banco: uma
+ * colisão é "este ciclo já foi tentado" e merece um `continue` com log; uma
+ * falha de banco merece propagar. Enquanto era `Error` cru, o cron de
+ * confirmação tratava as duas do mesmo jeito — morrendo — e um médico sem
+ * app instalado bastava para parar o subsistema inteiro, a cada minuto.
+ */
+export class TrackedIntentCollisionError extends Error {
+  readonly dedupKey: string;
+  constructor(dedupKey: string) {
+    super(`Colisão de dedupKey em notificação rastreada: ${dedupKey}`);
+    this.name = "TrackedIntentCollisionError";
+    this.dedupKey = dedupKey;
+  }
+}
+
+/**
+ * Existe intenção rastreada com esta chave? Devolve só o suficiente para o
+ * chamador decidir se o ciclo já foi tentado — nunca o payload.
+ */
+export async function findTrackedNotificationByDedupKey(
+  db: Pick<Db, "select">,
+  dedupKey: string,
+): Promise<{ id: number; status: string } | null> {
+  const [row] = await db
+    .select({ id: notifications.id, status: notifications.status })
+    .from(notifications)
+    .where(eq(notifications.dedupKey, dedupKey))
+    .limit(1);
+  return row ?? null;
 }
 
 async function failRevokedAuthority(

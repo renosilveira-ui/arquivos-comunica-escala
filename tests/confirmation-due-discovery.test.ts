@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   dutyConfirmations,
@@ -14,9 +22,7 @@ import {
   shiftInstances,
   users,
 } from "../drizzle/schema";
-import {
-  dispatchConfirmations,
-} from "../server/cron/shift-confirmation-dispatcher";
+import { dispatchConfirmations } from "../server/cron/shift-confirmation-dispatcher";
 import { getDb } from "../server/db";
 import { yearMonthBrt } from "../server/local-time";
 import { rowsFromExecute } from "../server/_core/db-results";
@@ -43,10 +49,27 @@ const queuedPushMock = vi.hoisted(() =>
     providerAccepted: false,
   })),
 );
+const findTrackedByDedupMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ id: number; status: string } | null> => null),
+);
+// A classe precisa ser real: o dispatcher decide por `instanceof`.
+const TrackedIntentCollisionErrorMock = vi.hoisted(
+  () =>
+    class TrackedIntentCollisionError extends Error {
+      readonly dedupKey: string;
+      constructor(dedupKey: string) {
+        super(`Colisão de dedupKey em notificação rastreada: ${dedupKey}`);
+        this.name = "TrackedIntentCollisionError";
+        this.dedupKey = dedupKey;
+      }
+    },
+);
 vi.mock("../server/push-delivery", () => ({
   sendTrackedPushNotification: trackedPushMock,
   enqueueTrackedPushNotification: queuedPushMock,
   processPendingPushDeliveries: vi.fn(async () => 0),
+  findTrackedNotificationByDedupKey: findTrackedByDedupMock,
+  TrackedIntentCollisionError: TrackedIntentCollisionErrorMock,
 }));
 vi.mock("../server/sso/duty-sync", () => ({
   enqueueDutySync: vi.fn(async () => 1),
@@ -313,7 +336,9 @@ describe("confirmation due-based discovery — MySQL", () => {
     const mine = await db
       .select({ id: shiftInstances.id })
       .from(shiftInstances)
-      .where(inArray(shiftInstances.institutionId, [institutionId, institutionBId]));
+      .where(
+        inArray(shiftInstances.institutionId, [institutionId, institutionBId]),
+      );
     const ids = mine.map((row) => row.id);
     if (ids.length) {
       await db
@@ -326,13 +351,17 @@ describe("confirmation due-based discovery — MySQL", () => {
     }
     await db
       .delete(monthlyRosters)
-      .where(inArray(monthlyRosters.institutionId, [institutionId, institutionBId]));
+      .where(
+        inArray(monthlyRosters.institutionId, [institutionId, institutionBId]),
+      );
   }
 
   beforeEach(async () => {
     await wipeShifts();
     await setRoster(start13, "PUBLISHED");
     await setRoster(start13, "PUBLISHED", institutionBId, hospitalBId);
+    findTrackedByDedupMock.mockReset();
+    findTrackedByDedupMock.mockResolvedValue(null);
     trackedPushMock.mockReset();
     trackedPushMock.mockResolvedValue({
       notificationId: 1,
@@ -362,9 +391,13 @@ describe("confirmation due-based discovery — MySQL", () => {
     await db.delete(professionals).where(inArray(professionals.id, proIds));
     await db
       .delete(scheduleContexts)
-      .where(inArray(scheduleContexts.id, [scheduleContextId, scheduleContextBId]));
+      .where(
+        inArray(scheduleContexts.id, [scheduleContextId, scheduleContextBId]),
+      );
     await db.delete(sectors).where(inArray(sectors.id, [sectorId, sectorBId]));
-    await db.delete(hospitals).where(inArray(hospitals.id, [hospitalId, hospitalBId]));
+    await db
+      .delete(hospitals)
+      .where(inArray(hospitals.id, [hospitalId, hospitalBId]));
     await db
       .delete(institutions)
       .where(inArray(institutions.id, [institutionId, institutionBId]));
@@ -382,6 +415,132 @@ describe("confirmation due-based discovery — MySQL", () => {
     expect(await confirmationsFor(assignmentId)).toHaveLength(0);
     await dispatchConfirmations(new Date(`${day}T11:07:00-03:00`));
     expect(await confirmationsFor(assignmentId)).toHaveLength(1);
+  });
+
+  /**
+   * Em 11/09/2026 o cron falhou a cada minuto por dias com três médicos sem
+   * app instalado. O push de confirmação deles falhou em definitivo, o
+   * sistema escalou ao gestor e, no receipt, zerou `recheck_at` marcando
+   * `manager_notified`. A descoberta lia `PENDING + recheck_at NULL` como
+   * "arme-me" — o mesmo estado que o re-arme legítimo usa, só que aquele
+   * troca o token. Resultado: a cada minuto o escalado re-enfileirava o push
+   * com a MESMA chave do original, colidia, o tick morria e o rollback
+   * devolvia tudo ao início.
+   */
+  describe("confirmação escalada ao gestor", () => {
+    async function escalate(assignmentId: number) {
+      await db
+        .update(dutyConfirmations)
+        .set({ recheckAt: null, notifiedAt: null, managerNotified: true })
+        .where(eq(dutyConfirmations.assignmentId, assignmentId));
+    }
+
+    it("não volta a ser due nem reenfileira push", async () => {
+      const { assignmentId } = await occupy({
+        startAt: start19,
+        endAt: end07next,
+        professionalId: titularProId,
+        createdBy: titularUserId,
+      });
+      await dispatchConfirmations(new Date(`${day}T17:07:00-03:00`));
+      expect(await confirmationsFor(assignmentId)).toHaveLength(1);
+      const enqueuedBefore = queuedPushMock.mock.calls.length;
+
+      await escalate(assignmentId);
+      await expect(
+        dispatchConfirmations(new Date(`${day}T17:08:00-03:00`)),
+      ).resolves.toBeUndefined();
+
+      // Continua uma confirmação só, sem push novo, e ninguém mexeu nela.
+      expect(await confirmationsFor(assignmentId)).toHaveLength(1);
+      expect(queuedPushMock.mock.calls.length).toBe(enqueuedBefore);
+      const [row] = await db
+        .select({
+          recheckAt: dutyConfirmations.recheckAt,
+          managerNotified: dutyConfirmations.managerNotified,
+        })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.assignmentId, assignmentId));
+      expect(row.recheckAt).toBeNull();
+      expect(row.managerNotified).toBe(true);
+    });
+
+    /**
+     * Mesmo sem a marca de escalação, um push deste ciclo que já existe
+     * (enviado ou falho em definitivo) significa "já tentado": o re-arme é
+     * no-op, não colisão.
+     */
+    it("re-arme com push do ciclo já existente não reenfileira", async () => {
+      const { assignmentId } = await occupy({
+        startAt: start19,
+        endAt: end07next,
+        professionalId: titularProId,
+        createdBy: titularUserId,
+      });
+      await dispatchConfirmations(new Date(`${day}T17:07:00-03:00`));
+      await db
+        .update(dutyConfirmations)
+        .set({ recheckAt: null, notifiedAt: null })
+        .where(eq(dutyConfirmations.assignmentId, assignmentId));
+      findTrackedByDedupMock.mockResolvedValue({ id: 999, status: "FAILED" });
+      const enqueuedBefore = queuedPushMock.mock.calls.length;
+
+      await expect(
+        dispatchConfirmations(new Date(`${day}T17:08:00-03:00`)),
+      ).resolves.toBeUndefined();
+
+      expect(queuedPushMock.mock.calls.length).toBe(enqueuedBefore);
+      expect(findTrackedByDedupMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringMatching(
+          /^duty-confirmation:\d+:request:[0-9a-f-]{36}:\d+$/,
+        ),
+      );
+    });
+
+    /**
+     * Uma alocação envenenada não pode impedir as outras do mesmo tick de
+     * receberem sua confirmação: é o que transformava um médico sem app num
+     * subsistema parado.
+     */
+    it("colisão em uma alocação não impede as outras", async () => {
+      const a = await occupy({
+        startAt: start19,
+        endAt: end07next,
+        professionalId: titularProId,
+        createdBy: titularUserId,
+      });
+      // Mesmo plantão, segundo profissional: `uniq_shift_capacity_slot`
+      // admite uma instância por vaga, então a segunda alocação entra na
+      // mesma instância. O alvo aqui é a colisão, não a topologia.
+      const [bRow] = await db
+        .insert(shiftAssignmentsV2)
+        .values({
+          shiftInstanceId: a.shiftId,
+          institutionId,
+          hospitalId,
+          sectorId,
+          professionalId: otherProId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: titularUserId,
+        })
+        .$returningId();
+      const b = { assignmentId: bRow.id };
+      queuedPushMock.mockImplementationOnce(async () => {
+        throw new TrackedIntentCollisionErrorMock("duty-confirmation:x");
+      });
+
+      await expect(
+        dispatchConfirmations(new Date(`${day}T17:07:00-03:00`)),
+      ).resolves.toBeUndefined();
+
+      const confirmedA = await confirmationsFor(a.assignmentId);
+      const confirmedB = await confirmationsFor(b.assignmentId);
+      // Uma das duas colidiu e foi pulada; a outra recebeu a confirmação.
+      expect(confirmedA.length + confirmedB.length).toBe(1);
+    });
   });
 
   it("19:00 padrão recebe às 17:07", async () => {
@@ -589,10 +748,26 @@ describe("confirmation due-based discovery — MySQL", () => {
   it("06:30 / 07:30 usam lead 9h; 07:31 e 14:00 usam 2h", async () => {
     const morningEnd = new Date(`${day}T13:00:00-03:00`);
     const cases = [
-      { start: start0630, end: morningEnd, due: new Date(`2036-04-09T21:30:00-03:00`) },
-      { start: start0730, end: morningEnd, due: new Date(`2036-04-09T22:30:00-03:00`) },
-      { start: start0731, end: morningEnd, due: new Date(`${day}T05:31:00-03:00`) },
-      { start: start14, end: new Date(`${day}T20:00:00-03:00`), due: new Date(`${day}T12:00:00-03:00`) },
+      {
+        start: start0630,
+        end: morningEnd,
+        due: new Date(`2036-04-09T21:30:00-03:00`),
+      },
+      {
+        start: start0730,
+        end: morningEnd,
+        due: new Date(`2036-04-09T22:30:00-03:00`),
+      },
+      {
+        start: start0731,
+        end: morningEnd,
+        due: new Date(`${day}T05:31:00-03:00`),
+      },
+      {
+        start: start14,
+        end: new Date(`${day}T20:00:00-03:00`),
+        due: new Date(`${day}T12:00:00-03:00`),
+      },
     ];
     for (const item of cases) {
       await wipeShifts();

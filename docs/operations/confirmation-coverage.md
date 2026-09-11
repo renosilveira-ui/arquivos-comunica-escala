@@ -140,3 +140,33 @@ já estavam em aparelhos antes do deploy e não representam o token corrente
 serão recusados ao abrir ou responder. O usuário deve reabrir o plantão pela
 Agenda para carregar a indicação vigente. Não há migração de dados nem aceite
 automático desses links antigos.
+
+
+## Estado "escalado ao gestor" não é "due"
+
+`recheck_at` NULL em confirmação `PENDING` tem **dois** significados, e só um
+é "arme-me":
+
+| Origem | `recheck_at` | `confirmation_token` | `manager_notified` | Descoberta |
+|---|---|---|---|---|
+| Re-arme por mudança de horário (`confirmation-lifecycle`) | NULL | **novo** | false | volta a ser due; push novo, chave nova |
+| Receipt da escalação ao gestor (`push-delivery`) | NULL | **o mesmo** | **true** | **não** é due; espera humano ou início do plantão |
+
+Em 11/09/2026 a descoberta não distinguia os dois. Três médicos sem app
+instalado tiveram o push de confirmação falho em definitivo
+(`NO_REGISTERED_TOKENS`), foram escalados, e a cada minuto o cron os
+redescobria, re-enfileirava o push com a mesma `dedupKey` do original,
+colidia, e o tick morria antes das outras alocações — por dias.
+
+Três travas, independentes:
+
+1. a descoberta exclui `manager_notified = true`;
+2. o re-arme consulta se o push deste ciclo já existe e, se existir, é no-op
+   (`confirmation_rearm_skipped`);
+3. colisão de intenção (`TrackedIntentCollisionError`) pula a alocação com log
+   (`confirmation_intent_collision`) em vez de derrubar o tick.
+
+Isso **vai acontecer de novo** para todo médico sem o app instalado: o push
+falha, escala ao gestor, e a confirmação fica parada em `PENDING` até alguém
+agir. É o comportamento desenhado — a diferença é que agora ele não custa o
+subsistema inteiro.

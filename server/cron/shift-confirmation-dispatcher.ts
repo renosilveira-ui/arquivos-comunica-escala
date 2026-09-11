@@ -55,6 +55,8 @@ import {
   enqueueTrackedPushNotification,
   processPendingPushDeliveries,
   sendTrackedPushNotification,
+  TrackedIntentCollisionError,
+  findTrackedNotificationByDedupKey as findTrackedNotificationByDedupKeyRaw,
 } from "../push-delivery";
 import { processPendingDutySyncs } from "../sso/duty-sync";
 import { resolveTrustedSsoTargetUrl } from "../sso/url-policy";
@@ -299,6 +301,21 @@ export async function processShiftStartPushes(now: Date) {
 
 // ── Dispatch confirmations due now ─────────────────────────────────────────
 
+/**
+ * Procura o push de confirmação deste ciclo pela chave que o próprio envio
+ * monta. A chave inclui o token: token novo (re-arme por mudança de horário)
+ * nunca colide; token igual (escalação) sempre colide.
+ */
+async function findTrackedNotificationByDedupKey(
+  db: Parameters<typeof findTrackedNotificationByDedupKeyRaw>[0],
+  input: { confirmationId: number; confirmationToken: string; userId: number },
+) {
+  return findTrackedNotificationByDedupKeyRaw(
+    db,
+    `duty-confirmation:${input.confirmationId}:request:${input.confirmationToken}:${input.userId}`,
+  );
+}
+
 export async function dispatchConfirmations(now: Date) {
   const db = await getDb();
   if (!db) return;
@@ -393,6 +410,14 @@ export async function dispatchConfirmations(now: Date) {
           and(
             eq(dutyConfirmations.status, "PENDING"),
             isNull(dutyConfirmations.recheckAt),
+            // `recheck_at` NULL tem dois significados e só um é "arme-me":
+            // o re-arme legítimo (plantão mudou de hora) zera o recheck E
+            // troca o token; a escalação ao gestor zera o recheck e marca
+            // `manager_notified`, mantendo o token. Sem esta linha, o
+            // escalado era redescoberto a cada minuto e re-enfileirava o
+            // push com a MESMA chave do push original que falhou — colisão,
+            // rollback, e o tick morria antes das outras alocações.
+            eq(dutyConfirmations.managerNotified, false),
           ),
         ),
         plantonistaAccessCoversShiftSql(
@@ -530,6 +555,26 @@ export async function dispatchConfirmations(now: Date) {
               message: "Ciclo de confirmação inválido",
             });
           }
+          // Mesmo token ⇒ mesma dedupKey do push original. Se esse push já
+          // existe (enviado, ou falhou em definitivo), o ciclo já foi
+          // tentado: reenfileirar colidiria com ele. Não é erro — é
+          // "nada a fazer", e a decisão fica com a rechecagem/escalação.
+          const priorRequest = await findTrackedNotificationByDedupKey(tx, {
+            confirmationId: rearmed.id,
+            confirmationToken: rearmed.confirmationToken,
+            userId: assignment.userId,
+          });
+          if (priorRequest) {
+            logger.info(
+              {
+                event: "confirmation_rearm_skipped",
+                confirmationId: rearmed.id,
+                priorNotificationStatus: priorRequest.status,
+              },
+              "[ConfirmationCron] rearm skipped: request push already attempted",
+            );
+            return null;
+          }
           const [claimedRearm] = await tx
             .update(dutyConfirmations)
             .set({ recheckAt, notifiedAt: null })
@@ -602,6 +647,19 @@ export async function dispatchConfirmations(now: Date) {
       if (error instanceof TRPCError && error.code === "FORBIDDEN") {
         console.log(
           `[ConfirmationCron] Assignment ${assignment.assignmentId} ignorada: escala ainda não publicada`,
+        );
+        continue;
+      }
+      // Colisão de intenção é "este ciclo já foi tentado", não falha de
+      // banco. Uma alocação nesse estado não pode impedir as outras do mesmo
+      // tick de receberem sua confirmação.
+      if (error instanceof TrackedIntentCollisionError) {
+        logger.warn(
+          {
+            event: "confirmation_intent_collision",
+            assignmentId: assignment.assignmentId,
+          },
+          "[ConfirmationCron] assignment skipped: tracked intent collision",
         );
         continue;
       }
