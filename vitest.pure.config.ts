@@ -207,6 +207,8 @@ export default defineConfig({
       "tests/departure-planning.test.ts",
       "tests/departure-migration.test.ts",
       "tests/location-weather-providers.test.ts",
+      "tests/confirmation-cron-step-isolation.test.ts",
+      "tests/migration-engine-guard.test.ts",
       "tests/weather-greeting.test.ts",
     ],
     env: {
