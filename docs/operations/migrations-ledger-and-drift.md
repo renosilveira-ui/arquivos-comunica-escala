@@ -70,7 +70,11 @@ tem teste puro na CI; a execução contra o banco real é do operador.
 
 ## MySQL: versão
 
-Banco real em **8.0.45** (DigitalOcean controla o patch). A CI usa a mesma
-versão para as provas de migração. Quando o DO subir a versão, subir o pino
-junto — e rodar `pnpm schema:drift` depois, porque a serialização de
-`CHECK_CLAUSE` no catálogo pode mudar entre patches.
+Banco real em **8.0.45** (DigitalOcean controla o patch; há atualização
+obrigatória marcada para 14/09/2026). A CI roda **8.0.46** porque três provas
+de migração (auth-recovery, hash v2 e fence dos convites) exigem
+explicitamente a serialização de catálogo comprovada nessa versão — pinar a
+CI em 8.0.45 as faz falhar. Regra: o pino da CI e a versão exigida por essas
+provas mudam JUNTOS, quando o banco real mudar; depois, rodar
+`pnpm schema:drift`, porque a serialização de `CHECK_CLAUSE` pode variar
+entre patches.
