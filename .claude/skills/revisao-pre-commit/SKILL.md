@@ -48,6 +48,7 @@ precisa de verificação visual relatada no PR.
 - [ ] Mutações com mais de um write → `db.transaction`; transições de estado com guarda (`WHERE status = ?` + `affectedRows`) e erro `CONFLICT` em português.
 - [ ] `insertId` do próprio INSERT — nunca `SELECT LAST_INSERT_ID()` em outra chamada.
 - [ ] Mudança em `drizzle/schema.ts` → arquivo em `drizzle/migrations/manual/YYYY-MM-DD-*.sql` **e** aviso destacado no PR: "aplicar no staging ANTES do merge" (o deploy não roda migração; o incidente de 22/08 derrubou o login por isso).
+- [ ] Migração aplicada no ambiente → `pnpm schema:drift` contra ele (só leitura) sem diferença inesperada; o executor registra a aplicação em `manual_migration_ledger`. Ver docs/operations/migrations-ledger-and-drift.md.
 - [ ] Nenhum `db.execute<any>` novo; usar o query builder ou `rowsFromExecute<Row>`.
 - [ ] Erros para o usuário em português, específicos ("Esta oferta já foi respondida por outra pessoa."), nunca genéricos.
 - [ ] Endpoint novo: autorização via `server/_core/policy.ts` (`getTenantActorFromContext`, `assertCanManageInstitutionSchedule`, `assertManagerScopeAccess`) e tenant (`ctx.institutionId`) em todo `WHERE`.
