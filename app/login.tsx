@@ -11,6 +11,8 @@ import { useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Surface } from "@/components/ui/Surface";
 import { AppButton } from "@/components/ui/AppButton";
+import type { Href } from "expo-router";
+import { takeIntendedRoute } from "@/lib/post-login-redirect";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -36,7 +38,11 @@ export default function LoginScreen() {
     try {
       const result = await login(email.trim(), password.trim());
       if (result.ok || result.admissionPending) {
-        router.replace("/(tabs)");
+        // Rota calculada em runtime não tem como satisfazer typedRoutes. O
+        // que a torna segura é isSafeInternalRoute, não o tipo; `Href` diz o
+        // que a string é, em vez de fingir que é uma rota específica.
+        const intended = takeIntendedRoute();
+        router.replace((intended ?? "/(tabs)") as Href);
       } else {
         setErrorMsg(result.error ?? "E-mail ou senha incorretos.");
       }

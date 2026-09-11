@@ -98,6 +98,7 @@ export default defineConfig({
       "tests/trpc-batch-limit.test.ts",
       "tests/trpc-web-session-gate.test.ts",
       "tests/login-admission-bounce.test.ts",
+      "tests/post-login-redirect.test.ts",
       "tests/android-login-boot-hang.test.ts",
       "tests/canonical-session-request-deadline.test.ts",
       "tests/auth-provider-races.test.ts",
