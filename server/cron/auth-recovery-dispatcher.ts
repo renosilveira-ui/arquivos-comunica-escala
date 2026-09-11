@@ -1,3 +1,5 @@
+import { logger } from "../_core/logger";
+import { safeErrorDiagnostic } from "../_core/safe-error";
 import { processPendingAuthRecoveryEmails } from "../auth-recovery";
 
 const AUTH_RECOVERY_INTERVAL_MS = 60_000;
@@ -14,8 +16,13 @@ export async function tickAuthRecovery(now = new Date()): Promise<void> {
   tick = (async () => {
     try {
       await processPendingAuthRecoveryEmails(now);
-    } catch {
-      console.error("[AuthRecoveryCron] TICK_FAILED");
+    } catch (error) {
+      // Motivo, não só o fato: este tick roda a cada 60 s, e uma falha
+      // permanente produzia 1.440 linhas idênticas por dia, todas inúteis.
+      logger.error(
+        { event: "auth_recovery_tick_failed", ...safeErrorDiagnostic(error) },
+        "[AuthRecoveryCron] TICK_FAILED",
+      );
     } finally {
       if (activeTick === tick) activeTick = null;
     }

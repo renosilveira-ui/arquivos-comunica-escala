@@ -21,6 +21,8 @@ import {
   isNull,
   or,
 } from "drizzle-orm";
+import { logger } from "../_core/logger";
+import { safeErrorDiagnostic } from "../_core/safe-error";
 import { getDb } from "../db";
 import {
   shiftInstances,
@@ -74,6 +76,77 @@ function isDuplicateEntry(error: unknown): boolean {
 
 let running = false;
 
+/**
+ * Falhas consecutivas por etapa, para a espera crescente.
+ *
+ * Módulo-escopo de propósito: morre com o processo, como a própria fila de
+ * timers. Não é estado de negócio.
+ */
+const consecutiveFailures = new Map<string, number>();
+const skipUntilMs = new Map<string, number>();
+
+/** Teto da espera. Meia hora é o bastante para parar de machucar o banco. */
+const MAX_BACKOFF_MS = 30 * 60_000;
+
+/** Somente para teste: zera a espera entre cenários. */
+export function resetConfirmationBackoff(): void {
+  consecutiveFailures.clear();
+  skipUntilMs.clear();
+}
+
+/**
+ * Roda uma etapa isolada das demais, com espera crescente quando falha.
+ *
+ * **Isolamento.** As quatro etapas do tick são independentes: rechecagem,
+ * retentativa de push, fila do Comunica+ e aviso de início de plantão não
+ * dependem umas das outras. Encadeá-las com `await` fazia a primeira falha
+ * matar as três seguintes — o subsistema inteiro parava por causa de uma
+ * etapa, e o log dizia só "TICK_FAILED".
+ *
+ * **Espera crescente.** Uma etapa que falha de forma permanente e é repetida
+ * a cada 60 s não se conserta sozinha: só consome conexão e toma lock. Em
+ * 11/09 isso derrubou a alocação de um gestor com `ER_LOCK_DEADLOCK`. Depois
+ * de falhas seguidas, a etapa recua até meia hora.
+ *
+ * Recuar atrasa alertas clínicos — e é o certo mesmo assim: a etapa já não
+ * estava entregando nada, e insistir estava fazendo mal ao que funcionava.
+ */
+async function runStep(
+  name: string,
+  now: Date,
+  step: () => Promise<unknown>,
+): Promise<void> {
+  const skipUntil = skipUntilMs.get(name) ?? 0;
+  if (now.getTime() < skipUntil) return;
+
+  try {
+    await step();
+    if (consecutiveFailures.get(name)) {
+      logger.info(
+        { event: "confirmation_step_recovered", step: name },
+        "[ConfirmationCron] step recovered",
+      );
+    }
+    consecutiveFailures.delete(name);
+    skipUntilMs.delete(name);
+  } catch (error) {
+    const failures = (consecutiveFailures.get(name) ?? 0) + 1;
+    consecutiveFailures.set(name, failures);
+    const waitMs = Math.min(MAX_BACKOFF_MS, 60_000 * 2 ** (failures - 1));
+    skipUntilMs.set(name, now.getTime() + waitMs);
+    logger.error(
+      {
+        event: "confirmation_step_failed",
+        step: name,
+        consecutiveFailures: failures,
+        retryInSeconds: Math.round(waitMs / 1000),
+        ...safeErrorDiagnostic(error),
+      },
+      "[ConfirmationCron] step failed",
+    );
+  }
+}
+
 export async function tick(now: Date = new Date()) {
   // Ticks concorrentes (tick longo + setInterval) processavam a mesma
   // confirmação duas vezes.
@@ -82,24 +155,35 @@ export async function tick(now: Date = new Date()) {
   try {
     // 1. Discovery due-based: catch-up de assignment tardio, swap,
     // publicação tardia e restart. Idempotente (unique assignment_id).
-    await dispatchConfirmations(now);
+    await runStep("dispatchConfirmations", now, () =>
+      dispatchConfirmations(now),
+    );
 
     // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
     // depois: se o CAS perder para uma decisão humana, a autoridade de status
     // do outbox suprime o alerta obsoleto antes da rede.
-    await processRechecks(now);
+    await runStep("processRechecks", now, () => processRechecks(now));
 
-    // 3. Retenta pushes/receipts e integrações externas em paralelo. Cada
-    // worker usa lease/CAS próprio; indisponibilidade externa não pode atrasar
-    // a escalação local de confirmações.
+    // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
+    // lease/CAS próprio; indisponibilidade externa não pode atrasar a
+    // escalação local de confirmações. Isolados entre si: um provedor fora do
+    // ar não pode levar os outros dois junto.
     await Promise.all([
-      processPendingPushDeliveries(now),
-      processPendingDutySyncs(now),
-      processPendingComunicaPlusOutbox(now),
+      runStep("processPendingPushDeliveries", now, () =>
+        processPendingPushDeliveries(now),
+      ),
+      runStep("processPendingDutySyncs", now, () =>
+        processPendingDutySyncs(now),
+      ),
+      runStep("processPendingComunicaPlusOutbox", now, () =>
+        processPendingComunicaPlusOutbox(now),
+      ),
     ]);
 
     // 4. Push de início de plantão (confirmados cujo plantão começou agora)
-    await processShiftStartPushes(now);
+    await runStep("processShiftStartPushes", now, () =>
+      processShiftStartPushes(now),
+    );
   } finally {
     running = false;
   }
@@ -897,14 +981,30 @@ export async function notifyManagersConfirmationEscalation(
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Registra POR QUE o tick falhou, não só que falhou.
+ *
+ * A versão anterior escrevia apenas "TICK_FAILED". Como este cron roda a cada
+ * 60 segundos, uma falha permanente produzia 1.440 linhas por dia, todas
+ * idênticas e todas inúteis: dava para ver que estava quebrado havia semanas
+ * e era impossível saber do quê. O diagnóstico é sanitizado — categoria e
+ * código do driver, nunca mensagem crua nem dado de escala.
+ */
+function logTickFailure(error: unknown): void {
+  logger.error(
+    { event: "confirmation_tick_failed", ...safeErrorDiagnostic(error) },
+    "[ConfirmationCron] TICK_FAILED",
+  );
+}
+
 export function startConfirmationCron() {
   if (intervalId) return;
   console.log("[ConfirmationCron] Started (checks every 60s)");
   // Run immediately on start
-  tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
+  tick().catch(logTickFailure);
   // Then every 60 seconds
   intervalId = setInterval(() => {
-    tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
+    tick().catch(logTickFailure);
   }, 60_000);
 }
 
