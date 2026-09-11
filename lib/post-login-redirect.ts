@@ -37,20 +37,28 @@ export function isSafeInternalRoute(href: string): boolean {
   return !AUTH_ROUTES.has(path);
 }
 
-/** Recompõe "caminho?query" a partir do que o router expõe. */
+/**
+ * Recompõe "caminho?query" a partir do que o router expõe.
+ *
+ * Montado à mão de propósito: o `URLSearchParams` do React Native é uma
+ * implementação parcial e o `toString()` já lançou "not implemented" em
+ * versões passadas. Não vale apostar a navegação pós-login nisso quando
+ * `encodeURIComponent` resolve e existe em todo runtime.
+ */
 export function buildHref(
   pathname: string,
   params: Record<string, string | string[] | undefined> = {},
 ): string {
-  const query = new URLSearchParams();
+  const pairs: string[] = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
     for (const item of Array.isArray(value) ? value : [value]) {
-      if (typeof item === "string" && item.length > 0) query.append(key, item);
+      if (typeof item === "string" && item.length > 0) {
+        pairs.push(`${encodeURIComponent(key)}=${encodeURIComponent(item)}`);
+      }
     }
   }
-  const suffix = query.toString();
-  return suffix ? `${pathname}?${suffix}` : pathname;
+  return pairs.length > 0 ? `${pathname}?${pairs.join("&")}` : pathname;
 }
 
 let intendedRoute: string | null = null;

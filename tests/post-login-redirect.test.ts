@@ -49,6 +49,8 @@ describe("post-login-redirect", () => {
     expect(buildHref("/agenda", {})).toBe("/agenda");
     expect(buildHref("/x", { a: undefined, b: "", c: "1" })).toBe("/x?c=1");
     expect(buildHref("/x", { tag: ["a", "b"] })).toBe("/x?tag=a&tag=b");
+    // Sem URLSearchParams: a codificação tem que ser nossa e correta.
+    expect(buildHref("/x", { q: "a b&c=d" })).toBe("/x?q=a%20b%26c%3Dd");
   });
 
   it("um login, um salto: o destino é consumido e some", () => {
