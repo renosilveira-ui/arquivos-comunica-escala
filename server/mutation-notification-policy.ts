@@ -148,6 +148,42 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  /**
+   * Vincular, desvincular e sincronizar o Google Agenda são atos da PRÓPRIA
+   * conta sobre uma integração dela. Ninguém mais precisa saber, e notificar
+   * o gestor sobre o calendário pessoal do médico seria vazar hábito privado
+   * sob aparência de transparência operacional.
+   *
+   * O resultado já chega ao usuário de forma síncrona, na tela que ele está
+   * olhando — um push seria redundante com o que ele acabou de fazer.
+   */
+  "googleCalendar.disconnect": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário desvincula a conta do Google",
+        audience: [],
+      },
+    ],
+  },
+  "googleCalendar.startLink": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário inicia a autorização do Google",
+        audience: [],
+      },
+    ],
+  },
+  "googleCalendar.syncNow": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário pede sincronização manual",
+        audience: [],
+      },
+    ],
+  },
   "personalCalendar.createItem": {
     targets: [
       {
@@ -171,6 +207,55 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       {
         policy: "SILENT_AUDITED",
         when: "quando o próprio usuário altera um item privado da Agenda pessoal",
+        audience: [],
+      },
+    ],
+  },
+  /**
+   * Preferências e origem do aviso de saída são atos da PRÓPRIA conta sobre
+   * um recurso privado. Notificar alguém sobre a rotina de deslocamento do
+   * médico seria expor hábito pessoal sob aparência de transparência.
+   *
+   * O efeito já aparece na tela que ele está olhando; um push repetiria o que
+   * ele acabou de fazer.
+   */
+  "departure.deleteTravelOrigin": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário apaga uma origem de deslocamento",
+        audience: [],
+      },
+    ],
+  },
+  "departure.savePreferences": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário liga, desliga ou ajusta o aviso de saída",
+        audience: [],
+      },
+    ],
+  },
+  "departure.saveTravelOrigin": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário grava a origem de deslocamento",
+        audience: [],
+      },
+    ],
+  },
+  /**
+   * Localização do hospital é configuração institucional de topologia, no
+   * mesmo nível de criar hospital: registra-se em auditoria e não gera push.
+   * Ninguém precisa ser interrompido porque o gestor ajustou uma coordenada.
+   */
+  "departure.saveHospitalLocation": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o gestor define a localização de um hospital da instituição ativa",
         audience: [],
       },
     ],

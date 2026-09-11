@@ -705,6 +705,16 @@ export const institutions = mysqlTable("institutions", {
   legalName: varchar("legal_name", { length: 255 }),
   tradeName: varchar("trade_name", { length: 255 }),
   isActive: boolean("is_active").notNull().default(true),
+  /**
+   * Fuso IANA da instituição. NOT NULL com default: uma instituição criada
+   * amanhã nasce com fuso válido sem ninguém configurar nada, e o domínio
+   * temporal legado (`server/local-time.ts`, offset fixo -03:00) continua
+   * coincidindo enquanto o valor for `America/Sao_Paulo`.
+   * Resolução e validação: `server/institution-time-zone.ts`.
+   */
+  timeZone: varchar("time_zone", { length: 64 })
+    .notNull()
+    .default("America/Sao_Paulo"),
   metadata: json("metadata"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
@@ -904,6 +914,24 @@ export const hospitals = mysqlTable(
       .references(() => institutions.id),
     name: varchar("name", { length: 255 }).notNull(),
     address: text("address"),
+    /**
+     * Destino canônico do deslocamento e fuso efetivo do hospital.
+     *
+     * Dado institucional, não pessoal: quem configura é o gestor do próprio
+     * tenant, e ele é legível por quem já enxerga o hospital. `time_zone`
+     * nulo herda o da instituição — um hospital novo não precisa de
+     * configuração para funcionar.
+     *
+     * Precisão cheia em lat/long é deliberada aqui (endereço institucional);
+     * a coordenada residencial do usuário mora em `user_travel_origins`, é
+     * selada e sai arredondada.
+     */
+    timeZone: varchar("time_zone", { length: 64 }),
+    googlePlaceId: varchar("google_place_id", { length: 255 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    locationUpdatedAt: timestamp("location_updated_at"),
+    locationUpdatedByUserId: int("location_updated_by_user_id"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -911,6 +939,11 @@ export const hospitals = mysqlTable(
       table.institutionId,
       table.id,
     ),
+    fkHospitalLocationUpdatedBy: foreignKey({
+      columns: [table.locationUpdatedByUserId],
+      foreignColumns: [users.id],
+      name: "fk_hospitals_location_updated_by",
+    }).onDelete("set null"),
     uniqHospitalTopologyId: unique("uniq_hospitals_topology_id").on(
       table.institutionId,
       table.id,
@@ -3362,6 +3395,466 @@ export const ssoLaunchCodes = mysqlTable(
   },
   (table) => ({
     idxSsoLaunchExpires: index("idx_sso_launch_expires").on(table.expiresAt),
+  }),
+);
+
+/**
+ * Vínculo da CONTA com um provedor externo (Google Agenda na PR 3).
+ *
+ * Account-wide por natureza: a agenda de compromissos e o Google do médico
+ * o acompanham entre todas as instituições dele. Não existe `institution_id`
+ * aqui, e nenhum papel institucional autoriza ler esta linha — a autoridade
+ * é `users.id` da sessão, e só.
+ *
+ * O refresh token nunca é gravado em claro. `sealed_refresh_token` guarda o
+ * envelope AES-GCM de `server/external-credentials-crypto.ts`, autenticado
+ * com `user_id` + `provider`: um envelope copiado para a linha de outro
+ * usuário não abre. `encryption_kid` registra qual chave selou, para a
+ * rotação varrer sem tentar e errar.
+ *
+ * O access token não tem coluna. Ele é de curta duração e é derivado do
+ * refresh quando preciso; persistir seria ampliar a janela de vazamento sem
+ * ganho nenhum.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-10-external-integrations-foundation.sql
+ */
+export const userExternalCredentials = mysqlTable(
+  "user_external_credentials",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    linkState: mysqlEnum("link_state", [
+      "CONNECTED",
+      "DEGRADED",
+      "REAUTH_REQUIRED",
+      "DISCONNECTED",
+    ])
+      .notNull()
+      .default("DISCONNECTED"),
+    sealedRefreshToken: text("sealed_refresh_token"),
+    /** Rótulo da conta externa, selado: identifica sem expor e-mail em claro. */
+    sealedAccountLabel: text("sealed_account_label"),
+    encryptionKid: varchar("encryption_kid", { length: 32 }),
+    grantedScopes: text("granted_scopes"),
+    /** Calendário dedicado "Escala+" na conta do usuário. */
+    externalCalendarId: varchar("external_calendar_id", { length: 255 }),
+    /** Cursor de sync incremental; 410 do provedor zera para resync completo. */
+    syncCursor: varchar("sync_cursor", { length: 512 }),
+    lastSyncedAt: timestamp("last_synced_at"),
+    /** Classificação grosseira da última falha. Nunca corpo nem URL. */
+    lastFailureReason: varchar("last_failure_reason", { length: 32 }),
+    consecutiveFailureCount: int("consecutive_failure_count")
+      .notNull()
+      .default(0),
+    /** CAS: toda transição de estado confere a versão esperada. */
+    version: int("version").notNull().default(1),
+    connectedAt: timestamp("connected_at"),
+    disconnectedAt: timestamp("disconnected_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqUserExternalCredentialProvider: unique(
+      "uniq_user_external_credential_provider",
+    ).on(table.userId, table.provider),
+    idxUserExternalCredentialSweep: index(
+      "idx_user_external_credential_sweep",
+    ).on(table.linkState, table.lastSyncedAt),
+    idxUserExternalCredentialKid: index("idx_user_external_credential_kid").on(
+      table.encryptionKid,
+    ),
+    fkUserExternalCredentialUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_user_external_credential_user",
+    }).onDelete("cascade"),
+    /**
+     * Espelham a migration manual. Precisam existir aqui também: a CI monta o
+     * banco com `drizzle-kit push` a partir deste arquivo, e o staging com a
+     * migration — declarar em um só lugar faria os dois ambientes divergirem
+     * justamente nas invariantes de segurança.
+     */
+    chkUserExternalCredentialKid: check(
+      "chk_user_external_credential_kid",
+      sql`(
+        (${table.sealedRefreshToken} IS NULL AND ${table.sealedAccountLabel} IS NULL)
+        OR ${table.encryptionKid} IS NOT NULL
+      )`,
+    ),
+    chkUserExternalCredentialState: check(
+      "chk_user_external_credential_state",
+      sql`(
+        ${table.linkState} = 'DISCONNECTED'
+        OR ${table.sealedRefreshToken} IS NOT NULL
+      )`,
+    ),
+    chkUserExternalCredentialFailures: check(
+      "chk_user_external_credential_failures",
+      sql`${table.consecutiveFailureCount} >= 0`,
+    ),
+    chkUserExternalCredentialVersion: check(
+      "chk_user_external_credential_version",
+      sql`${table.version} >= 1`,
+    ),
+  }),
+);
+
+/**
+ * Origem de deslocamento do usuário ("Casa", "Plantão anterior"…).
+ *
+ * Endereço residencial é o dado mais sensível que este sistema chega a
+ * guardar. Por isso: opcional, com consentimento explícito e datado, selado
+ * em repouso, sem cópia em claro de coordenada, e apagado junto com a conta
+ * (`ON DELETE CASCADE`). Nenhuma tela de escala exige origem configurada —
+ * agenda e plantão funcionam sem isto.
+ *
+ * `default_slot` é coluna gerada: garante uma única origem padrão por conta
+ * no próprio banco, em vez de confiar no writer.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-10-external-integrations-foundation.sql
+ */
+export const userTravelOrigins = mysqlTable(
+  "user_travel_origins",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    label: varchar("label", { length: 60 }).notNull(),
+    /** Envelope AES-GCM com placeId, endereço formatado e coordenada. */
+    sealedLocation: text("sealed_location").notNull(),
+    encryptionKid: varchar("encryption_kid", { length: 32 }).notNull(),
+    /** Consentimento LGPD: sem instante registrado, não há origem gravada. */
+    consentGrantedAt: timestamp("consent_granted_at").notNull(),
+    consentVersion: varchar("consent_version", { length: 32 }).notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    defaultSlot: tinyint("default_slot").generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`IF(\`is_default\` = 1, 1, NULL)`,
+      { mode: "stored" },
+    ),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqUserTravelOriginLabel: unique("uniq_user_travel_origin_label").on(
+      table.userId,
+      table.label,
+    ),
+    uniqUserTravelOriginDefault: unique("uniq_user_travel_origin_default").on(
+      table.userId,
+      table.defaultSlot,
+    ),
+    idxUserTravelOriginKid: index("idx_user_travel_origin_kid").on(
+      table.encryptionKid,
+    ),
+    fkUserTravelOriginUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_user_travel_origin_user",
+    }).onDelete("cascade"),
+    chkUserTravelOriginLabel: check(
+      "chk_user_travel_origin_label",
+      sql`CHAR_LENGTH(TRIM(${table.label})) > 0`,
+    ),
+    chkUserTravelOriginVersion: check(
+      "chk_user_travel_origin_version",
+      sql`${table.version} >= 1`,
+    ),
+  }),
+);
+
+/**
+ * Estado de uma autorização OAuth em andamento (Google Agenda).
+ *
+ * Existe porque o fluxo atravessa o navegador do usuário e volta: entre o
+ * "Conectar" e o callback, o servidor precisa lembrar quem pediu, com qual
+ * `code_verifier` do PKCE, e recusar qualquer callback que não corresponda.
+ *
+ * Três propriedades que o banco garante:
+ *
+ * - `state` é ÚNICO e de uso único. O hash entra em `UNIQUE`, e o consumo é
+ *   um UPDATE condicional: dois callbacks com o mesmo state, só o primeiro
+ *   vale. É o que impede replay e CSRF de autorização.
+ * - o `code_verifier` nunca é gravado em claro — sem ele, quem lesse a
+ *   tabela poderia completar a troca de código no lugar do usuário.
+ * - `expires_at` é curto. Um state esquecido não vira porta aberta.
+ *
+ * Account-wide: não existe `institution_id` aqui. Vincular o Google é ato da
+ * conta, não do tenant ativo.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-google-calendar-link.sql
+ */
+export const googleOauthStates = mysqlTable(
+  "google_oauth_states",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    stateHash: char("state_hash", { length: 64 }).notNull(),
+    sealedCodeVerifier: text("sealed_code_verifier").notNull(),
+    encryptionKid: varchar("encryption_kid", { length: 32 }).notNull(),
+    /** Destino pós-callback, sempre de uma allowlist. Nunca URL do cliente. */
+    returnTarget: varchar("return_target", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqGoogleOauthState: unique("uniq_google_oauth_state").on(table.stateHash),
+    idxGoogleOauthStateSweep: index("idx_google_oauth_state_sweep").on(
+      table.expiresAt,
+    ),
+    idxGoogleOauthStateUser: index("idx_google_oauth_state_user").on(
+      table.userId,
+      table.consumedAt,
+    ),
+    fkGoogleOauthStateUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_google_oauth_state_user",
+    }).onDelete("cascade"),
+    /**
+     * Espelha a migration. Sem declarar aqui, a CI (que monta o banco pelo
+     * schema) ficaria sem a trava que impede gravar uma URL arbitrária como
+     * destino de retorno — e o teste que passa na CI deixaria de provar o
+     * que roda em produção.
+     */
+    chkGoogleOauthStateTarget: check(
+      "chk_google_oauth_state_target",
+      sql`${table.returnTarget} IN ('WEB', 'MOBILE')`,
+    ),
+  }),
+);
+
+/**
+ * Espelho local de um evento que este sistema mantém no calendário externo.
+ *
+ * Sem ele não há como saber o que é NOSSO e o que é do usuário — e o
+ * consumidor de mudanças reescreveria a própria escala a cada eco do Google.
+ * Guarda também o `etag`, que é o que permite edição condicional: se o evento
+ * mudou no provedor, a escrita é recusada em vez de sobrescrever em silêncio.
+ *
+ * `source_kind` separa as duas autoridades:
+ * - `PERSONAL_ITEM`: espelho bidirecional de um compromisso da conta.
+ * - `DUTY_ASSIGNMENT`: exportação read-only de um plantão. Editar no Google
+ *   NUNCA volta para a escala.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-google-calendar-link.sql
+ */
+export const externalCalendarEventLinks = mysqlTable(
+  "external_calendar_event_links",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    externalCalendarId: varchar("external_calendar_id", {
+      length: 255,
+    }).notNull(),
+    externalEventId: varchar("external_event_id", { length: 255 }).notNull(),
+    sourceKind: mysqlEnum("source_kind", [
+      "PERSONAL_ITEM",
+      "DUTY_ASSIGNMENT",
+    ]).notNull(),
+    /** `personal_calendar_items.id` ou `shift_assignments_v2.id`. */
+    sourceId: int("source_id").notNull(),
+    /** Chave da ocorrência, para série recorrente. */
+    occurrenceKey: varchar("occurrence_key", { length: 64 }),
+    /**
+     * Sentinela para a unicidade da origem.
+     *
+     * `UNIQUE` com NULL não restringe: o MySQL considera cada NULL distinto,
+     * e plantão tem `occurrence_key` NULL — dois ciclos concorrentes criariam
+     * DOIS eventos no Google para o mesmo plantão. Colapsar NULL em string
+     * vazia faz a chave valer de verdade.
+     */
+    occurrenceSlot: varchar("occurrence_slot", {
+      length: 64,
+    }).generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`COALESCE(\`occurrence_key\`, '')`,
+      { mode: "stored" },
+    ),
+    externalEtag: varchar("external_etag", { length: 255 }),
+    /** Assinatura do conteúdo enviado; evita reescrever o que não mudou. */
+    contentFingerprint: char("content_fingerprint", { length: 64 }),
+    lastPushedAt: timestamp("last_pushed_at"),
+    deletedAt: timestamp("deleted_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqExternalCalendarEvent: unique("uniq_external_calendar_event").on(
+      table.userId,
+      table.provider,
+      table.externalCalendarId,
+      table.externalEventId,
+    ),
+    uniqExternalCalendarSource: unique("uniq_external_calendar_source").on(
+      table.userId,
+      table.provider,
+      table.sourceKind,
+      table.sourceId,
+      table.occurrenceSlot,
+    ),
+    idxExternalCalendarUserSweep: index("idx_external_calendar_user_sweep").on(
+      table.userId,
+      table.provider,
+      table.deletedAt,
+    ),
+    fkExternalCalendarEventUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_external_calendar_event_user",
+    }).onDelete("cascade"),
+  }),
+);
+
+/**
+ * Preferências de aviso de saída, por CONTA.
+ *
+ * Uma preferência só: ligado ou desligado. O sistema não pergunta ao médico
+ * quanta folga ele quer nem quanto tempo leva de casa — o objetivo é sempre
+ * estar no hospital quando o plantão começa, e o trajeto é o Google que
+ * calcula. Perguntar transferiria para ele uma conta que o sistema tem os
+ * dados para fazer.
+ *
+ * Opt-in explícito: sem linha aqui com `enabled = 1`, nenhum plano é criado.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-departure-alerts.sql
+ */
+export const userDeparturePreferences = mysqlTable(
+  "user_departure_preferences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    enabled: boolean("enabled").notNull().default(false),
+    /** Origem do deslocamento; null = usar a marcada como padrão. */
+    travelOriginId: int("travel_origin_id"),
+    travelMode: mysqlEnum("travel_mode", ["DRIVING", "WALKING", "TRANSIT"])
+      .notNull()
+      .default("DRIVING"),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqDeparturePreferenceUser: unique("uniq_departure_preference_user").on(
+      table.userId,
+    ),
+    fkDeparturePreferenceUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_departure_preference_user",
+    }).onDelete("cascade"),
+    fkDeparturePreferenceOrigin: foreignKey({
+      columns: [table.travelOriginId],
+      foreignColumns: [userTravelOrigins.id],
+      name: "fk_departure_preference_origin",
+    }).onDelete("set null"),
+  }),
+);
+
+/**
+ * Aviso de aproximação de UM plantão.
+ *
+ * É a tabela de jobs: o aviso não pode viver em `setTimeout`, que morre com o
+ * processo — e no plano free do Render o processo dorme a cada 15 minutos sem
+ * tráfego. Persistir a intenção é o que faz o aviso sobreviver ao deploy, ao
+ * spin-down e ao reinício.
+ *
+ * `notice_at` é fixo: uma hora antes do plantão. Não depende do trânsito nem
+ * de o Google responder. Um aviso que só existe quando tudo dá certo é um
+ * aviso em que não se pode confiar.
+ *
+ * As colunas de estimativa são **todas opcionais**, e essa é a decisão de
+ * desenho: sem rota, o aviso sai igual, dizendo que não sabe o trânsito. Não
+ * existe "tempo médio assumido" — um número inventado, no aparelho do médico,
+ * tem a mesma aparência de um calculado.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-departure-alerts.sql
+ */
+export const departurePlans = mysqlTable(
+  "departure_plans",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    /** Tenant do plantão. Para auditoria e limpeza, nunca para autorizar. */
+    institutionId: int("institution_id").notNull(),
+    assignmentId: int("assignment_id").notNull(),
+    shiftInstanceId: int("shift_instance_id").notNull(),
+    travelOriginId: int("travel_origin_id"),
+    status: mysqlEnum("status", ["PENDING", "SCHEDULED", "SENT", "CANCELLED"])
+      .notNull()
+      .default("PENDING"),
+    /** Uma hora antes do plantão. Fixo. */
+    noticeAt: timestamp("notice_at").notNull(),
+    /** Instante de saída derivado do trajeto. Null quando não há rota. */
+    departAt: timestamp("depart_at"),
+    estimatedDurationSeconds: int("estimated_duration_seconds"),
+    estimatedDistanceMeters: int("estimated_distance_meters"),
+    estimateQuality: mysqlEnum("estimate_quality", ["LIVE_TRAFFIC", "TYPICAL"]),
+    /** Quando o worker deve calcular a rota: pouco antes do aviso. */
+    nextRecomputeAt: timestamp("next_recompute_at"),
+    computedAt: timestamp("computed_at"),
+    sentAt: timestamp("sent_at"),
+    /** Assinatura do plantão (início+fim+setor) que originou o plano. */
+    shiftSignature: char("shift_signature", { length: 64 }),
+    /** Assinatura da origem + preferências que originaram o plano. */
+    originSignature: char("origin_signature", { length: 64 }),
+    weatherSummary: varchar("weather_summary", { length: 120 }),
+    dedupKey: binaryVarchar("dedup_key", { length: 191 }).notNull(),
+    attemptCount: int("attempt_count").notNull().default(0),
+    lastFailureReason: varchar("last_failure_reason", { length: 32 }),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqDeparturePlanDedup: unique("uniq_departure_plan_dedup").on(
+      table.dedupKey,
+    ),
+    uniqDeparturePlanAssignment: unique("uniq_departure_plan_assignment").on(
+      table.userId,
+      table.assignmentId,
+    ),
+    idxDeparturePlanDue: index("idx_departure_plan_due").on(
+      table.status,
+      table.nextRecomputeAt,
+    ),
+    idxDeparturePlanSend: index("idx_departure_plan_send").on(
+      table.status,
+      table.noticeAt,
+    ),
+    fkDeparturePlanUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_departure_plan_user",
+    }).onDelete("cascade"),
+    fkDeparturePlanInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_departure_plan_institution",
+    }),
+    fkDeparturePlanOrigin: foreignKey({
+      columns: [table.travelOriginId],
+      foreignColumns: [userTravelOrigins.id],
+      name: "fk_departure_plan_origin",
+    }).onDelete("set null"),
+    chkDeparturePlanAttempts: check(
+      "chk_departure_plan_attempts",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    chkDeparturePlanSent: check(
+      "chk_departure_plan_sent",
+      sql`(${table.status} <> 'SENT') OR (${table.sentAt} IS NOT NULL)`,
+    ),
+    /**
+     * Coerência da estimativa: horário de saída e duração andam juntos. Sem
+     * isto, um plano com `depart_at` preenchido e duração nula renderizaria
+     * "saia até" num aviso que existe por não saber o trajeto.
+     */
+    chkDeparturePlanEstimate: check(
+      "chk_departure_plan_estimate",
+      sql`(${table.departAt} IS NULL AND ${table.estimatedDurationSeconds} IS NULL) OR (${table.departAt} IS NOT NULL AND ${table.estimatedDurationSeconds} IS NOT NULL)`,
+    ),
   }),
 );
 

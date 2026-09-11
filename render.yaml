@@ -165,6 +165,49 @@ services:
       - key: HOSPITAL_ALERT_ORG_ID
         value: hsc
 
+      # ---- Integrações externas (PRs 3-6) ----
+      # Todas OPCIONAIS e desligadas por ausência de credencial: sem elas o
+      # serviço sobe normal, a Agenda pessoal funciona e a escala não muda.
+      # Preencher pela METADE é o que derruba o boot — se for configurar um
+      # provedor, configure todas as variáveis dele na mesma janela.
+      #
+      # Nada aqui é ativado por este Blueprint. Cada valor é preenchido no
+      # dashboard quando a PR correspondente for aprovada.
+      #
+      # Chave AES-GCM das credenciais externas. Dedicada: o boot recusa
+      # reuso de COOKIE_SECRET ou das chaves de AUTH_RECOVERY. Rotação:
+      # mover a atual para PREVIOUS, gerar nova CURRENT/KID, e só remover
+      # PREVIOUS após a varredura de rotação concluir.
+      - key: EXTERNAL_CREDENTIALS_ENCRYPTION_KEY
+        sync: false
+      - key: EXTERNAL_CREDENTIALS_ENCRYPTION_KID
+        sync: false
+      - key: EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KEY
+        sync: false
+      - key: EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KID
+        sync: false
+      # Google OAuth (Agenda). Em produção o redirect precisa ser https, sem
+      # localhost e sem fragmento, e estar allowlisted no Google Cloud.
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        sync: false
+      # Google Maps Platform (Places + Routes). Chave server-side, restrita
+      # por API e por IP no Google Cloud. Nunca vai para o bundle Expo.
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      # Apple WeatherKit. Chave privada ES256 assinada no servidor.
+      - key: WEATHERKIT_TEAM_ID
+        sync: false
+      - key: WEATHERKIT_SERVICE_ID
+        sync: false
+      - key: WEATHERKIT_KEY_ID
+        sync: false
+      - key: WEATHERKIT_PRIVATE_KEY
+        sync: false
+
       # ---- Feature flags ----
       - key: SHIFT_RADAR_ENABLED
         value: "false"

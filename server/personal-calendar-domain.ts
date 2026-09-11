@@ -649,12 +649,66 @@ export type PersonalCalendarOccurrenceWindow = {
   toDate: string;
 };
 
-export const personalCalendarOccurrenceWindowSchema = z
+export const MAX_PERSONAL_CALENDAR_QUERY_DAYS = MAX_QUERY_DAYS;
+
+/**
+ * Invariantes da janela de consulta, separadas da expansão.
+ *
+ * Ficavam embutidas em `generatePersonalCalendarOccurrences`, que só roda
+ * quando existe alguma série para expandir. Uma janela invertida numa conta
+ * sem compromisso passava batida; na conta com compromisso, a mesma
+ * requisição explodia. Extrair a regra permite aplicá-la na borda de
+ * entrada, onde ela vira erro de validação em vez de falha de servidor.
+ */
+export function validatePersonalCalendarWindow(
+  window: PersonalCalendarOccurrenceWindow,
+): void {
+  const fromOrdinal = dateKeyToOrdinal(window.fromDate);
+  const toOrdinal = dateKeyToOrdinal(window.toDate);
+  if (toOrdinal < fromOrdinal) {
+    throw new PersonalCalendarValidationError(
+      "INVALID_RANGE",
+      "A janela termina antes de começar.",
+    );
+  }
+  if (toOrdinal - fromOrdinal + 1 > MAX_QUERY_DAYS) {
+    throw new PersonalCalendarValidationError(
+      "QUERY_WINDOW_TOO_LARGE",
+      `A consulta pode abranger no máximo ${MAX_QUERY_DAYS} dias.`,
+    );
+  }
+}
+
+/**
+ * Forma da janela, sem a regra de negócio.
+ *
+ * Uso interno: quem já está dentro do domínio valida a forma aqui e chama
+ * `validatePersonalCalendarWindow` em seguida, para continuar falhando com
+ * `PersonalCalendarValidationError`. Se o schema de borda fosse usado aqui,
+ * uma janela inválida passaria a chegar ao chamador como `ZodError` — tipo
+ * que o mapeamento de erro do router não reconhece, e que voltaria a virar
+ * 500 pela porta lateral.
+ */
+const personalCalendarOccurrenceWindowShapeSchema = z
   .object({
     fromDate: dateKeySchema,
     toDate: dateKeySchema,
   })
   .strict();
+
+export const personalCalendarOccurrenceWindowSchema =
+  personalCalendarOccurrenceWindowShapeSchema.superRefine((window, context) => {
+    try {
+      validatePersonalCalendarWindow(window);
+    } catch (error) {
+      if (!(error instanceof PersonalCalendarValidationError)) throw error;
+      context.addIssue({
+        code: "custom",
+        message: error.message,
+        path: ["toDate"],
+      });
+    }
+  });
 
 function startDateFor(item: PersonalCalendarItemDraft): string {
   if (item.kind === "BIRTHDAY") {
@@ -1078,21 +1132,10 @@ export function generatePersonalCalendarOccurrences(
     rawItem,
     rawRecurrence,
   );
-  const window = personalCalendarOccurrenceWindowSchema.parse(rawWindow);
-  const fromOrdinal = dateKeyToOrdinal(window.fromDate);
-  const toOrdinal = dateKeyToOrdinal(window.toDate);
-  if (toOrdinal < fromOrdinal) {
-    throw new PersonalCalendarValidationError(
-      "INVALID_RANGE",
-      "A janela termina antes de começar.",
-    );
-  }
-  if (toOrdinal - fromOrdinal + 1 > MAX_QUERY_DAYS) {
-    throw new PersonalCalendarValidationError(
-      "QUERY_WINDOW_TOO_LARGE",
-      `A consulta pode abranger no máximo ${MAX_QUERY_DAYS} dias.`,
-    );
-  }
+  const window = personalCalendarOccurrenceWindowShapeSchema.parse(rawWindow);
+  // Forma pelo schema, regra pelo domínio: o chamador interno continua
+  // recebendo PersonalCalendarValidationError, não ZodError.
+  validatePersonalCalendarWindow(window);
 
   const windowStart = civilDateTimeToInstant(
     window.fromDate,

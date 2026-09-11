@@ -12,12 +12,17 @@ import { twilioWhatsAppRouter } from "../routes/twilio-whatsapp";
 import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { privacyRouter } from "../routes/privacy";
+import { googleRouter } from "../routes/google";
 import { ssoRouter } from "../sso/router";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { sessionInstanceConstraintHttpStatus } from "./trpc";
 import { setStaticCacheHeaders } from "./static-cache";
-import { assertProductionSecrets } from "./env-validation";
+import {
+  ProductionBootError,
+  assertProductionSecrets,
+  collectExternalIntegrationWarnings,
+} from "./env-validation";
 import { logger } from "./logger";
 import { safeErrorDiagnostic } from "./safe-error";
 import {
@@ -44,6 +49,10 @@ import {
   stopAuthRecoveryCron,
 } from "../cron/auth-recovery-dispatcher";
 import {
+  startDepartureCron,
+  stopDepartureCron,
+} from "../cron/departure-dispatcher";
+import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
@@ -67,6 +76,18 @@ async function startServer() {
   installAsyncRouteForwarding();
   installProcessGuards(logger);
   assertProductionSecrets();
+
+  // Integração pela metade não impede o servidor de subir — só deixa o
+  // provedor indisponível. Mas precisa aparecer no boot, nomeando a
+  // variável: silêncio aqui é o que transforma uma configuração esquecida em
+  // "por que o médico não recebe o aviso?" duas semanas depois.
+  const integrationWarnings = collectExternalIntegrationWarnings();
+  if (integrationWarnings.length > 0) {
+    logger.warn(
+      { event: "external_integration_incomplete", issues: integrationWarnings },
+      "external integrations partially configured",
+    );
+  }
 
   const app = express();
   const server = createServer(app);
@@ -174,6 +195,9 @@ async function startServer() {
     authRouter,
   );
   app.use("/api/admin", adminRouter);
+  // Callback do OAuth do Google. Público por natureza: a autoridade vem do
+  // `state` de uso único, não do cookie de sessão.
+  app.use(googleRouter);
   // Página pública da Política de Privacidade (App Store + LGPD)
   app.use(privacyRouter);
   app.use("/.well-known", ssoRouter);
@@ -256,6 +280,7 @@ async function startServer() {
     );
     startConfirmationCron();
     startAuthRecoveryCron();
+    startDepartureCron();
     startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
@@ -290,6 +315,17 @@ async function startServer() {
           "stopAuthRecoveryCron failed",
         );
       }
+      // O tick de saída pode estar no meio de um envio. Drenar antes de
+      // encerrar evita marcar um plano como SENT e morrer antes do push.
+      let departureDrain = Promise.resolve();
+      try {
+        departureDrain = stopDepartureCron();
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopDepartureCron failed",
+        );
+      }
       try {
         stopWhatsAppNlDriver();
       } catch (err) {
@@ -307,6 +343,14 @@ async function startServer() {
         );
       }
       try {
+        await departureDrain;
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopDepartureCron failed",
+        );
+      }
+      try {
         await whatsappRetentionDrain;
       } catch (err) {
         logger.error(
@@ -318,9 +362,28 @@ async function startServer() {
   });
 }
 
+/**
+ * Falha de boot precisa dizer QUAL configuração recusou.
+ *
+ * A sanitização de log existe para que credencial e query nunca vazem — e
+ * está certa. Mas ela transformava toda recusa de configuração em
+ * `errorCategory: "application"` e nada mais: o servidor morria, e quem
+ * estava de plantão às 2h da manhã não tinha como saber de quê. Foi assim
+ * que o staging ficou fora do ar por horas em 10/09 sem diagnóstico.
+ *
+ * As mensagens de `ProductionBootError` são construídas a partir de uma
+ * lista fixa de NOMES de variável e frases fixas — nenhum valor de env entra
+ * nelas (garantido por `tests/security-boot-validation.test.ts`). Logar essa
+ * lista é seguro e é a diferença entre um minuto e uma noite de investigação.
+ */
 startServer().catch((err) => {
   logger.fatal(
-    safeErrorDiagnostic(err, "application"),
+    err instanceof ProductionBootError
+      ? {
+          errorCategory: "configuration" as const,
+          configurationIssues: err.issues,
+        }
+      : safeErrorDiagnostic(err, "application"),
     "server failed to start",
   );
   process.exit(1);

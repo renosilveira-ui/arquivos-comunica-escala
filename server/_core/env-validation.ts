@@ -6,6 +6,9 @@
 // instead of booting with a forged-session vector or talking to localhost
 // services that do not exist.
 
+import { PROVIDER_CONFIGURATION_STATES } from "../../lib/integration-providers";
+import { externalProviderConfigurations } from "../integrations/providers/configuration";
+
 const PLACEHOLDER_SECRETS: Record<string, readonly string[]> = {
   COOKIE_SECRET: [
     "dev-secret-change-in-production",
@@ -34,18 +37,32 @@ const MIN_LENGTHS: Record<string, number> = {
   COOKIE_SECRET: 32,
   AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 32,
   AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 32,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_KEY: 32,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KEY: 32,
 };
 
 const MAX_BYTE_LENGTHS: Record<string, number> = {
   AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 1024,
   AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 1024,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_KEY: 1024,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KEY: 1024,
 };
+
+/**
+ * Segredos medidos em bytes, não em caracteres: uma chave com acento tem
+ * menos entropia do que o `length` sugere.
+ */
+const BYTE_MEASURED_PREFIXES: readonly string[] = [
+  "AUTH_RECOVERY_ENCRYPTION_",
+  "EXTERNAL_CREDENTIALS_ENCRYPTION_",
+];
 
 const NO_LOCALHOST_URLS: readonly string[] = [
   "DATABASE_URL",
   "COMUNICA_PLUS_URL",
   "HOSPITAL_ALERT_URL",
   "EXPO_PUBLIC_API_URL",
+  "GOOGLE_OAUTH_REDIRECT_URI",
 ];
 
 const LOCALHOST_PATTERN =
@@ -53,6 +70,38 @@ const LOCALHOST_PATTERN =
 
 export interface EnvValidationOptions {
   env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Configuração incompleta de integração externa é AVISO, não bloqueio.
+ *
+ * A primeira versão disto derrubava o boot quando um provedor estava pela
+ * metade. O raciocínio era "falhar cedo", mas a consequência é
+ * desproporcional: uma chave de previsão do tempo faltando derrubaria o
+ * sistema de escala inteiro de um hospital. Clima é ornamento; Google Agenda
+ * é conveniência. Nenhum dos dois vale a escala parar.
+ *
+ * A recusa continua existindo onde importa — `REQUIRED_IN_PRODUCTION` para
+ * segredo de sessão e banco. Para o resto, o provedor fica indisponível, a
+ * tela diz isso ao usuário, e o boot registra um aviso nomeando a variável.
+ *
+ * Contexto: em 10/09 o staging ficou 3h16 fora do ar por duas variáveis
+ * ausentes. Ampliar o conjunto de coisas capazes de impedir o boot teria
+ * multiplicado esse risco.
+ */
+export function collectExternalIntegrationWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const issues = new Set<string>();
+  for (const report of externalProviderConfigurations(env)) {
+    if (report.state !== PROVIDER_CONFIGURATION_STATES.misconfigured) continue;
+    for (const key of report.missing) {
+      issues.add(
+        `${key} is incomplete or invalid; ${report.provider} stays unavailable`,
+      );
+    }
+  }
+  return [...issues];
 }
 
 export function collectProductionSecretIssues(
@@ -139,7 +188,9 @@ export function collectProductionSecretIssues(
 
   for (const [key, min] of Object.entries(MIN_LENGTHS)) {
     const value = (env[key] ?? "").trim();
-    const byteMeasured = key.startsWith("AUTH_RECOVERY_ENCRYPTION_");
+    const byteMeasured = BYTE_MEASURED_PREFIXES.some((prefix) =>
+      key.startsWith(prefix),
+    );
     const measuredLength = byteMeasured
       ? Buffer.byteLength(value, "utf8")
       : value.length;
