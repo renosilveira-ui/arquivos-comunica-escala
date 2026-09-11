@@ -85,7 +85,7 @@ export type DayOffer = {
   timeRange: string;
 };
 
-const WEEKDAY_HEADERS = [
+export const WEEKDAY_HEADERS = [
   "SEG",
   "TER",
   "QUA",
@@ -130,7 +130,7 @@ export const MONTH_AGENDA_LEGEND = [
   },
 ] as const;
 
-function formatSelectedDay(dateKey: string): string {
+export function formatSelectedDay(dateKey: string): string {
   const d = new Date(`${dateKey}T12:00:00`);
   const weekday = WEEKDAYS_PT[d.getDay()];
   return `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)}, ${d.getDate()} de ${MONTHS_PT[d.getMonth()]}`;
