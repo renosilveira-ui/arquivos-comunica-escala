@@ -17,6 +17,7 @@ import {
   assertCanCreateHospital,
 } from "./_core/policy";
 import { router, sessionProcedure, protectedProcedure } from "./_core/trpc";
+import { DEFAULT_TRAVEL_MODE } from "./departure-planning";
 import { getDb } from "./db";
 import {
   readDeparturePreferences,
@@ -112,9 +113,6 @@ export const departureRouter = router({
       z
         .object({
           enabled: z.boolean(),
-          travelMode: z
-            .enum(["DRIVING", "WALKING", "TRANSIT"])
-            .default("DRIVING"),
           travelOriginId: z.number().int().positive().nullable().default(null),
         })
         .strict(),
@@ -148,13 +146,13 @@ export const departureRouter = router({
         .values({
           userId: ctx.user.id,
           enabled: input.enabled,
-          travelMode: input.travelMode,
+          travelMode: DEFAULT_TRAVEL_MODE,
           travelOriginId: input.travelOriginId,
         })
         .onDuplicateKeyUpdate({
           set: {
             enabled: input.enabled,
-            travelMode: input.travelMode,
+            travelMode: DEFAULT_TRAVEL_MODE,
             travelOriginId: input.travelOriginId,
             version: sql`${userDeparturePreferences.version} + 1`,
           },

@@ -157,7 +157,6 @@ export default function DepartureAlertsScreen() {
       fromToggle.current = true;
       savePreferences.mutate({
         enabled: next,
-        travelMode: status.travelMode,
         travelOriginId: status.travelOriginId,
       });
     },
@@ -170,7 +169,6 @@ export default function DepartureAlertsScreen() {
       fromToggle.current = false;
       savePreferences.mutate({
         enabled: status.enabled,
-        travelMode: status.travelMode,
         travelOriginId: originId,
       });
     },

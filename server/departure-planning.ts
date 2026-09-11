@@ -67,9 +67,19 @@ export type DeparturePreferences = {
 };
 
 /**
+ * O único modo de deslocamento que o produto usa.
+ *
+ * Médico de plantão vai de carro. A coluna no banco aceita outros valores
+ * porque o provedor de rotas aceita, mas **nada no sistema escreve outro** —
+ * nem a tela, nem a API. Um valor diferente só poderia chegar por escrita
+ * manual no banco, e mesmo essa é normalizada na leitura.
+ */
+export const DEFAULT_TRAVEL_MODE: TravelMode = "DRIVING";
+
+/**
  * Preferências: uma só — ligado ou desligado.
  *
- * O modo de transporte fica em carro por padrão e não é perguntado. Se um dia
+ * O modo de transporte não é perguntado nem aceito do cliente. Se um dia
  * virar pergunta, que seja por evidência de que médico de plantão noturno vai
  * de metrô, não por completude de formulário.
  */
@@ -78,10 +88,9 @@ export function normalizePreferences(
 ): DeparturePreferences {
   return {
     enabled: input?.enabled === true,
-    travelMode:
-      input?.travelMode === "WALKING" || input?.travelMode === "TRANSIT"
-        ? input.travelMode
-        : "DRIVING",
+    // Ignora o que estiver gravado: carro é a regra, não um padrão que outra
+    // escrita possa ter sobrescrito.
+    travelMode: DEFAULT_TRAVEL_MODE,
   };
 }
 
