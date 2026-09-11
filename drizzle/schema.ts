@@ -1,24 +1,24 @@
 import {
-  mysqlTable,
-  int,
-  varchar,
-  text,
-  mysqlEnum,
-  timestamp,
-  datetime,
+  bigint,
   boolean,
-  time,
-  json,
-  unique,
-  index,
+  char,
+  check,
+  customType,
+  date,
+  datetime,
   decimal,
   foreignKey,
-  customType,
-  check,
+  index,
+  int,
+  json,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  time,
+  timestamp,
   tinyint,
-  bigint,
-  char,
-  date,
+  unique,
+  varchar,
 } from "drizzle-orm/mysql-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -4299,5 +4299,30 @@ export const swapRequestDismissalsRelations = relations(
       fields: [swapRequestDismissals.professionalId],
       references: [professionals.id],
     }),
+  }),
+);
+
+/**
+ * Ledger de migrações manuais aplicadas neste banco. Escrito pelo executor
+ * (`scripts/apply-manual-migration.ts`) depois de cada aplicação; criado por
+ * ele com CREATE TABLE IF NOT EXISTS. Declarado aqui para a checagem de drift
+ * (`pnpm schema:drift`) não o apontar. Ver
+ * docs/operations/migrations-ledger-and-drift.md.
+ */
+export const manualMigrationLedger = mysqlTable(
+  "manual_migration_ledger",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    fileName: varchar("file_name", { length: 160 }).notNull(),
+    contentSha256: char("content_sha256", { length: 64 }).notNull(),
+    firstAppliedAt: timestamp("first_applied_at").notNull().defaultNow(),
+    lastAppliedAt: timestamp("last_applied_at").notNull().defaultNow(),
+    applyCount: int("apply_count").notNull().default(1),
+    note: varchar("note", { length: 255 }),
+  },
+  (table) => ({
+    uniqManualMigrationLedgerFile: unique(
+      "uniq_manual_migration_ledger_file",
+    ).on(table.fileName),
   }),
 );
