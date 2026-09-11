@@ -36,6 +36,20 @@ import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 
 import { sessionAuthCookies } from "./helpers/session-cookies";
+import { persistGoogleAuthorization } from "../server/integrations/google/link-service";
+import { revokeGoogleToken } from "../server/integrations/google/oauth";
+import { GOOGLE_CALENDAR_SCOPES } from "../server/integrations/providers/calendar-provider";
+
+// A recusa do cadastro apaga o usuário de verdade (CASCADE leva a credencial
+// do Google); o token precisa ser revogado no Google, sem tocar na rede aqui.
+vi.mock("../server/integrations/google/oauth", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../server/integrations/google/oauth")>();
+  return {
+    ...actual,
+    revokeGoogleToken: vi.fn(async () => ({ ok: true as const, value: null })),
+  };
+});
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaForte123";
@@ -814,11 +828,29 @@ describe("auto-cadastro público e aprovação", () => {
       .where(eq(users.email, emailB));
     // Exercita o fallback da descrição: mesmo sem nome, o audit não pode usar e-mail bruto.
     await db.update(users).set({ name: null }).where(eq(users.id, u.id));
+    // Usuário pendente ainda tem sessão e pode vincular o Google Agenda: a
+    // recusa apaga a credencial por CASCADE e precisa revogar o token.
+    await persistGoogleAuthorization({
+      db,
+      userId: u.id,
+      grant: {
+        accessToken: "access-signup",
+        refreshToken: `refresh-signup-${STAMP}`,
+        expiresAtUtc: new Date(Date.now() + 3_600_000),
+        grantedScopes: [...GOOGLE_CALENDAR_SCOPES],
+      },
+      accountLabel: null,
+      externalCalendarId: null,
+    });
+    vi.mocked(revokeGoogleToken).mockClear();
     const rej = await request(app)
       .post(`/api/admin/pending-signups/${u.id}/reject`)
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionId));
     expect(rej.status).toBe(200);
+    expect(revokeGoogleToken).toHaveBeenCalledWith({
+      refreshToken: `refresh-signup-${STAMP}`,
+    });
     const [audit] = await db
       .select({
         description: auditTrail.description,

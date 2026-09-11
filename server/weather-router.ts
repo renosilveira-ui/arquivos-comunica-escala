@@ -130,7 +130,14 @@ async function resolveUserLocation(
     .innerJoin(hospitals, eq(hospitals.id, sectors.hospitalId))
     .innerJoin(institutions, eq(institutions.id, hospitals.institutionId))
     .where(
-      and(eq(professionals.userId, userId), gt(shiftInstances.startAt, now)),
+      and(
+        eq(professionals.userId, userId),
+        // Troca e remoção marcam a alocação como inativa em vez de apagar:
+        // sem este filtro, um plantão que o médico já não tem ganharia o
+        // `limit(1)` e a previsão sairia para o hospital errado.
+        eq(shiftAssignmentsV2.isActive, true),
+        gt(shiftInstances.startAt, now),
+      ),
     )
     .orderBy(asc(shiftInstances.startAt))
     .limit(1);
