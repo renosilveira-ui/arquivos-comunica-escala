@@ -131,6 +131,8 @@ jobs:
       - name: Validate core schema reproducibility migration
         run: pnpm test:core-schema-repro-migration
 
+      - name: Validate professional_institutions.user_role removal migration
+        run: pnpm test:pi-drop-user-role-migration
       - name: Validate audit trail action enum migration
         # Prova com ANSI_QUOTES + STRICT_ALL_TABLES sobre o enum de 29 valores
         # do banco real: rerodável, preserva linhas, recusa valor desconhecido.
