@@ -6,6 +6,9 @@
 // instead of booting with a forged-session vector or talking to localhost
 // services that do not exist.
 
+import { PROVIDER_CONFIGURATION_STATES } from "../../lib/integration-providers";
+import { externalProviderConfigurations } from "../integrations/providers/configuration";
+
 const PLACEHOLDER_SECRETS: Record<string, readonly string[]> = {
   COOKIE_SECRET: [
     "dev-secret-change-in-production",
@@ -34,18 +37,32 @@ const MIN_LENGTHS: Record<string, number> = {
   COOKIE_SECRET: 32,
   AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 32,
   AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 32,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_KEY: 32,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KEY: 32,
 };
 
 const MAX_BYTE_LENGTHS: Record<string, number> = {
   AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 1024,
   AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 1024,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_KEY: 1024,
+  EXTERNAL_CREDENTIALS_ENCRYPTION_PREVIOUS_KEY: 1024,
 };
+
+/**
+ * Segredos medidos em bytes, não em caracteres: uma chave com acento tem
+ * menos entropia do que o `length` sugere.
+ */
+const BYTE_MEASURED_PREFIXES: readonly string[] = [
+  "AUTH_RECOVERY_ENCRYPTION_",
+  "EXTERNAL_CREDENTIALS_ENCRYPTION_",
+];
 
 const NO_LOCALHOST_URLS: readonly string[] = [
   "DATABASE_URL",
   "COMUNICA_PLUS_URL",
   "HOSPITAL_ALERT_URL",
   "EXPO_PUBLIC_API_URL",
+  "GOOGLE_OAUTH_REDIRECT_URI",
 ];
 
 const LOCALHOST_PATTERN =
@@ -53,6 +70,28 @@ const LOCALHOST_PATTERN =
 
 export interface EnvValidationOptions {
   env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Integrações externas são opcionais: nenhuma delas entra em
+ * REQUIRED_IN_PRODUCTION, e um deploy sem Google ou WeatherKit sobe normal.
+ *
+ * O que bloqueia o boot é configuração *pela metade* — credencial parcial,
+ * redirect inválido, ou OAuth habilitado sem chave de criptografia para
+ * guardar o refresh token. Esses estados não falham na inicialização, falham
+ * no meio do fluxo do médico, e aí já existe usuário esperando.
+ */
+function collectExternalIntegrationIssues(env: NodeJS.ProcessEnv): string[] {
+  const issues = new Set<string>();
+  for (const report of externalProviderConfigurations(env)) {
+    if (report.state !== PROVIDER_CONFIGURATION_STATES.misconfigured) continue;
+    for (const key of report.missing) {
+      issues.add(
+        `${key} is required to use ${report.provider} but is empty, invalid or incomplete`,
+      );
+    }
+  }
+  return [...issues];
 }
 
 export function collectProductionSecretIssues(
@@ -137,9 +176,13 @@ export function collectProductionSecretIssues(
     }
   }
 
+  issues.push(...collectExternalIntegrationIssues(env));
+
   for (const [key, min] of Object.entries(MIN_LENGTHS)) {
     const value = (env[key] ?? "").trim();
-    const byteMeasured = key.startsWith("AUTH_RECOVERY_ENCRYPTION_");
+    const byteMeasured = BYTE_MEASURED_PREFIXES.some((prefix) =>
+      key.startsWith(prefix),
+    );
     const measuredLength = byteMeasured
       ? Buffer.byteLength(value, "utf8")
       : value.length;

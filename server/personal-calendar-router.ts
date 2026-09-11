@@ -159,89 +159,143 @@ async function requireDb() {
 }
 
 /**
+ * Toda violação de invariante do domínio é erro do pedido, não do servidor.
+ *
+ * O mapa é exaustivo por tipo: um código novo em
+ * `PersonalCalendarValidationError` quebra o typecheck aqui, em vez de
+ * escorregar silenciosamente para 500 em produção.
+ */
+const VALIDATION_TRPC_CODES: Record<
+  PersonalCalendarValidationError["code"],
+  "BAD_REQUEST"
+> = {
+  INVALID_DATE: "BAD_REQUEST",
+  INVALID_TIME: "BAD_REQUEST",
+  INVALID_TIME_ZONE: "BAD_REQUEST",
+  INVALID_LOCAL_TIME: "BAD_REQUEST",
+  INVALID_RANGE: "BAD_REQUEST",
+  INVALID_RECURRENCE: "BAD_REQUEST",
+  QUERY_WINDOW_TOO_LARGE: "BAD_REQUEST",
+};
+
+/**
+ * Rede de segurança de saída.
+ *
+ * A validação de entrada já recusa janela e série inválidas, mas a expansão
+ * de ocorrências também valida em runtime (fuso inexistente na transição de
+ * horário de verão, série que gera ocorrências demais). Sem esta captura,
+ * esses casos atravessam o tRPC como INTERNAL_SERVER_ERROR: o cliente vê
+ * "erro no servidor" onde deveria ler o motivo e corrigir o pedido.
+ */
+async function mappingValidationErrors<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof PersonalCalendarValidationError) {
+      throw new TRPCError({
+        code: VALIDATION_TRPC_CODES[error.code],
+        message: error.message,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+
+/**
  * Recurso privado da conta. Nenhum endpoint aceita owner, profissional ou
  * tenant do cliente; `sessionProcedure` é a única fronteira de autoridade.
  */
 export const personalCalendarRouter = router({
   getItem: sessionProcedure
     .input(z.object({ itemId: itemIdSchema }).strict())
-    .query(async ({ ctx, input }) => {
-      const db = await requireDb();
-      const item = await db.transaction(
-        (tx) => loadPersonalCalendarItem(tx, ctx.user.id, input.itemId),
-        personalCalendarReadTransactionConfig,
-      );
-      if (!item) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Compromisso não encontrado.",
-        });
-      }
-      return item;
-    }),
+    .query(async ({ ctx, input }) =>
+      mappingValidationErrors(async () => {
+        const db = await requireDb();
+        const item = await db.transaction(
+          (tx) => loadPersonalCalendarItem(tx, ctx.user.id, input.itemId),
+          personalCalendarReadTransactionConfig,
+        );
+        if (!item) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Compromisso não encontrado.",
+          });
+        }
+        return item;
+      }),
+    ),
 
   listWindow: sessionProcedure
     .input(personalCalendarOccurrenceWindowSchema)
-    .query(async ({ ctx, input }) => {
-      const db = await requireDb();
-      return db.transaction(
-        (tx) =>
-          listPersonalCalendarWindow({
-            db: tx,
-            ownerUserId: ctx.user.id,
-            window: input,
-          }),
-        personalCalendarReadTransactionConfig,
-      );
-    }),
+    .query(async ({ ctx, input }) =>
+      mappingValidationErrors(async () => {
+        const db = await requireDb();
+        return db.transaction(
+          (tx) =>
+            listPersonalCalendarWindow({
+              db: tx,
+              ownerUserId: ctx.user.id,
+              window: input,
+            }),
+          personalCalendarReadTransactionConfig,
+        );
+      }),
+    ),
 
   checkConflicts: sessionProcedure
     .input(checkConflictsInputSchema)
     // Mutation deliberadamente read-only: força POST e evita datas/horários
     // pessoais na URL, no histórico e em access logs de proxies.
-    .mutation(async ({ ctx, input }) => {
-      const db = await requireDb();
-      return db.transaction(
-        (tx) =>
-          checkPersonalCalendarDraftConflicts({
-            db: tx,
-            ownerUserId: ctx.user.id,
-            item: input.item,
-            recurrence: input.recurrence,
-            window: input.window,
-            excludeItemId: input.excludeItemId,
-          }),
-        personalCalendarReadTransactionConfig,
-      );
-    }),
+    .mutation(async ({ ctx, input }) =>
+      mappingValidationErrors(async () => {
+        const db = await requireDb();
+        return db.transaction(
+          (tx) =>
+            checkPersonalCalendarDraftConflicts({
+              db: tx,
+              ownerUserId: ctx.user.id,
+              item: input.item,
+              recurrence: input.recurrence,
+              window: input.window,
+              excludeItemId: input.excludeItemId,
+            }),
+          personalCalendarReadTransactionConfig,
+        );
+      }),
+    ),
 
   createItem: sessionProcedure
     .input(createItemInputSchema)
     .mutation(async ({ ctx, input }) =>
-      createPersonalCalendarItem({
-        db: await requireDb(),
-        ownerUserId: ctx.user.id,
-        expectedSessionVersion: ctx.user.sessionVersion,
-        clientMutationId: input.clientMutationId,
-        item: input.item,
-        recurrence: input.recurrence,
-        alertOffsets: input.alertOffsets,
-      }),
+      mappingValidationErrors(async () =>
+        createPersonalCalendarItem({
+          db: await requireDb(),
+          ownerUserId: ctx.user.id,
+          expectedSessionVersion: ctx.user.sessionVersion,
+          clientMutationId: input.clientMutationId,
+          item: input.item,
+          recurrence: input.recurrence,
+          alertOffsets: input.alertOffsets,
+        }),
+      ),
     ),
 
   updateItem: sessionProcedure
     .input(updateItemInputSchema)
     .mutation(async ({ ctx, input }) =>
-      updatePersonalCalendarItem({
-        db: await requireDb(),
-        ownerUserId: ctx.user.id,
-        expectedSessionVersion: ctx.user.sessionVersion,
-        itemId: input.itemId,
-        expectedVersion: input.expectedVersion,
-        item: input.item,
-        recurrence: input.recurrence,
-        alertOffsets: input.alertOffsets,
-      }),
+      mappingValidationErrors(async () =>
+        updatePersonalCalendarItem({
+          db: await requireDb(),
+          ownerUserId: ctx.user.id,
+          expectedSessionVersion: ctx.user.sessionVersion,
+          itemId: input.itemId,
+          expectedVersion: input.expectedVersion,
+          item: input.item,
+          recurrence: input.recurrence,
+          alertOffsets: input.alertOffsets,
+        }),
+      ),
     ),
 
   deleteItem: sessionProcedure
@@ -254,12 +308,14 @@ export const personalCalendarRouter = router({
         .strict(),
     )
     .mutation(async ({ ctx, input }) =>
-      deletePersonalCalendarItem({
-        db: await requireDb(),
-        ownerUserId: ctx.user.id,
-        expectedSessionVersion: ctx.user.sessionVersion,
-        itemId: input.itemId,
-        expectedVersion: input.expectedVersion,
-      }),
+      mappingValidationErrors(async () =>
+        deletePersonalCalendarItem({
+          db: await requireDb(),
+          ownerUserId: ctx.user.id,
+          expectedSessionVersion: ctx.user.sessionVersion,
+          itemId: input.itemId,
+          expectedVersion: input.expectedVersion,
+        }),
+      ),
     ),
 });

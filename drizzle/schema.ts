@@ -705,6 +705,16 @@ export const institutions = mysqlTable("institutions", {
   legalName: varchar("legal_name", { length: 255 }),
   tradeName: varchar("trade_name", { length: 255 }),
   isActive: boolean("is_active").notNull().default(true),
+  /**
+   * Fuso IANA da instituição. NOT NULL com default: uma instituição criada
+   * amanhã nasce com fuso válido sem ninguém configurar nada, e o domínio
+   * temporal legado (`server/local-time.ts`, offset fixo -03:00) continua
+   * coincidindo enquanto o valor for `America/Sao_Paulo`.
+   * Resolução e validação: `server/institution-time-zone.ts`.
+   */
+  timeZone: varchar("time_zone", { length: 64 })
+    .notNull()
+    .default("America/Sao_Paulo"),
   metadata: json("metadata"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
@@ -904,6 +914,24 @@ export const hospitals = mysqlTable(
       .references(() => institutions.id),
     name: varchar("name", { length: 255 }).notNull(),
     address: text("address"),
+    /**
+     * Destino canônico do deslocamento e fuso efetivo do hospital.
+     *
+     * Dado institucional, não pessoal: quem configura é o gestor do próprio
+     * tenant, e ele é legível por quem já enxerga o hospital. `time_zone`
+     * nulo herda o da instituição — um hospital novo não precisa de
+     * configuração para funcionar.
+     *
+     * Precisão cheia em lat/long é deliberada aqui (endereço institucional);
+     * a coordenada residencial do usuário mora em `user_travel_origins`, é
+     * selada e sai arredondada.
+     */
+    timeZone: varchar("time_zone", { length: 64 }),
+    googlePlaceId: varchar("google_place_id", { length: 255 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    locationUpdatedAt: timestamp("location_updated_at"),
+    locationUpdatedByUserId: int("location_updated_by_user_id"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -911,6 +939,11 @@ export const hospitals = mysqlTable(
       table.institutionId,
       table.id,
     ),
+    fkHospitalLocationUpdatedBy: foreignKey({
+      columns: [table.locationUpdatedByUserId],
+      foreignColumns: [users.id],
+      name: "fk_hospitals_location_updated_by",
+    }).onDelete("set null"),
     uniqHospitalTopologyId: unique("uniq_hospitals_topology_id").on(
       table.institutionId,
       table.id,
@@ -3362,6 +3395,171 @@ export const ssoLaunchCodes = mysqlTable(
   },
   (table) => ({
     idxSsoLaunchExpires: index("idx_sso_launch_expires").on(table.expiresAt),
+  }),
+);
+
+/**
+ * Vínculo da CONTA com um provedor externo (Google Agenda na PR 3).
+ *
+ * Account-wide por natureza: a agenda de compromissos e o Google do médico
+ * o acompanham entre todas as instituições dele. Não existe `institution_id`
+ * aqui, e nenhum papel institucional autoriza ler esta linha — a autoridade
+ * é `users.id` da sessão, e só.
+ *
+ * O refresh token nunca é gravado em claro. `sealed_refresh_token` guarda o
+ * envelope AES-GCM de `server/external-credentials-crypto.ts`, autenticado
+ * com `user_id` + `provider`: um envelope copiado para a linha de outro
+ * usuário não abre. `encryption_kid` registra qual chave selou, para a
+ * rotação varrer sem tentar e errar.
+ *
+ * O access token não tem coluna. Ele é de curta duração e é derivado do
+ * refresh quando preciso; persistir seria ampliar a janela de vazamento sem
+ * ganho nenhum.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-10-external-integrations-foundation.sql
+ */
+export const userExternalCredentials = mysqlTable(
+  "user_external_credentials",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    linkState: mysqlEnum("link_state", [
+      "CONNECTED",
+      "DEGRADED",
+      "REAUTH_REQUIRED",
+      "DISCONNECTED",
+    ])
+      .notNull()
+      .default("DISCONNECTED"),
+    sealedRefreshToken: text("sealed_refresh_token"),
+    /** Rótulo da conta externa, selado: identifica sem expor e-mail em claro. */
+    sealedAccountLabel: text("sealed_account_label"),
+    encryptionKid: varchar("encryption_kid", { length: 32 }),
+    grantedScopes: text("granted_scopes"),
+    /** Calendário dedicado "Escala+" na conta do usuário. */
+    externalCalendarId: varchar("external_calendar_id", { length: 255 }),
+    /** Cursor de sync incremental; 410 do provedor zera para resync completo. */
+    syncCursor: varchar("sync_cursor", { length: 512 }),
+    lastSyncedAt: timestamp("last_synced_at"),
+    /** Classificação grosseira da última falha. Nunca corpo nem URL. */
+    lastFailureReason: varchar("last_failure_reason", { length: 32 }),
+    consecutiveFailureCount: int("consecutive_failure_count")
+      .notNull()
+      .default(0),
+    /** CAS: toda transição de estado confere a versão esperada. */
+    version: int("version").notNull().default(1),
+    connectedAt: timestamp("connected_at"),
+    disconnectedAt: timestamp("disconnected_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqUserExternalCredentialProvider: unique(
+      "uniq_user_external_credential_provider",
+    ).on(table.userId, table.provider),
+    idxUserExternalCredentialSweep: index(
+      "idx_user_external_credential_sweep",
+    ).on(table.linkState, table.lastSyncedAt),
+    idxUserExternalCredentialKid: index("idx_user_external_credential_kid").on(
+      table.encryptionKid,
+    ),
+    fkUserExternalCredentialUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_user_external_credential_user",
+    }).onDelete("cascade"),
+    /**
+     * Espelham a migration manual. Precisam existir aqui também: a CI monta o
+     * banco com `drizzle-kit push` a partir deste arquivo, e o staging com a
+     * migration — declarar em um só lugar faria os dois ambientes divergirem
+     * justamente nas invariantes de segurança.
+     */
+    chkUserExternalCredentialKid: check(
+      "chk_user_external_credential_kid",
+      sql`(
+        (${table.sealedRefreshToken} IS NULL AND ${table.sealedAccountLabel} IS NULL)
+        OR ${table.encryptionKid} IS NOT NULL
+      )`,
+    ),
+    chkUserExternalCredentialState: check(
+      "chk_user_external_credential_state",
+      sql`(
+        ${table.linkState} = 'DISCONNECTED'
+        OR ${table.sealedRefreshToken} IS NOT NULL
+      )`,
+    ),
+    chkUserExternalCredentialFailures: check(
+      "chk_user_external_credential_failures",
+      sql`${table.consecutiveFailureCount} >= 0`,
+    ),
+    chkUserExternalCredentialVersion: check(
+      "chk_user_external_credential_version",
+      sql`${table.version} >= 1`,
+    ),
+  }),
+);
+
+/**
+ * Origem de deslocamento do usuário ("Casa", "Plantão anterior"…).
+ *
+ * Endereço residencial é o dado mais sensível que este sistema chega a
+ * guardar. Por isso: opcional, com consentimento explícito e datado, selado
+ * em repouso, sem cópia em claro de coordenada, e apagado junto com a conta
+ * (`ON DELETE CASCADE`). Nenhuma tela de escala exige origem configurada —
+ * agenda e plantão funcionam sem isto.
+ *
+ * `default_slot` é coluna gerada: garante uma única origem padrão por conta
+ * no próprio banco, em vez de confiar no writer.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-10-external-integrations-foundation.sql
+ */
+export const userTravelOrigins = mysqlTable(
+  "user_travel_origins",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    label: varchar("label", { length: 60 }).notNull(),
+    /** Envelope AES-GCM com placeId, endereço formatado e coordenada. */
+    sealedLocation: text("sealed_location").notNull(),
+    encryptionKid: varchar("encryption_kid", { length: 32 }).notNull(),
+    /** Consentimento LGPD: sem instante registrado, não há origem gravada. */
+    consentGrantedAt: timestamp("consent_granted_at").notNull(),
+    consentVersion: varchar("consent_version", { length: 32 }).notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    defaultSlot: tinyint("default_slot").generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`IF(\`is_default\` = 1, 1, NULL)`,
+      { mode: "stored" },
+    ),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqUserTravelOriginLabel: unique("uniq_user_travel_origin_label").on(
+      table.userId,
+      table.label,
+    ),
+    uniqUserTravelOriginDefault: unique("uniq_user_travel_origin_default").on(
+      table.userId,
+      table.defaultSlot,
+    ),
+    idxUserTravelOriginKid: index("idx_user_travel_origin_kid").on(
+      table.encryptionKid,
+    ),
+    fkUserTravelOriginUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_user_travel_origin_user",
+    }).onDelete("cascade"),
+    chkUserTravelOriginLabel: check(
+      "chk_user_travel_origin_label",
+      sql`CHAR_LENGTH(TRIM(${table.label})) > 0`,
+    ),
+    chkUserTravelOriginVersion: check(
+      "chk_user_travel_origin_version",
+      sql`${table.version} >= 1`,
+    ),
   }),
 );
 
