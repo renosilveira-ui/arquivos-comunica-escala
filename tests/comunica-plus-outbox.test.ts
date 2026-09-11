@@ -17,6 +17,7 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
+  COMUNICA_OUTBOX_MAX_ATTEMPTS,
   COMUNICA_PLUS_OUTBOX_TITLE,
   enqueueComunicaRosterPublished,
   enqueueComunicaSwapApproved,
@@ -573,24 +574,95 @@ describe("outbox durável Comunica+", () => {
     ]);
     let stored = await loadRow(notificationId);
     expect(stored.status).toBe("PENDING");
+    // Estacionado: a tentativa do claim é devolvida (o recado não foi tentado
+    // de verdade) e a próxima checagem espera o máximo, não um minuto.
     expect(stateOf(stored)).toMatchObject({
       phase: "QUEUED",
-      attemptCount: 1,
+      attemptCount: 0,
       lastErrorCode: "COMUNICA_OUTBOUND_DISABLED",
     });
+    expect(
+      new Date(String(stateOf(stored).availableAt)).getTime() - NOW.getTime(),
+    ).toBe(30 * 60_000);
     expect(fetchMock).not.toHaveBeenCalled();
 
-    for (let attempt = 2; attempt <= 12; attempt += 1) {
+    // Muito além do teto de tentativas reais: o recado continua vivo, porque
+    // envio desligado não é falha do recado.
+    for (let round = 1; round <= COMUNICA_OUTBOX_MAX_ATTEMPTS + 5; round += 1) {
       const dueAt = new Date(String(stateOf(stored).availableAt));
       await processPendingComunicaPlusOutbox(dueAt);
       stored = await loadRow(notificationId);
       expect(stored.status).toBe("PENDING");
       expect(stateOf(stored)).toMatchObject({
         phase: "QUEUED",
-        attemptCount: attempt,
+        attemptCount: 0,
         lastErrorCode: "COMUNICA_OUTBOUND_DISABLED",
       });
     }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falha real repetida esgota o teto e encerra o recado como FAILED, sem loop", async () => {
+    const notificationId = await enqueue();
+    const timeout = Object.assign(new Error("simulated timeout"), { name: "TimeoutError" });
+    fetchMock.mockRejectedValue(timeout);
+
+    let stored = await loadRow(notificationId);
+    let dueAt = NOW;
+    for (let attempt = 1; attempt < COMUNICA_OUTBOX_MAX_ATTEMPTS; attempt += 1) {
+      await processPendingComunicaPlusOutbox(dueAt);
+      stored = await loadRow(notificationId);
+      expect(stored.status).toBe("PENDING");
+      expect(stateOf(stored)).toMatchObject({
+        phase: "QUEUED",
+        attemptCount: attempt,
+        lastErrorCode: "COMUNICA_TIMEOUT",
+      });
+      dueAt = new Date(String(stateOf(stored).availableAt));
+    }
+
+    // A última tentativa permitida falha: terminal, com a evidência do teto.
+    await processPendingComunicaPlusOutbox(dueAt);
+    stored = await loadRow(notificationId);
+    expect(stored.status).toBe("FAILED");
+    expect(stateOf(stored)).toMatchObject({
+      phase: "FAILED",
+      attemptCount: COMUNICA_OUTBOX_MAX_ATTEMPTS,
+      evidence: { code: "COMUNICA_TIMEOUT", retryability: "EXHAUSTED" },
+    });
+
+    // E não volta para a fila.
+    const calls = fetchMock.mock.calls.length;
+    await processPendingComunicaPlusOutbox(new Date(dueAt.getTime() + 60 * 60_000));
+    expect((await loadRow(notificationId)).status).toBe("FAILED");
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it("aviso de escala de mês já encerrado é descartado, nunca entregue atrasado", async () => {
+    const notificationId = await enqueue();
+    primeSuccessfulRemote("must-not-send");
+    // Processado só depois do fim do mês da escala: o envio esteve desligado
+    // por semanas e foi ligado tarde demais para este recado.
+    await processPendingComunicaPlusOutbox(new Date("2032-06-01T12:00:00Z"));
+    const stored = await loadRow(notificationId);
+    expect(stored.status).toBe("FAILED");
+    expect(stateOf(stored)).toMatchObject({
+      phase: "SUPPRESSED",
+      evidence: { code: "ROSTER_MONTH_ENDED" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("aviso de troca cujo plantão já terminou é descartado, nunca entregue atrasado", async () => {
+    const notificationId = await enqueueSwap();
+    primeSuccessfulRemote("must-not-send");
+    await processPendingComunicaPlusOutbox(new Date("2032-03-12T18:00:00Z"));
+    const stored = await loadRow(notificationId);
+    expect(stored.status).toBe("FAILED");
+    expect(stateOf(stored)).toMatchObject({
+      phase: "SUPPRESSED",
+      evidence: { code: "SHIFT_ALREADY_ENDED" },
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
