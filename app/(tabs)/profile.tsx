@@ -39,7 +39,6 @@ import {
   AlertTriangle,
   Bell,
   Building2,
-  CalendarHeart,
   CalendarSync,
   Navigation,
   History,
@@ -602,17 +601,9 @@ export default function ProfileScreen() {
                 onPress={handleSwitchInstitution}
                 accessibilityLabel="Trocar instituição ativa"
               />
-              {/* Agenda pessoal é da CONTA, não do tenant: fica junto do
-                  que acompanha o usuário entre instituições, e fora da aba
-                  de escala para não confundir compromisso privado com
-                  autoridade institucional. */}
-              <ListRow
-                title="Minha agenda"
-                subtitle="Compromissos, lembretes e aniversários — só seus"
-                Icon={CalendarHeart}
-                onPress={go("/personal-calendar")}
-                accessibilityLabel="Abrir minha agenda de compromissos"
-              />
+              {/* "Minha agenda" saiu daqui: compromisso é conteúdo, e
+                  conteúdo de agenda se acessa na aba Agenda. Perfil guarda o
+                  que AJUSTA o sistema — vincular o Google, ligar o aviso. */}
               <ListRow
                 title="Google Agenda"
                 subtitle="Seus plantões e compromissos no calendário do Google"

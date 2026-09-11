@@ -14,6 +14,7 @@ import {
   Building2,
   ChevronDown,
   CalendarDays,
+  CalendarHeart,
   LayoutGrid,
   ListChecks,
   type LucideIcon,
@@ -22,6 +23,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
 import { WeatherGreeting } from "@/components/home/WeatherGreeting";
+import { ListRow } from "@/components/ui/ListRow";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -750,6 +752,21 @@ export default function AgendaScreen() {
               subtle
             />
           </Segmented>
+
+          {/* A agenda pessoal se acessa AQUI, não em Perfil. Perfil é onde se
+              ajusta o sistema — vincular o Google, ligar o aviso.
+              Compromisso é conteúdo, e conteúdo de agenda mora na aba Agenda.
+              Não é uma vista da escala (um dado é do tenant, o outro é
+              privado do usuário), por isso fica fora do seletor e leva
+              chevron: é outro lugar, e a tela diz isso. */}
+          <ListRow
+            title="Minha agenda"
+            subtitle="Compromissos, lembretes e aniversários — só seus"
+            Icon={CalendarHeart}
+            divided={false}
+            onPress={() => router.push("/personal-calendar")}
+            accessibilityLabel="Abrir minha agenda de compromissos"
+          />
 
           {!isDesktop && viewMode === "lista" ? (
             <View
