@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
@@ -1021,6 +1022,7 @@ export default function AdminScreen() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Modals
@@ -1041,17 +1043,21 @@ export default function AdminScreen() {
   const fetchUsers = useCallback(async () => {
     try {
       const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
-      console.log(
-        "[AdminScreen] fetchUsers response:",
-        res.ok,
-        "count:",
-        res.data?.users?.length,
-      );
       if (res.ok && res.data?.users) {
         setUsers(res.data.users);
+        setUsersError(null);
+      } else {
+        // Falha de leitura não pode virar "nenhum usuário cadastrado" — o
+        // app não sabe quantos existem. Com lista já carregada, ela
+        // permanece na tela; o erro só toma o lugar do estado vazio.
+        setUsersError(res.error ?? "Não foi possível carregar os usuários.");
       }
     } catch (err) {
-      console.error("[AdminScreen] fetchUsers error:", err);
+      setUsersError(
+        err instanceof Error
+          ? err.message
+          : "Não foi possível carregar os usuários.",
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1683,6 +1689,17 @@ export default function AdminScreen() {
           <View style={{ alignItems: "center", paddingVertical: 40 }}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
+        ) : usersError && users.length === 0 ? (
+          <TintedGlassCard>
+            <QueryErrorState
+              title="Não foi possível carregar os usuários"
+              description={usersError}
+              onRetry={() => {
+                setLoading(true);
+                void fetchUsers();
+              }}
+            />
+          </TintedGlassCard>
         ) : filtered.length === 0 ? (
           <TintedGlassCard>
             <View style={{ alignItems: "center", paddingVertical: 32 }}>
