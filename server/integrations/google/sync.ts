@@ -17,13 +17,17 @@ import {
 } from "../../../lib/integration-providers";
 import { getDb } from "../../db";
 import { listPersonalCalendarWindow } from "../../personal-calendar-service";
-import type {
-  ExternalCalendarProvider,
-  ExternalCalendarWriteRequest,
+import {
+  canCreateDedicatedCalendar,
+  type ExternalCalendarProvider,
+  type ExternalCalendarWriteRequest,
 } from "../providers/calendar-provider";
 import {
   PROVIDER_FAILURE_REASONS,
+  providerFailure,
+  providerSuccess,
   type ProviderCallResult,
+  type ProviderFailureReason,
 } from "../providers/types";
 import {
   recordGoogleOutcome,
@@ -70,10 +74,19 @@ export type SyncSummary = {
   deleted: number;
   unchanged: number;
   skipped: number;
+  /** Quantos plantões e compromissos havia para exportar na janela. */
+  considered: number;
 };
 
 function emptySummary(): SyncSummary {
-  return { created: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 };
+  return {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    unchanged: 0,
+    skipped: 0,
+    considered: 0,
+  };
 }
 
 export function fingerprintEvent(request: {
@@ -93,9 +106,9 @@ export function fingerprintEvent(request: {
         String(request.allDay),
         String(request.busy),
         request.timeZone,
-      // Separador NUL: um titulo que contenha o separador nao pode forjar
-      // o fingerprint de outro evento. Escrito como escape porque byte de
-      // controle cru no fonte faz o git tratar o arquivo como binario.
+        // Separador NUL: um titulo que contenha o separador nao pode forjar
+        // o fingerprint de outro evento. Escrito como escape porque byte de
+        // controle cru no fonte faz o git tratar o arquivo como binario.
       ].join("\u0000"),
     )
     .digest("hex");
@@ -253,7 +266,7 @@ export async function runGoogleCalendarExport(input: {
       input.provider.refreshAccessToken({ refreshToken }),
     run: async (accessToken, link) => {
       const summary = emptySummary();
-      const calendarId = await ensureCalendar({
+      const ensured = await ensureCalendar({
         accessToken,
         link,
         provider: input.provider,
@@ -261,10 +274,24 @@ export async function runGoogleCalendarExport(input: {
         db: input.db,
         userId: input.userId,
       });
-      if (!calendarId) {
-        summary.skipped += 1;
-        return summary;
+      if (!ensured.ok) {
+        // Sem calendário não há para onde exportar. A versão anterior
+        // devolvia "sucesso com zeros" aqui, e a tela traduzia como "tudo em
+        // dia" — para um calendário que nunca existiu. Falha é falha: fica
+        // registrada no vínculo e chega ao usuário com o motivo.
+        await recordGoogleOutcome({
+          db: input.db,
+          userId: input.userId,
+          outcome:
+            ensured.reason === PROVIDER_FAILURE_REASONS.authRejected
+              ? PROVIDER_OUTCOMES.authRejected
+              : PROVIDER_OUTCOMES.retryableFailure,
+          reason: ensured.reason,
+          now,
+        });
+        throw new CalendarUnavailableError(ensured.reason);
       }
+      const calendarId = ensured.value;
 
       const [duties, personal] = await Promise.all([
         collectDutyExports({
@@ -282,6 +309,7 @@ export async function runGoogleCalendarExport(input: {
         }),
       ]);
       const candidates = [...duties, ...personal];
+      summary.considered = candidates.length;
       const byKey = new Map(
         candidates.map((candidate) => [candidateKey(candidate), candidate]),
       );
@@ -428,6 +456,20 @@ export async function runGoogleCalendarExport(input: {
   });
 }
 
+/**
+ * Falha em obter o calendário dedicado, levantada dentro do `run` para que
+ * `withGoogleAccessToken` a converta em resultado — sem inventar um
+ * "sucesso" no caminho.
+ */
+export class CalendarUnavailableError extends Error {
+  readonly reason: ProviderFailureReason;
+  constructor(reason: ProviderFailureReason) {
+    super(`Calendário dedicado indisponível: ${reason}`);
+    this.name = "CalendarUnavailableError";
+    this.reason = reason;
+  }
+}
+
 async function ensureCalendar(input: {
   accessToken: string;
   link: GoogleLinkSnapshot;
@@ -435,13 +477,21 @@ async function ensureCalendar(input: {
   timeZone: string;
   db: SyncDb;
   userId: number;
-}): Promise<string | null> {
-  if (input.link.externalCalendarId) return input.link.externalCalendarId;
+}): Promise<ProviderCallResult<string>> {
+  if (input.link.externalCalendarId) {
+    return providerSuccess(input.link.externalCalendarId);
+  }
+  // Decidido antes de chamar o Google: escopo concedido é fato persistido.
+  // Um 403 do Google é ambíguo (cota ou permissão); a ausência do escopo,
+  // não — e a resposta certa é pedir reautorização, não "tentar de novo".
+  if (!canCreateDedicatedCalendar(input.link.grantedScopes)) {
+    return providerFailure(PROVIDER_FAILURE_REASONS.authRejected);
+  }
   const created = await input.provider.ensureDedicatedCalendar({
     accessToken: input.accessToken,
     timeZone: input.timeZone,
   });
-  if (!created.ok) return null;
+  if (!created.ok) return created;
   await input.db
     .update(userExternalCredentials)
     .set({ externalCalendarId: created.value.calendarId })
@@ -451,7 +501,7 @@ async function ensureCalendar(input: {
         eq(userExternalCredentials.provider, PROVIDER),
       ),
     );
-  return created.value.calendarId;
+  return providerSuccess(created.value.calendarId);
 }
 
 /**

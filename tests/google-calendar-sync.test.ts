@@ -35,6 +35,7 @@ import {
   pullGoogleCalendarChanges,
   runGoogleCalendarExport,
 } from "../server/integrations/google/sync";
+import { GOOGLE_CALENDAR_SCOPES } from "../server/integrations/providers/calendar-provider";
 import { PROVIDER_FAILURE_REASONS } from "../server/integrations/providers/types";
 import { createFakeCalendarProvider } from "./helpers/fake-calendar-provider";
 
@@ -52,7 +53,7 @@ const GRANT = {
   accessToken: "access-1",
   refreshToken: "refresh-1",
   expiresAtUtc: new Date(Date.now() + 3_600_000),
-  grantedScopes: ["https://www.googleapis.com/auth/calendar.events"],
+  grantedScopes: [...GOOGLE_CALENDAR_SCOPES],
 };
 
 /**
@@ -514,6 +515,129 @@ describe("vínculo e sincronização com o Google Agenda", () => {
       expect(active.some((e) => e.externalEventId === firstEventId)).toBe(
         false,
       );
+    });
+  });
+
+  /**
+   * Em 11/09/2026 o vínculo "deu certo" e a tela disse "Tudo já estava em
+   * dia" — para um calendário que nunca existiu. Os escopos não permitiam
+   * `calendars.insert`, a criação falhava, e a exportação devolvia sucesso
+   * com zeros sem registrar nada no vínculo.
+   */
+  describe("calendário dedicado", () => {
+    const ESCOPOS_ANTIGOS =
+      "https://www.googleapis.com/auth/calendar.calendarlist https://www.googleapis.com/auth/calendar.events";
+
+    it("vínculo antigo, sem escopo de criação, exige reautorização — sem chamar o Google", async () => {
+      await ensureLinked(ownerUserId);
+      await db
+        .update(userExternalCredentials)
+        .set({ grantedScopes: ESCOPOS_ANTIGOS, externalCalendarId: null })
+        .where(eq(userExternalCredentials.userId, ownerUserId));
+      const provider = createFakeCalendarProvider();
+
+      const result = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe(PROVIDER_FAILURE_REASONS.authRejected);
+      // Decidido pelo escopo persistido: não gastou chamada nem criou nada.
+      expect(provider.calls.ensure).toBe(0);
+      expect(provider.events.size).toBe(0);
+      const link = await readGoogleLink(db, ownerUserId);
+      expect(link?.linkState).toBe(EXTERNAL_LINK_STATES.reauthRequired);
+      expect(link?.externalCalendarId).toBeNull();
+      expect(link?.lastFailureReason).toBe(
+        PROVIDER_FAILURE_REASONS.authRejected,
+      );
+    });
+
+    it("falha do Google ao criar o calendário é falha da sincronização, registrada", async () => {
+      await ensureLinked(ownerUserId);
+      await db
+        .update(userExternalCredentials)
+        .set({ externalCalendarId: null })
+        .where(eq(userExternalCredentials.userId, ownerUserId));
+      const provider = createFakeCalendarProvider();
+      provider.failNext(
+        "ensureDedicatedCalendar",
+        PROVIDER_FAILURE_REASONS.upstreamError,
+      );
+
+      const result = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+
+      // Nunca mais "sucesso com zeros".
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe(PROVIDER_FAILURE_REASONS.upstreamError);
+      expect(provider.events.size).toBe(0);
+      const link = await readGoogleLink(db, ownerUserId);
+      expect(link?.linkState).toBe(EXTERNAL_LINK_STATES.degraded);
+      expect(link?.lastFailureReason).toBe(
+        PROVIDER_FAILURE_REASONS.upstreamError,
+      );
+      expect(link?.externalCalendarId).toBeNull();
+    });
+
+    it("depois da reautorização com o escopo certo, cria e exporta", async () => {
+      await ensureLinked(ownerUserId);
+      await resetMirror(ownerUserId);
+      const provider = createFakeCalendarProvider();
+      const result = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(provider.calls.ensure).toBe(1);
+      expect(result.value.considered).toBeGreaterThan(0);
+      expect(result.value.created).toBe(result.value.considered);
+      const link = await readGoogleLink(db, ownerUserId);
+      expect(link?.externalCalendarId).toBeTruthy();
+      expect(link?.linkState).toBe(EXTERNAL_LINK_STATES.connected);
+    });
+
+    /** Zero mudanças tem dois significados; o resumo precisa distingui-los. */
+    it("o resumo diz quantos candidatos havia, para a tela não confundir vazio com em dia", async () => {
+      await ensureLinked(ownerUserId);
+      await resetMirror(ownerUserId);
+      const provider = createFakeCalendarProvider();
+      const first = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+      const second = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.value.considered).toBe(first.value.considered);
+      expect(
+        second.value.created + second.value.updated + second.value.deleted,
+      ).toBe(0);
+      expect(second.value.unchanged).toBe(second.value.considered);
     });
   });
 

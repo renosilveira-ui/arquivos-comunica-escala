@@ -8,6 +8,7 @@ import {
   requiresUserAction,
 } from "../lib/integration-providers";
 import { router, sessionProcedure } from "./_core/trpc";
+import { canCreateDedicatedCalendar } from "./integrations/providers/calendar-provider";
 import { getDb } from "./db";
 import { googleCalendarConfiguration } from "./integrations/providers/configuration";
 import { createGoogleCalendarProvider } from "./integrations/google/calendar-client";
@@ -91,6 +92,8 @@ export const googleCalendarRouter = router({
         stateLabel:
           EXTERNAL_LINK_STATE_LABELS[EXTERNAL_LINK_STATES.disconnected],
         needsUserAction: false,
+        missingCalendarScope: false,
+        hasDedicatedCalendar: false,
         accountLabel: null,
         lastSyncedAt: null,
         consecutiveFailureCount: 0,
@@ -100,11 +103,19 @@ export const googleCalendarRouter = router({
     const db = await requireDb();
     const link = await readGoogleLink(db, ctx.user.id);
     const linkState = link?.linkState ?? EXTERNAL_LINK_STATES.disconnected;
+    // Vínculo autorizado por uma versão antiga do app não tem o escopo que
+    // cria o calendário. Não é "instável": só reautorizar resolve, e a tela
+    // precisa oferecer isso antes de o usuário descobrir pelo "tudo em dia".
+    const missingCalendarScope =
+      linkState !== EXTERNAL_LINK_STATES.disconnected &&
+      !canCreateDedicatedCalendar(link?.grantedScopes);
     return {
       available: true,
       linkState,
       stateLabel: EXTERNAL_LINK_STATE_LABELS[linkState],
-      needsUserAction: requiresUserAction(linkState),
+      needsUserAction: requiresUserAction(linkState) || missingCalendarScope,
+      missingCalendarScope,
+      hasDedicatedCalendar: Boolean(link?.externalCalendarId),
       accountLabel: link?.accountLabel ?? null,
       lastSyncedAt: link?.lastSyncedAt ?? null,
       consecutiveFailureCount: link?.consecutiveFailureCount ?? 0,
@@ -183,7 +194,7 @@ export const googleCalendarRouter = router({
           code: "PRECONDITION_FAILED",
           message:
             exported.reason === "AUTH_REJECTED"
-              ? "O Google pediu uma nova autorização. Reconecte sua conta."
+              ? "O Google precisa autorizar o calendário Escala+. Toque em Reconectar."
               : "O Google não respondeu agora. Tentaremos de novo em instantes.",
         });
       }
@@ -200,6 +211,7 @@ export const googleCalendarRouter = router({
         updated: exported.value.updated,
         deleted: exported.value.deleted,
         unchanged: exported.value.unchanged,
+        considered: exported.value.considered,
         resynced: pulled.ok ? pulled.value.resynced : false,
       };
     }),

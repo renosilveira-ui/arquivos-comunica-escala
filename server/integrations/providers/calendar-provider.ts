@@ -18,11 +18,51 @@ import type { ProviderCallResult } from "./types";
  *   conflito e nunca vira plantão.
  */
 
-/** Escopos mínimos. Pedir mais do que isto é ampliar superfície à toa. */
+/**
+ * Escopos mínimos que FUNCIONAM. Pedir mais do que isto é ampliar superfície
+ * à toa — pedir menos é o que aconteceu em 11/09/2026.
+ *
+ * `calendars.insert` (criar o calendário "Escala+") exige um destes:
+ * `calendar`, `calendar.app.created` ou `calendar.calendars`. A versão
+ * anterior pedia só `events` + `calendarlist`; a criação falhava com 403, a
+ * exportação devolvia "sucesso com zeros" e a tela dizia "tudo em dia" para
+ * um calendário que nunca existiu.
+ *
+ * `calendar.app.created` é o menor dos três: cria calendários próprios do
+ * app e gerencia só o que está neles. `calendarlist` continua necessário
+ * para reencontrar o "Escala+" já existente; `events` cobre leitura e escrita
+ * no calendário dedicado.
+ */
 export const GOOGLE_CALENDAR_SCOPES: readonly string[] = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.calendarlist",
+  "https://www.googleapis.com/auth/calendar.app.created",
 ];
+
+/** Escopos que autorizam `calendars.insert`. Qualquer um basta. */
+export const CALENDAR_CREATION_SCOPES: readonly string[] = [
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/calendar.app.created",
+  "https://www.googleapis.com/auth/calendar.calendars",
+];
+
+/**
+ * O vínculo consegue criar o calendário dedicado?
+ *
+ * Decidido pelos escopos CONCEDIDOS, não pelos pedidos: o usuário pode ter
+ * autorizado uma versão antiga do app, ou desmarcado um escopo na tela do
+ * Google. Vínculo sem escopo de criação não é "instável" — é permanente até
+ * o usuário reautorizar, e a tela precisa dizer isso.
+ */
+export function canCreateDedicatedCalendar(
+  grantedScopes: string | readonly string[] | null | undefined,
+): boolean {
+  const granted =
+    typeof grantedScopes === "string"
+      ? grantedScopes.split(/\s+/).filter(Boolean)
+      : (grantedScopes ?? []);
+  return granted.some((scope) => CALENDAR_CREATION_SCOPES.includes(scope));
+}
 
 /** Nome do calendário dedicado criado na conta do usuário. */
 export const ESCALA_CALENDAR_SUMMARY = "Escala+";

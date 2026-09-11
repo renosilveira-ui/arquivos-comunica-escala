@@ -10,6 +10,7 @@ import {
   type ProviderCallResult,
   type ProviderFailureReason,
 } from "../../server/integrations/providers/types";
+import { GOOGLE_CALENDAR_SCOPES } from "../../server/integrations/providers/calendar-provider";
 
 /**
  * Provedor de calendário falso, em memória.
@@ -33,7 +34,7 @@ export type FakeCalendarProvider = ExternalCalendarProvider & {
   expireSyncTokenOnce(): void;
   /** Próxima chamada do método indicado falha com a razão dada. */
   failNext(
-    method: "upsertEvent" | "deleteEvent",
+    method: "upsertEvent" | "deleteEvent" | "ensureDedicatedCalendar",
     reason: ProviderFailureReason,
   ): void;
   calls: { upsert: number; delete: number; list: number; ensure: number };
@@ -76,7 +77,7 @@ export function createFakeCalendarProvider(): FakeCalendarProvider {
         accessToken: "fake-access",
         refreshToken: "fake-refresh",
         expiresAtUtc: new Date(Date.now() + 3_600_000),
-        grantedScopes: ["https://www.googleapis.com/auth/calendar.events"],
+        grantedScopes: [...GOOGLE_CALENDAR_SCOPES],
       });
     },
 
@@ -85,7 +86,7 @@ export function createFakeCalendarProvider(): FakeCalendarProvider {
         accessToken: "fake-access",
         refreshToken: null,
         expiresAtUtc: new Date(Date.now() + 3_600_000),
-        grantedScopes: ["https://www.googleapis.com/auth/calendar.events"],
+        grantedScopes: [...GOOGLE_CALENDAR_SCOPES],
       });
     },
 
@@ -95,6 +96,11 @@ export function createFakeCalendarProvider(): FakeCalendarProvider {
 
     async ensureDedicatedCalendar() {
       calls.ensure += 1;
+      const failure = pendingFailures.get("ensureDedicatedCalendar");
+      if (failure) {
+        pendingFailures.delete("ensureDedicatedCalendar");
+        return providerFailure(failure);
+      }
       const existing = [...calendars.entries()].find(
         ([, summary]) => summary === ESCALA_CALENDAR_SUMMARY,
       );

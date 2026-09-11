@@ -171,3 +171,33 @@ nenhuma linha é escrita. Preencher **pela metade** derruba o boot — ver
 4. Preencher as quatro variáveis e reiniciar.
 5. Conectar com uma conta de teste e conferir que o calendário "Escala+"
    aparece com os plantões do mês.
+
+
+## Escopos — e a lição de 11/09/2026
+
+| Escopo | Para quê |
+|---|---|
+| `calendar.events` | ler e escrever eventos no calendário dedicado |
+| `calendar.calendarlist` | reencontrar o "Escala+" já existente na conta |
+| `calendar.app.created` | **criar** o "Escala+" (`calendars.insert`) — e gerenciar só o que o app criou |
+
+A versão anterior pedia só os dois primeiros. `calendars.insert` exige
+`calendar`, `calendar.app.created` ou `calendar.calendars`; a criação falhava
+com 403, `ensureCalendar` devolvia `null`, a exportação devolvia **sucesso
+com zeros** e a tela dizia "Tudo já estava em dia" — para um calendário que
+nunca existiu. Nada ficava registrado no vínculo.
+
+Três travas, independentes:
+
+1. `canCreateDedicatedCalendar(grantedScopes)` decide pelos escopos
+   **concedidos**, persistidos no vínculo. Faltando, a exportação falha com
+   `AUTH_REJECTED` → `REAUTH_REQUIRED`, e a tela oferece **Reconectar**
+   (`missingCalendarScope`). Vínculos autorizados pela versão antiga caem
+   aqui — sem migração de dados: o próprio estado do vínculo conduz.
+2. Falha em obter o calendário é **falha da sincronização**
+   (`CalendarUnavailableError` → `ProviderCallResult` `!ok`), registrada por
+   `recordGoogleOutcome`. Nunca mais "sucesso com zeros".
+3. O resumo carrega `considered` (candidatos na janela). Zero candidatos é
+   "nada para exportar ainda", não "em dia".
+
+Importação Google → Escala+ continua fora desta frente; a tela agora diz isso.
