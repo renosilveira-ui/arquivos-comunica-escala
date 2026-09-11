@@ -9,7 +9,10 @@ import {
   fromLocalISODateString,
   toLocalISODateString,
 } from "@/lib/datetime-utils";
-import { formatHospitalTime } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTime,
+} from "@/lib/hospital-time";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Briefcase, MapPin, Building2 } from "lucide-react-native";
@@ -580,7 +583,7 @@ export default function VacanciesScreen() {
   });
 
   const formatDate = (date: Date) => {
-    return new Date(date).toLocaleDateString("pt-BR", {
+    return formatHospitalDateLong(date, {
       day: "2-digit",
       month: "short",
       year: "numeric",
