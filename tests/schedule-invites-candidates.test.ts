@@ -433,6 +433,8 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         ],
       });
 
+      // Alias de compatibilidade para o app instalado (lê `sent.length`).
+      expect(result.sent).toEqual(result.accepted);
       const acceptedIds = result.accepted.map((row) => row.userId);
       const failedIds = result.failed.map((row) => row.userId);
 

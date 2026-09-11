@@ -1,6 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
-import { hospitals, institutions } from "../drizzle/schema";
+import {
+  hospitals,
+  institutions,
+  professionalInstitutions,
+} from "../drizzle/schema";
 // Somente tipo: o resolvedor é puro e não deve arrastar o pool de conexões
 // para dentro de uma suíte que não usa banco.
 import type { getDb } from "./db";
@@ -96,6 +100,34 @@ export async function readInstitutionTimeZone(
     .where(eq(institutions.id, institutionId))
     .limit(1);
   return resolveScheduleTimeZone({ institutionTimeZone: row?.timeZone });
+}
+
+/**
+ * Fuso da CONTA, para operações sem tenant ativo (worker de sincronização,
+ * callback OAuth): o da instituição principal da pessoa, ou da primeira
+ * ativa; sem vínculo, o padrão do sistema. O botão do app usa o fuso do
+ * aparelho; aqui não há aparelho.
+ */
+export async function resolveUserTimeZone(
+  db: TimeZoneReaderDb,
+  userId: number,
+): Promise<string> {
+  const [row] = await db
+    .select({ institutionId: professionalInstitutions.institutionId })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.userId, userId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .orderBy(
+      desc(professionalInstitutions.isPrimary),
+      asc(professionalInstitutions.id),
+    )
+    .limit(1);
+  if (!row) return resolveScheduleTimeZone({});
+  return readInstitutionTimeZone(db, row.institutionId);
 }
 
 /**

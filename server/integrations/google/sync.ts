@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 
 import {
   externalCalendarEventLinks,
@@ -65,6 +65,12 @@ export const SYNC_PAST_DAYS = 7;
 export const SYNC_FUTURE_DAYS = 92;
 /** Teto por ciclo. Um mês de plantões cabe folgado; protege cota e tempo. */
 export const SYNC_MAX_WRITES_PER_RUN = 200;
+/**
+ * Páginas de mudanças lidas por ciclo (250 eventos cada, no Google). O sync
+ * token só vem na última página: parar antes dela deixaria o cursor parado
+ * e os cancelamentos das páginas seguintes nunca seriam vistos.
+ */
+export const PULL_MAX_PAGES_PER_RUN = 8;
 
 type SyncDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -168,6 +174,10 @@ export async function collectDutyExports(input: {
     .where(
       and(
         eq(professionals.userId, input.userId),
+        // Troca e remoção não apagam a alocação: marcam `is_active = 0`. Sem
+        // este filtro, o plantão que o médico já não tem continuaria na
+        // agenda do Google dele.
+        eq(shiftAssignmentsV2.isActive, true),
         gte(shiftInstances.startAt, input.fromUtc),
         lte(shiftInstances.startAt, input.toUtc),
       ),
@@ -525,7 +535,14 @@ export async function pullGoogleCalendarChanges(input: {
   config: GoogleOAuthConfig;
   provider: ExternalCalendarProvider;
   now?: Date;
-}): Promise<ProviderCallResult<{ forgotten: number; resynced: boolean }>> {
+}): Promise<
+  ProviderCallResult<{
+    forgotten: number;
+    resynced: boolean;
+    /** Parou no teto de páginas sem chegar ao sync token; o cursor não avançou. */
+    truncated: boolean;
+  }>
+> {
   const now = input.now ?? new Date();
   return withGoogleAccessToken({
     db: input.db,
@@ -533,7 +550,9 @@ export async function pullGoogleCalendarChanges(input: {
     refresh: (refreshToken) =>
       input.provider.refreshAccessToken({ refreshToken }),
     run: async (accessToken, link) => {
-      if (!link.externalCalendarId) return { forgotten: 0, resynced: false };
+      if (!link.externalCalendarId) {
+        return { forgotten: 0, resynced: false, truncated: false };
+      }
 
       const cursor = link.syncCursor
         ? ({ kind: "SYNC_TOKEN", token: link.syncCursor } as const)
@@ -542,47 +561,66 @@ export async function pullGoogleCalendarChanges(input: {
             since: new Date(now.getTime() - SYNC_PAST_DAYS * 86_400_000),
           } as const);
 
-      const page = await input.provider.listChanges({
-        accessToken,
-        calendarId: link.externalCalendarId,
-        cursor,
-      });
+      let forgotten = 0;
+      let pageToken: string | undefined;
+      let pages = 0;
+      let page: Awaited<ReturnType<typeof input.provider.listChanges>>;
+      // Segue o `nextPageToken` até a última página, que é a única que traz
+      // o sync token. Ler só a primeira deixava o cursor parado e escondia
+      // qualquer cancelamento além dela.
+      do {
+        page = await input.provider.listChanges({
+          accessToken,
+          calendarId: link.externalCalendarId,
+          cursor,
+          pageToken,
+        });
+        if (!page.ok) break;
+        pages += 1;
+
+        // Só nos importa o que NÓS criamos. Evento alheio cancelado é
+        // assunto do usuário, e reagir a ele seria invadir a agenda dele.
+        const cancelledOurs = page.value.events
+          .filter(
+            (event) =>
+              event.cancelled && event.originMarker === ESCALA_ORIGIN_MARKER,
+          )
+          .map((event) => event.externalEventId);
+        if (cancelledOurs.length > 0) {
+          // Um UPDATE por página, não por evento: uma limpeza em massa no
+          // Google vira poucas idas ao banco. Idempotente pelo `deletedAt`.
+          const [updated] = await input.db
+            .update(externalCalendarEventLinks)
+            .set({ deletedAt: now })
+            .where(
+              and(
+                eq(externalCalendarEventLinks.userId, input.userId),
+                eq(externalCalendarEventLinks.provider, PROVIDER),
+                inArray(externalCalendarEventLinks.externalEventId, cancelledOurs),
+                isNull(externalCalendarEventLinks.deletedAt),
+              ),
+            );
+          forgotten += updated?.affectedRows ?? 0;
+        }
+
+        pageToken = page.value.nextPageToken ?? undefined;
+      } while (pageToken && pages < PULL_MAX_PAGES_PER_RUN);
 
       if (!page.ok) {
-        if (page.reason === PROVIDER_FAILURE_REASONS.notFound) {
-          // Sync token expirado: esquece o cursor e recomeça limpo.
+        // Sync token expirado é estado ESPERADO: esquece o cursor e o próximo
+        // ciclo faz leitura completa. Qualquer outra falha mantém o cursor;
+        // o que já foi esquecido nesta passada continua esquecido (é
+        // idempotente reler as mesmas páginas).
+        const expired = page.reason === PROVIDER_FAILURE_REASONS.notFound;
+        if (expired) {
           await saveGoogleSyncCursor({
             db: input.db,
             userId: input.userId,
             cursor: null,
             now,
           });
-          return { forgotten: 0, resynced: true };
         }
-        return { forgotten: 0, resynced: false };
-      }
-
-      let forgotten = 0;
-      for (const event of page.value.events) {
-        if (!event.cancelled) continue;
-        // Só nos importa o que NÓS criamos. Evento alheio cancelado é assunto
-        // do usuário, e reagir a ele seria invadir a agenda dele.
-        if (event.originMarker !== ESCALA_ORIGIN_MARKER) continue;
-        const [updated] = await input.db
-          .update(externalCalendarEventLinks)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(externalCalendarEventLinks.userId, input.userId),
-              eq(externalCalendarEventLinks.provider, PROVIDER),
-              eq(
-                externalCalendarEventLinks.externalEventId,
-                event.externalEventId,
-              ),
-              isNull(externalCalendarEventLinks.deletedAt),
-            ),
-          );
-        if (updated && updated.affectedRows > 0) forgotten += 1;
+        return { forgotten, resynced: expired, truncated: false };
       }
 
       if (page.value.nextSyncToken) {
@@ -594,7 +632,11 @@ export async function pullGoogleCalendarChanges(input: {
         });
       }
 
-      return { forgotten, resynced: cursor.kind === "FULL_RESYNC" };
+      return {
+        forgotten,
+        resynced: cursor.kind === "FULL_RESYNC",
+        truncated: pageToken !== undefined,
+      };
     },
   });
 }

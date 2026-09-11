@@ -12,6 +12,7 @@ import {
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { theme } from "@/lib/theme";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { useAuth } from "@/hooks/use-auth";
@@ -63,7 +64,13 @@ export default function ShiftDetailsScreen() {
   }, []);
 
   // Buscar detalhes da escala (API ou demo)
-  const { data: apiShiftData, isLoading: apiLoading } = trpc.shifts.get.useQuery(
+  const {
+    data: apiShiftData,
+    isLoading: apiLoading,
+    isError: apiError,
+    error: apiErrorValue,
+    refetch: refetchShift,
+  } = trpc.shifts.get.useQuery(
     { id: shiftId },
     { enabled: !!user?.id && !isDemo }
   );
@@ -250,6 +257,24 @@ export default function ShiftDetailsScreen() {
         <View className="flex-1 justify-center items-center gap-4">
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text className="text-base" style={{ color: theme.colors.textMuted }}>Carregando detalhes...</Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  // Erro de leitura não pode virar "Escala não encontrada": a tela afirmaria
+  // que o plantão não existe quando o app apenas não conseguiu perguntar.
+  if (!isDemo && apiError) {
+    return (
+      <ScreenGradient scrollable={false}>
+        <View className="flex-1 justify-center">
+          <QueryErrorState
+            title="Não foi possível carregar o plantão"
+            error={apiErrorValue}
+            onRetry={() => {
+              void refetchShift();
+            }}
+          />
         </View>
       </ScreenGradient>
     );
