@@ -8,101 +8,91 @@ import {
 import type { GeoPoint } from "./integrations/providers/types";
 
 /**
- * Núcleo do aviso de "hora de sair".
+ * Núcleo do aviso de aproximação de plantão.
  *
- * Puro de propósito: converter plantão + origem + trânsito em um instante de
- * saída é aritmética com regras de negócio, e regra de negócio precisa de
- * teste sem banco e sem rede. O worker acima disto só persiste e envia.
+ * Puro de propósito: o que o médico recebe e quando é regra de negócio, e
+ * regra de negócio precisa de teste sem banco e sem rede. O worker acima
+ * disto só persiste e envia.
  *
- * A pergunta que o motor responde é "que horas sair", e ela tem uma
- * assimetria que manda no desenho: **errar para cedo custa minutos de espera;
- * errar para tarde custa um plantão começando sem anestesista.** Toda escolha
- * duvidosa aqui arredonda para sair antes.
+ * ## As três regras que mandam no desenho
+ *
+ * **1. O horário do aviso é fixo: uma hora antes do plantão.** Não depende do
+ * trânsito, não depende de o Google responder, não depende de configuração.
+ * Um aviso que só existe quando tudo dá certo é um aviso em que não se pode
+ * confiar — e confiança é o que faz o médico deixar a notificação ligada.
+ *
+ * **2. O sistema não pergunta nada.** Nem folga de chegada, nem tempo de
+ * trajeto. O objetivo é sempre estar no hospital quando o plantão começa, e o
+ * trajeto é o Google que calcula.
+ *
+ * **3. Sem trânsito, o sistema NÃO inventa tempo de trajeto.** Uma versão
+ * anterior chutava 40 minutos e chamava aquilo de estimativa. No aparelho do
+ * médico um número inventado tem a mesma aparência de um calculado: ele não
+ * distingue, confia, e sai tarde num dia de chuva. Sem rota, o aviso sai
+ * igual — dizendo, com todas as letras, que não sabe o trânsito.
  */
-
-/** Margem de chegada permitida (minutos antes do início do plantão). */
-export const MIN_ARRIVAL_MARGIN_MINUTES = 0;
-export const MAX_ARRIVAL_MARGIN_MINUTES = 240;
-export const DEFAULT_ARRIVAL_MARGIN_MINUTES = 15;
-
-/** Tempo assumido quando a rota não pôde ser calculada. */
-export const MIN_FALLBACK_TRAVEL_MINUTES = 5;
-export const MAX_FALLBACK_TRAVEL_MINUTES = 480;
-export const DEFAULT_FALLBACK_TRAVEL_MINUTES = 40;
 
 /**
- * Validade de uma estimativa de rota.
+ * Antecedência do aviso. Fixa.
  *
- * Trânsito de 40 minutos atrás ainda diz algo; de 6 horas atrás, não. Passado
- * o TTL, a estimativa deixa de ser "atual" e vira, no máximo, base para o
- * fallback declarado.
+ * Uma hora dá para reagir sem ser cedo a ponto de o médico esquecer. É também
+ * a janela em que uma estimativa de trânsito ainda descreve o trânsito que
+ * ele vai pegar.
  */
-export const ROUTE_ESTIMATE_TTL_MS = 45 * 60 * 1000;
+export const NOTICE_LEAD_MS = 60 * 60 * 1000;
 
 /**
- * Quando recalcular, contado a partir do instante de saída.
+ * Quanto antes do aviso calcular a rota.
  *
- * O trânsito do fim da tarde não se parece com o previsto na véspera. Três
- * recálculos cobrem a curva sem gastar cota: um dia antes fixa a existência
- * do plano, três horas antes pega a tendência, e uma hora antes pega o
- * trânsito real que vai valer.
+ * Perto o bastante para a estimativa valer para o horário do aviso, com folga
+ * para o worker rodar e o push sair. Uma consulta por plantão — não seis: a
+ * pergunta é "quanto leva agora", e ela só tem resposta útil agora.
  */
-export const RECOMPUTE_OFFSETS_MS = [
-  24 * 60 * 60 * 1000,
-  3 * 60 * 60 * 1000,
-  60 * 60 * 1000,
-] as const;
+export const ROUTE_LOOKAHEAD_MS = 10 * 60 * 1000;
 
 /** Teto de horizonte: plantão daqui a meses não ocupa fila de cálculo. */
 export const PLANNING_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Validade de uma estimativa já calculada.
+ *
+ * Trânsito de 40 minutos atrás ainda diz algo; de 6 horas atrás, não. Passado
+ * o TTL, a estimativa é descartada e o aviso sai sem ela.
+ */
+export const ROUTE_ESTIMATE_TTL_MS = 45 * 60 * 1000;
+
 export type DeparturePreferences = {
   enabled: boolean;
   travelMode: TravelMode;
-  arrivalMarginMinutes: number;
-  fallbackTravelMinutes: number;
 };
 
+/**
+ * Preferências: uma só — ligado ou desligado.
+ *
+ * O modo de transporte fica em carro por padrão e não é perguntado. Se um dia
+ * virar pergunta, que seja por evidência de que médico de plantão noturno vai
+ * de metrô, não por completude de formulário.
+ */
 export function normalizePreferences(
   input: Partial<DeparturePreferences> | null | undefined,
 ): DeparturePreferences {
-  const clamp = (
-    value: unknown,
-    min: number,
-    max: number,
-    fallback: number,
-  ) => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return fallback;
-    return Math.min(max, Math.max(min, Math.round(numeric)));
-  };
   return {
     enabled: input?.enabled === true,
     travelMode:
       input?.travelMode === "WALKING" || input?.travelMode === "TRANSIT"
         ? input.travelMode
         : "DRIVING",
-    arrivalMarginMinutes: clamp(
-      input?.arrivalMarginMinutes,
-      MIN_ARRIVAL_MARGIN_MINUTES,
-      MAX_ARRIVAL_MARGIN_MINUTES,
-      DEFAULT_ARRIVAL_MARGIN_MINUTES,
-    ),
-    fallbackTravelMinutes: clamp(
-      input?.fallbackTravelMinutes,
-      MIN_FALLBACK_TRAVEL_MINUTES,
-      MAX_FALLBACK_TRAVEL_MINUTES,
-      DEFAULT_FALLBACK_TRAVEL_MINUTES,
-    ),
   };
 }
 
-/** Chegada desejada: início do plantão menos a margem do usuário. */
-export function desiredArrival(
-  shiftStartsAtUtc: Date,
-  marginMinutes: number,
-): Date {
-  return new Date(shiftStartsAtUtc.getTime() - marginMinutes * 60_000);
+/** Quando o aviso sai: uma hora antes do plantão, sempre. */
+export function noticeAt(shiftStartsAtUtc: Date): Date {
+  return new Date(shiftStartsAtUtc.getTime() - NOTICE_LEAD_MS);
+}
+
+/** Quando calcular a rota para esse aviso. */
+export function routeComputeAt(shiftStartsAtUtc: Date): Date {
+  return new Date(noticeAt(shiftStartsAtUtc).getTime() - ROUTE_LOOKAHEAD_MS);
 }
 
 export type RouteSample = {
@@ -112,88 +102,13 @@ export type RouteSample = {
   computedAtUtc: Date;
 };
 
-export type DepartureComputation = {
-  departAt: Date;
-  durationSeconds: number;
-  quality: RouteEstimateQuality;
-  /** A estimativa é atual, ou estamos usando o último cálculo ainda válido? */
-  stale: boolean;
-};
-
-/**
- * Converte chegada desejada + estimativa em instante de saída.
- *
- * A hierarquia é explícita e não pode ser reordenada:
- *
- * 1. estimativa fresca → usa e marca a qualidade que o provedor deu;
- * 2. estimativa vencida mas dentro do TTL → usa, marcada como não-atual;
- * 3. nada utilizável → fallback fixo, marcado como `FALLBACK`.
- *
- * O passo 3 é o ponto do desenho: a ausência do Google não pode virar
- * ausência de aviso. É melhor avisar com um número declaradamente fixo do que
- * deixar o médico sem aviso — desde que a tela diga qual dos três é.
- */
-export function computeDeparture(input: {
-  desiredArrivalAtUtc: Date;
-  fresh: RouteSample | null;
-  lastKnown: RouteSample | null;
-  fallbackTravelMinutes: number;
-  now: Date;
-}): DepartureComputation {
-  if (input.fresh) {
-    return {
-      departAt: new Date(
-        input.desiredArrivalAtUtc.getTime() -
-          input.fresh.durationSeconds * 1000,
-      ),
-      durationSeconds: input.fresh.durationSeconds,
-      quality: input.fresh.quality,
-      stale: false,
-    };
-  }
-
-  if (
-    input.lastKnown &&
-    input.now.getTime() - input.lastKnown.computedAtUtc.getTime() <
-      ROUTE_ESTIMATE_TTL_MS
-  ) {
-    return {
-      departAt: new Date(
-        input.desiredArrivalAtUtc.getTime() -
-          input.lastKnown.durationSeconds * 1000,
-      ),
-      durationSeconds: input.lastKnown.durationSeconds,
-      quality: input.lastKnown.quality,
-      stale: true,
-    };
-  }
-
-  const fallbackSeconds = input.fallbackTravelMinutes * 60;
-  return {
-    departAt: new Date(
-      input.desiredArrivalAtUtc.getTime() - fallbackSeconds * 1000,
-    ),
-    durationSeconds: fallbackSeconds,
-    // Nunca apresentado como trânsito atual: é estimativa nossa, e a tela
-    // precisa dizer isso.
-    quality: ROUTE_ESTIMATE_QUALITY.fallback,
-    stale: true,
-  };
-}
-
-/**
- * Próximo instante de recálculo.
- *
- * Devolve o maior offset que ainda está no futuro — ou seja, recalcula cedo
- * enquanto há tempo e vai apertando conforme a saída se aproxima. `null`
- * significa que não há mais recálculo a fazer: é hora de enviar.
- */
-export function nextRecomputeAt(departAtUtc: Date, now: Date): Date | null {
-  for (const offset of RECOMPUTE_OFFSETS_MS) {
-    const candidate = new Date(departAtUtc.getTime() - offset);
-    if (candidate.getTime() > now.getTime()) return candidate;
-  }
-  return null;
+/** A estimativa ainda descreve o trânsito que o médico vai pegar? */
+export function isEstimateUsable(
+  sample: RouteSample | null,
+  now: Date,
+): sample is RouteSample {
+  if (!sample) return false;
+  return now.getTime() - sample.computedAtUtc.getTime() < ROUTE_ESTIMATE_TTL_MS;
 }
 
 export function isWithinPlanningHorizon(
@@ -205,12 +120,25 @@ export function isWithinPlanningHorizon(
 }
 
 /**
+ * Instante em que o médico precisa sair, dado o trajeto.
+ *
+ * Derivado, não configurado: é a chegada desejada — o início do plantão —
+ * menos a duração do trajeto.
+ */
+export function departureFor(
+  shiftStartsAtUtc: Date,
+  durationSeconds: number,
+): Date {
+  return new Date(shiftStartsAtUtc.getTime() - durationSeconds * 1000);
+}
+
+/**
  * Assinatura do mundo em que o cálculo foi feito.
  *
- * Se o plantão mudou de horário ou de setor, ou o usuário trocou a origem ou
- * a margem, a assinatura deixa de bater e o plano é recalculado. Sem isto o
- * médico receberia "saia às 18h07" para um plantão que mudou de hora — um
- * aviso pior que nenhum, porque ele confia.
+ * Se o plantão mudou de horário ou de setor, ou o usuário trocou a origem, a
+ * assinatura deixa de bater e o plano é recalculado. Sem isto o médico
+ * receberia um aviso descrevendo um plantão que mudou de hora — pior que
+ * nenhum, porque ele confia.
  */
 export function shiftSignature(input: {
   shiftInstanceId: number;
@@ -247,8 +175,6 @@ export function originSignature(input: {
           ? `${input.destination.latitude.toFixed(5)},${input.destination.longitude.toFixed(5)}`
           : "none",
         input.preferences.travelMode,
-        input.preferences.arrivalMarginMinutes,
-        input.preferences.fallbackTravelMinutes,
       ].join("|"),
     )
     .digest("hex");
@@ -257,17 +183,16 @@ export function originSignature(input: {
 /**
  * Identidade do aviso.
  *
- * Inclui o instante de saída arredondado ao minuto: se o recálculo mudar o
- * horário, é um aviso NOVO e ele pode sair. Se o horário não mudou, duas
- * execuções do worker produzem a mesma chave e só uma envia.
+ * Um aviso por plantão, e o horário é fixo — então a chave é estável. Duas
+ * execuções do worker produzem a mesma e só uma envia.
  */
 export function departureDedupKey(input: {
   userId: number;
   assignmentId: number;
-  departAtUtc: Date;
+  noticeAtUtc: Date;
 }): string {
-  const minute = Math.floor(input.departAtUtc.getTime() / 60_000);
-  return `departure:${input.userId}:${input.assignmentId}:${minute}`;
+  const minute = Math.floor(input.noticeAtUtc.getTime() / 60_000);
+  return `shift-notice:${input.userId}:${input.assignmentId}:${minute}`;
 }
 
 export type DepartureMessage = {
@@ -297,44 +222,51 @@ export function formatDurationLabel(seconds: number): string {
 }
 
 /**
- * A mensagem do push.
+ * A mensagem do aviso.
  *
- * Precisa dizer, sem o médico abrir o app: que plantão, que horas começa, que
- * horas sair, quanto dura o trajeto e **de onde veio o número**. Um aviso que
- * esconde ser fallback convida a confiar em algo que não é trânsito atual.
+ * Uma só, montada com o que há. A primeira frase nunca muda — é a informação
+ * que sempre existe, e é por ela que o médico reconhece a notificação sem
+ * ler o resto. Clima e trânsito entram quando disponíveis.
+ *
+ * O trecho do trânsito traz a duração **e** o horário derivado de saída.
+ * A duração é o dado; o horário é a decisão. Dar só a duração obrigaria o
+ * médico a fazer a subtração de cabeça, às 18h, com o celular na mão.
+ *
+ * Trajeto longo demais para a antecedência de uma hora — ou aviso entregue
+ * atrasado — não pode virar um horário de saída que já passou. "Saia às
+ * 17:30" lido às 18h parece defeito do app; a mensagem diz **saia agora**,
+ * que é a informação verdadeira e acionável.
  */
-export function buildDepartureMessage(input: {
-  departAtUtc: Date;
+export function buildShiftNoticeMessage(input: {
   shiftStartsAtUtc: Date;
-  durationSeconds: number;
-  quality: RouteEstimateQuality;
-  stale: boolean;
   sectorName: string;
   hospitalName: string;
   timeZone: string;
+  durationSeconds?: number | null;
   weatherSummary?: string | null;
+  /** Instante do envio. Padrão: o horário nominal do aviso. */
+  now?: Date;
 }): DepartureMessage {
-  const departure = formatClock(input.departAtUtc, input.timeZone);
   const start = formatClock(input.shiftStartsAtUtc, input.timeZone);
-  const travel = formatDurationLabel(input.durationSeconds);
+  const parts = [`${input.sectorName} · ${input.hospitalName}, às ${start}.`];
 
-  const source =
-    input.quality === ROUTE_ESTIMATE_QUALITY.liveTraffic && !input.stale
-      ? "com trânsito agora"
-      : input.quality === ROUTE_ESTIMATE_QUALITY.fallback
-        ? "estimativa fixa — não foi possível consultar o trânsito"
-        : input.stale
-          ? "última estimativa disponível"
-          : "tempo típico para o horário";
-
-  const parts = [
-    `${input.sectorName} · ${input.hospitalName}, plantão às ${start}.`,
-    `Trajeto ${travel} (${source}).`,
-  ];
   if (input.weatherSummary) parts.push(input.weatherSummary);
 
+  if (input.durationSeconds && input.durationSeconds > 0) {
+    const travel = formatDurationLabel(input.durationSeconds);
+    const leave = departureFor(input.shiftStartsAtUtc, input.durationSeconds);
+    const reference = input.now ?? noticeAt(input.shiftStartsAtUtc);
+    parts.push(
+      leave.getTime() <= reference.getTime()
+        ? `Trânsito com tempo estimado de ${travel} — saia agora.`
+        : `Trânsito com tempo estimado de ${travel} — saia até ${formatClock(leave, input.timeZone)}.`,
+    );
+  } else {
+    parts.push("Estimativas de trânsito não disponíveis.");
+  }
+
   return {
-    title: `Saia às ${departure}`,
+    title: "Horário do plantão se aproxima",
     body: parts.join(" "),
   };
 }
@@ -342,25 +274,27 @@ export function buildDepartureMessage(input: {
 /**
  * O aviso ainda vale a pena?
  *
- * Um push de "saia às 18h07" entregue às 18h40 não ajuda — atrapalha, porque
- * o médico confere o relógio e conclui que o app está errado. Passada a
- * tolerância, o plano é encerrado sem envio.
+ * Entregue muito depois, ele atrapalha: o médico confere o relógio e conclui
+ * que o app está errado. A tolerância é generosa porque o aviso sai uma hora
+ * antes — trinta minutos de atraso ainda deixam meia hora útil.
  */
-export const LATE_SEND_TOLERANCE_MS = 10 * 60 * 1000;
+export const LATE_SEND_TOLERANCE_MS = 30 * 60 * 1000;
 
-export function shouldSendDeparture(input: {
-  departAtUtc: Date;
+export function shouldSendNotice(input: {
+  noticeAtUtc: Date;
   now: Date;
 }): boolean {
-  const delta = input.now.getTime() - input.departAtUtc.getTime();
+  const delta = input.now.getTime() - input.noticeAtUtc.getTime();
   return delta >= 0 && delta <= LATE_SEND_TOLERANCE_MS;
 }
 
-export function isDepartureExpired(input: {
-  departAtUtc: Date;
+export function isNoticeExpired(input: {
+  noticeAtUtc: Date;
   now: Date;
 }): boolean {
   return (
-    input.now.getTime() - input.departAtUtc.getTime() > LATE_SEND_TOLERANCE_MS
+    input.now.getTime() - input.noticeAtUtc.getTime() > LATE_SEND_TOLERANCE_MS
   );
 }
+
+export { ROUTE_ESTIMATE_QUALITY };

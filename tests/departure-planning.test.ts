@@ -1,23 +1,24 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_ARRIVAL_MARGIN_MINUTES,
-  DEFAULT_FALLBACK_TRAVEL_MINUTES,
   LATE_SEND_TOLERANCE_MS,
+  NOTICE_LEAD_MS,
   PLANNING_HORIZON_MS,
   ROUTE_ESTIMATE_TTL_MS,
-  buildDepartureMessage,
-  computeDeparture,
+  ROUTE_LOOKAHEAD_MS,
+  buildShiftNoticeMessage,
   departureDedupKey,
-  desiredArrival,
+  departureFor,
   formatDurationLabel,
-  isDepartureExpired,
+  isEstimateUsable,
+  isNoticeExpired,
   isWithinPlanningHorizon,
-  nextRecomputeAt,
+  noticeAt,
   normalizePreferences,
   originSignature,
+  routeComputeAt,
   shiftSignature,
-  shouldSendDeparture,
+  shouldSendNotice,
   type RouteSample,
 } from "../server/departure-planning";
 import { ROUTE_ESTIMATE_QUALITY } from "../server/integrations/providers/location-provider";
@@ -25,180 +26,259 @@ import { ROUTE_ESTIMATE_QUALITY } from "../server/integrations/providers/locatio
 const TZ = "America/Sao_Paulo";
 const NOW = new Date("2026-09-11T12:00:00Z");
 const SHIFT_START = new Date("2026-09-11T22:00:00Z"); // 19h em São Paulo
+const NOTICE = new Date("2026-09-11T21:00:00Z"); // 18h em São Paulo
 
 function sample(overrides: Partial<RouteSample> = {}): RouteSample {
   return {
-    durationSeconds: 1800,
-    distanceMeters: 12_000,
+    durationSeconds: 1500,
+    distanceMeters: 9_000,
     quality: ROUTE_ESTIMATE_QUALITY.liveTraffic,
     computedAtUtc: NOW,
     ...overrides,
   };
 }
 
-describe("preferências", () => {
-  it("desligado é o padrão: nenhum aviso sem opt-in", () => {
+describe("o sistema não pergunta nada ao médico", () => {
+  /**
+   * Perguntar "quanto tempo você quer de folga?" transfere para o médico uma
+   * conta que o sistema tem os dados para fazer, e transforma um aviso
+   * automático em mais um formulário.
+   */
+  it("a única preferência é ligado ou desligado", () => {
+    expect(Object.keys(normalizePreferences(null)).sort()).toEqual([
+      "enabled",
+      "travelMode",
+    ]);
+  });
+
+  it("nasce desligado", () => {
     expect(normalizePreferences(null).enabled).toBe(false);
     expect(normalizePreferences({}).enabled).toBe(false);
     expect(normalizePreferences({ enabled: true }).enabled).toBe(true);
   });
 
-  it("valores fora do intervalo são presos, não recusados", () => {
-    const wild = normalizePreferences({
-      arrivalMarginMinutes: 9999,
-      fallbackTravelMinutes: 1,
-    });
-    expect(wild.arrivalMarginMinutes).toBe(240);
-    expect(wild.fallbackTravelMinutes).toBe(5);
-  });
-
-  it("lixo cai no padrão em vez de quebrar o cálculo", () => {
-    const broken = normalizePreferences({
-      arrivalMarginMinutes: Number.NaN,
-      fallbackTravelMinutes: "abc" as unknown as number,
-      travelMode: "TELEPORTE" as never,
-    });
-    expect(broken.arrivalMarginMinutes).toBe(DEFAULT_ARRIVAL_MARGIN_MINUTES);
-    expect(broken.fallbackTravelMinutes).toBe(DEFAULT_FALLBACK_TRAVEL_MINUTES);
-    expect(broken.travelMode).toBe("DRIVING");
-  });
-});
-
-describe("chegada desejada", () => {
-  it("é o início do plantão menos a margem", () => {
-    expect(desiredArrival(SHIFT_START, 15).toISOString()).toBe(
-      "2026-09-11T21:45:00.000Z",
-    );
-  });
-
-  it("margem zero significa chegar na hora", () => {
-    expect(desiredArrival(SHIFT_START, 0).getTime()).toBe(
-      SHIFT_START.getTime(),
-    );
-  });
-});
-
-describe("cálculo do instante de saída", () => {
-  it("estimativa fresca manda e preserva a qualidade do provedor", () => {
-    const result = computeDeparture({
-      desiredArrivalAtUtc: new Date("2026-09-11T21:45:00Z"),
-      fresh: sample({ durationSeconds: 1800 }),
-      lastKnown: null,
-      fallbackTravelMinutes: 40,
-      now: NOW,
-    });
-    expect(result.departAt.toISOString()).toBe("2026-09-11T21:15:00.000Z");
-    expect(result.quality).toBe(ROUTE_ESTIMATE_QUALITY.liveTraffic);
-    expect(result.stale).toBe(false);
-  });
-
-  /**
-   * O ponto do desenho: a ausência do Google não pode virar ausência de
-   * aviso. Mas o número precisa vir marcado como fallback — um aviso que
-   * esconde a origem do dado convida a confiar no que não é trânsito atual.
-   */
-  it("sem estimativa nenhuma, usa fallback declarado como tal", () => {
-    const result = computeDeparture({
-      desiredArrivalAtUtc: new Date("2026-09-11T21:45:00Z"),
-      fresh: null,
-      lastKnown: null,
-      fallbackTravelMinutes: 40,
-      now: NOW,
-    });
-    expect(result.departAt.toISOString()).toBe("2026-09-11T21:05:00.000Z");
-    expect(result.quality).toBe(ROUTE_ESTIMATE_QUALITY.fallback);
-    expect(result.stale).toBe(true);
-  });
-
-  it("estimativa anterior dentro do TTL é preferida ao fallback", () => {
-    const result = computeDeparture({
-      desiredArrivalAtUtc: new Date("2026-09-11T21:45:00Z"),
-      fresh: null,
-      lastKnown: sample({
-        durationSeconds: 2400,
-        computedAtUtc: new Date(NOW.getTime() - ROUTE_ESTIMATE_TTL_MS + 60_000),
-      }),
-      fallbackTravelMinutes: 40,
-      now: NOW,
-    });
-    expect(result.durationSeconds).toBe(2400);
-    expect(result.quality).toBe(ROUTE_ESTIMATE_QUALITY.liveTraffic);
-    // Marcada como não-atual: a tela precisa distinguir.
-    expect(result.stale).toBe(true);
-  });
-
-  it("estimativa vencida é descartada em favor do fallback", () => {
-    const result = computeDeparture({
-      desiredArrivalAtUtc: new Date("2026-09-11T21:45:00Z"),
-      fresh: null,
-      lastKnown: sample({
-        durationSeconds: 2400,
-        computedAtUtc: new Date(NOW.getTime() - ROUTE_ESTIMATE_TTL_MS - 1),
-      }),
-      fallbackTravelMinutes: 40,
-      now: NOW,
-    });
-    expect(result.quality).toBe(ROUTE_ESTIMATE_QUALITY.fallback);
-    expect(result.durationSeconds).toBe(40 * 60);
-  });
-
-  /**
-   * Assimetria que manda no desenho: errar para cedo custa espera; errar para
-   * tarde custa um plantão começando sem anestesista. O fallback padrão é
-   * maior que a maioria dos trajetos urbanos de propósito.
-   */
-  it("o fallback padrão erra para o lado seguro", () => {
-    expect(DEFAULT_FALLBACK_TRAVEL_MINUTES).toBeGreaterThanOrEqual(30);
-  });
-});
-
-describe("agenda de recálculo", () => {
-  it("escolhe o maior offset ainda no futuro", () => {
-    const departAt = new Date("2026-09-11T21:15:00Z");
-    const next = nextRecomputeAt(departAt, new Date("2026-09-10T00:00:00Z"));
-    expect(next?.toISOString()).toBe("2026-09-10T21:15:00.000Z");
-  });
-
-  it("vai apertando conforme a saída se aproxima", () => {
-    const departAt = new Date("2026-09-11T21:15:00Z");
-    const threeHoursBefore = nextRecomputeAt(
-      departAt,
-      new Date("2026-09-11T10:00:00Z"),
-    );
-    expect(threeHoursBefore?.toISOString()).toBe("2026-09-11T18:15:00.000Z");
-
-    const oneHourBefore = nextRecomputeAt(
-      departAt,
-      new Date("2026-09-11T19:00:00Z"),
-    );
-    expect(oneHourBefore?.toISOString()).toBe("2026-09-11T20:15:00.000Z");
-  });
-
-  it("sem recálculo restante, é hora de enviar", () => {
-    const departAt = new Date("2026-09-11T21:15:00Z");
+  it("carro é o padrão, e valor inválido não quebra o cálculo", () => {
+    expect(normalizePreferences({ enabled: true }).travelMode).toBe("DRIVING");
     expect(
-      nextRecomputeAt(departAt, new Date("2026-09-11T21:00:00Z")),
-    ).toBeNull();
+      normalizePreferences({ travelMode: "TELEPORTE" as never }).travelMode,
+    ).toBe("DRIVING");
+  });
+});
+
+describe("o horário do aviso é fixo", () => {
+  /**
+   * Uma hora antes, sempre. Não depende do trânsito, não depende de o Google
+   * responder, não depende de configuração. Um aviso que só existe quando
+   * tudo dá certo é um aviso em que não se pode confiar.
+   */
+  it("sai uma hora antes do início do plantão", () => {
+    expect(NOTICE_LEAD_MS).toBe(60 * 60 * 1000);
+    expect(noticeAt(SHIFT_START).toISOString()).toBe(NOTICE.toISOString());
+  });
+
+  it("o horário não muda com a duração do trajeto", () => {
+    const curto = noticeAt(SHIFT_START);
+    const longo = noticeAt(SHIFT_START);
+    expect(curto.getTime()).toBe(longo.getTime());
+    expect(curto.getTime()).toBe(SHIFT_START.getTime() - NOTICE_LEAD_MS);
+  });
+
+  /**
+   * A pergunta feita ao Google é "quanto leva agora", e ela só tem resposta
+   * útil agora. Calcular pouco antes do aviso é o que faz a estimativa
+   * descrever o trânsito que o médico vai pegar — com uma consulta só.
+   */
+  it("a rota é calculada pouco antes do aviso, uma vez", () => {
+    expect(ROUTE_LOOKAHEAD_MS).toBe(10 * 60 * 1000);
+    expect(routeComputeAt(SHIFT_START).toISOString()).toBe(
+      "2026-09-11T20:50:00.000Z",
+    );
+  });
+});
+
+describe("estimativa de trajeto", () => {
+  it("hora de sair = início do plantão menos a duração", () => {
+    expect(departureFor(SHIFT_START, 1500).toISOString()).toBe(
+      "2026-09-11T21:35:00.000Z",
+    );
+  });
+
+  it("estimativa recente vale; vencida é descartada", () => {
+    expect(isEstimateUsable(sample(), NOW)).toBe(true);
+    expect(
+      isEstimateUsable(
+        sample({
+          computedAtUtc: new Date(NOW.getTime() - ROUTE_ESTIMATE_TTL_MS + 1000),
+        }),
+        NOW,
+      ),
+    ).toBe(true);
+    expect(
+      isEstimateUsable(
+        sample({
+          computedAtUtc: new Date(NOW.getTime() - ROUTE_ESTIMATE_TTL_MS - 1),
+        }),
+        NOW,
+      ),
+    ).toBe(false);
+    expect(isEstimateUsable(null, NOW)).toBe(false);
+  });
+
+  /**
+   * Não existe qualidade "chutada". A versão anterior assumia 40 minutos
+   * quando a rota falhava; no aparelho do médico esse número tem a mesma
+   * aparência de um calculado, e o custo de errar para tarde é um plantão
+   * começando sem anestesista.
+   */
+  it("só existem duas qualidades, ambas vindas do provedor", () => {
+    expect(Object.values(ROUTE_ESTIMATE_QUALITY).sort()).toEqual([
+      "LIVE_TRAFFIC",
+      "TYPICAL",
+    ]);
+  });
+});
+
+describe("a mensagem", () => {
+  const base = {
+    shiftStartsAtUtc: SHIFT_START,
+    sectorName: "UTI",
+    hospitalName: "São Carlos",
+    timeZone: TZ,
+  };
+
+  /**
+   * O título nunca muda: é por ele que o médico reconhece a notificação na
+   * tela de bloqueio, sem ler o resto.
+   */
+  it("o título é sempre o mesmo, com ou sem trânsito", () => {
+    expect(buildShiftNoticeMessage(base).title).toBe(
+      "Horário do plantão se aproxima",
+    );
+    expect(
+      buildShiftNoticeMessage({ ...base, durationSeconds: 1500 }).title,
+    ).toBe("Horário do plantão se aproxima");
+  });
+
+  it("sempre diz onde e a que horas o plantão começa", () => {
+    expect(buildShiftNoticeMessage(base).body).toContain(
+      "UTI · São Carlos, às 19:00.",
+    );
+  });
+
+  /**
+   * A duração é o dado; o horário de saída é a decisão. Dar só a duração
+   * obrigaria o médico a fazer a subtração de cabeça, às 18h, com o celular
+   * na mão.
+   */
+  it("com trânsito, traz a duração e a hora de sair", () => {
+    const body = buildShiftNoticeMessage({
+      ...base,
+      durationSeconds: 1500,
+    }).body;
+    expect(body).toContain("25 min");
+    expect(body).toContain("saia até 18:35");
+    expect(body).not.toContain("não disponíveis");
+  });
+
+  it("sem trânsito, diz com todas as letras que não sabe", () => {
+    const body = buildShiftNoticeMessage(base).body;
+    expect(body).toContain("Estimativas de trânsito não disponíveis.");
+    expect(body).not.toMatch(/saia/i);
+    expect(body).not.toMatch(/\d+\s*min/);
+  });
+
+  it("duração ausente, nula ou zero cai no mesmo caminho", () => {
+    for (const durationSeconds of [null, undefined, 0]) {
+      expect(
+        buildShiftNoticeMessage({ ...base, durationSeconds }).body,
+      ).toContain("Estimativas de trânsito não disponíveis.");
+    }
+  });
+
+  it("o clima entra quando há, e não é obrigatório", () => {
+    expect(
+      buildShiftNoticeMessage({
+        ...base,
+        weatherSummary: "Noite com chuva.",
+        durationSeconds: 1500,
+      }).body,
+    ).toContain("Noite com chuva.");
+    expect(buildShiftNoticeMessage(base).body).not.toContain("chuva");
+  });
+
+  /**
+   * O aviso do produto, na íntegra: plantão, clima, trânsito — nessa ordem.
+   */
+  it("monta o aviso completo na ordem do produto", () => {
+    expect(
+      buildShiftNoticeMessage({
+        ...base,
+        weatherSummary: "Noite com chuva.",
+        durationSeconds: 1500,
+      }).body,
+    ).toBe(
+      "UTI · São Carlos, às 19:00. Noite com chuva. Trânsito com tempo estimado de 25 min — saia até 18:35.",
+    );
+  });
+
+  /**
+   * Trajeto maior que a antecedência do aviso, ou aviso entregue com atraso:
+   * "saia às 17:30" lido às 18h parece defeito do app. A informação
+   * verdadeira é que já passou da hora.
+   */
+  it("quando a hora de sair já passou, diz para sair agora", () => {
+    const body = buildShiftNoticeMessage({
+      ...base,
+      durationSeconds: 90 * 60,
+    }).body;
+    expect(body).toContain("1 h 30 min");
+    expect(body).toContain("saia agora");
+    expect(body).not.toMatch(/saia até/);
+  });
+
+  it("aviso entregue atrasado também vira saia agora", () => {
+    const body = buildShiftNoticeMessage({
+      ...base,
+      durationSeconds: 1500,
+      now: new Date(SHIFT_START.getTime() - 20 * 60_000),
+    }).body;
+    expect(body).toContain("saia agora");
+  });
+
+  it("no horário, o aviso ainda dá o limite de saída", () => {
+    const body = buildShiftNoticeMessage({
+      ...base,
+      durationSeconds: 1500,
+      now: NOTICE,
+    }).body;
+    expect(body).toContain("saia até 18:35");
+  });
+
+  it("fuso inválido não derruba o aviso", () => {
+    expect(
+      buildShiftNoticeMessage({ ...base, timeZone: "Marte/Olympus" }).body,
+    ).toContain("--:--");
+  });
+
+  it("formata duração em português", () => {
+    expect(formatDurationLabel(60)).toBe("1 min");
+    expect(formatDurationLabel(1500)).toBe("25 min");
+    expect(formatDurationLabel(3600)).toBe("1 h");
+    expect(formatDurationLabel(5400)).toBe("1 h 30 min");
   });
 });
 
 describe("horizonte de planejamento", () => {
-  it("plantão no passado não entra", () => {
+  it("ignora plantão no passado e distante demais", () => {
     expect(isWithinPlanningHorizon(new Date(NOW.getTime() - 1000), NOW)).toBe(
       false,
     );
-  });
-
-  it("plantão distante demais não ocupa fila", () => {
     expect(
       isWithinPlanningHorizon(
         new Date(NOW.getTime() + PLANNING_HORIZON_MS + 1000),
         NOW,
       ),
     ).toBe(false);
-  });
-
-  it("plantão dentro do horizonte entra", () => {
     expect(isWithinPlanningHorizon(SHIFT_START, NOW)).toBe(true);
   });
 });
@@ -212,16 +292,9 @@ describe("assinaturas — invalidação do cálculo", () => {
     hospitalId: 2,
   };
 
-  it("o mesmo plantão produz a mesma assinatura", () => {
-    expect(shiftSignature(base)).toBe(shiftSignature({ ...base }));
-  });
-
-  /**
-   * Sem isto o médico receberia "saia às 18h07" para um plantão que mudou de
-   * hora — um aviso pior do que nenhum, porque ele confia.
-   */
   it("mudar horário, setor ou hospital invalida o cálculo", () => {
     const reference = shiftSignature(base);
+    expect(shiftSignature({ ...base })).toBe(reference);
     expect(
       shiftSignature({
         ...base,
@@ -232,7 +305,7 @@ describe("assinaturas — invalidação do cálculo", () => {
     expect(shiftSignature({ ...base, hospitalId: 9 })).not.toBe(reference);
   });
 
-  it("mudar origem, margem ou modo de transporte invalida o cálculo", () => {
+  it("mudar origem, destino ou modo invalida o cálculo", () => {
     const preferences = normalizePreferences({ enabled: true });
     const origin = {
       travelOriginId: 7,
@@ -250,7 +323,7 @@ describe("assinaturas — invalidação do cálculo", () => {
     expect(
       originSignature({
         ...origin,
-        preferences: { ...preferences, arrivalMarginMinutes: 30 },
+        destination: { latitude: -23.55, longitude: -46.63 },
       }),
     ).not.toBe(reference);
     expect(
@@ -259,204 +332,71 @@ describe("assinaturas — invalidação do cálculo", () => {
         preferences: { ...preferences, travelMode: "TRANSIT" },
       }),
     ).not.toBe(reference);
-    expect(
-      originSignature({
-        ...origin,
-        destination: { latitude: -23.55, longitude: -46.63 },
-      }),
-    ).not.toBe(reference);
-  });
-
-  it("sem origem configurada a assinatura ainda é estável", () => {
-    const preferences = normalizePreferences({ enabled: true });
-    const first = originSignature({
-      travelOriginId: null,
-      originFingerprint: null,
-      destination: null,
-      preferences,
-    });
-    const second = originSignature({
-      travelOriginId: null,
-      originFingerprint: null,
-      destination: null,
-      preferences,
-    });
-    expect(first).toBe(second);
   });
 });
 
 describe("chave de deduplicação", () => {
-  it("duas execuções para o mesmo horário produzem a mesma chave", () => {
-    const input = {
-      userId: 1,
-      assignmentId: 2,
-      departAtUtc: new Date("2026-09-11T21:15:30Z"),
-    };
-    expect(departureDedupKey(input)).toBe(
-      departureDedupKey({
-        ...input,
-        // Mesmo minuto: é o mesmo aviso.
-        departAtUtc: new Date("2026-09-11T21:15:59Z"),
-      }),
-    );
-  });
-
-  it("horário recalculado é aviso novo e pode sair", () => {
-    const first = departureDedupKey({
-      userId: 1,
-      assignmentId: 2,
-      departAtUtc: new Date("2026-09-11T21:15:00Z"),
-    });
-    const second = departureDedupKey({
-      userId: 1,
-      assignmentId: 2,
-      departAtUtc: new Date("2026-09-11T21:30:00Z"),
-    });
-    expect(first).not.toBe(second);
+  /**
+   * Um aviso por plantão, em horário fixo — então a chave é estável por
+   * construção. Duas execuções do worker produzem a mesma e só uma envia.
+   */
+  it("o mesmo plantão gera sempre a mesma chave", () => {
+    const key = (notice: Date) =>
+      departureDedupKey({ userId: 1, assignmentId: 2, noticeAtUtc: notice });
+    expect(key(NOTICE)).toBe(key(new Date(NOTICE.getTime() + 59_000)));
   });
 
   it("usuários e plantões diferentes nunca colidem", () => {
-    const at = new Date("2026-09-11T21:15:00Z");
-    expect(
-      departureDedupKey({ userId: 1, assignmentId: 2, departAtUtc: at }),
-    ).not.toBe(
-      departureDedupKey({ userId: 2, assignmentId: 2, departAtUtc: at }),
-    );
-    expect(
-      departureDedupKey({ userId: 1, assignmentId: 2, departAtUtc: at }),
-    ).not.toBe(
-      departureDedupKey({ userId: 1, assignmentId: 3, departAtUtc: at }),
-    );
-  });
-});
-
-describe("mensagem do aviso", () => {
-  const base = {
-    departAtUtc: new Date("2026-09-11T21:15:00Z"),
-    shiftStartsAtUtc: SHIFT_START,
-    durationSeconds: 1800,
-    sectorName: "UTI",
-    hospitalName: "São Carlos",
-    timeZone: TZ,
-  };
-
-  it("diz a hora de sair no relógio local", () => {
-    const message = buildDepartureMessage({
-      ...base,
-      quality: ROUTE_ESTIMATE_QUALITY.liveTraffic,
-      stale: false,
-    });
-    expect(message.title).toBe("Saia às 18:15");
-    expect(message.body).toContain("plantão às 19:00");
-    expect(message.body).toContain("UTI · São Carlos");
-    expect(message.body).toContain("30 min");
+    const key = (userId: number, assignmentId: number) =>
+      departureDedupKey({ userId, assignmentId, noticeAtUtc: NOTICE });
+    expect(key(1, 2)).not.toBe(key(2, 2));
+    expect(key(1, 2)).not.toBe(key(1, 3));
   });
 
   /**
-   * A origem do número precisa aparecer. Um aviso que esconde ser fallback
-   * convida o médico a confiar em algo que não é trânsito atual.
+   * Plantão remarcado é outro aviso: o horário muda, a chave muda, e o novo
+   * aviso consegue sair mesmo que o antigo já tenha sido enviado.
    */
-  it("distingue trânsito atual, tempo típico, estimativa velha e fallback", () => {
+  it("plantão remarcado é aviso novo", () => {
     expect(
-      buildDepartureMessage({
-        ...base,
-        quality: ROUTE_ESTIMATE_QUALITY.liveTraffic,
-        stale: false,
-      }).body,
-    ).toContain("com trânsito agora");
-
-    expect(
-      buildDepartureMessage({
-        ...base,
-        quality: ROUTE_ESTIMATE_QUALITY.typical,
-        stale: false,
-      }).body,
-    ).toContain("tempo típico");
-
-    expect(
-      buildDepartureMessage({
-        ...base,
-        quality: ROUTE_ESTIMATE_QUALITY.liveTraffic,
-        stale: true,
-      }).body,
-    ).toContain("última estimativa");
-
-    expect(
-      buildDepartureMessage({
-        ...base,
-        quality: ROUTE_ESTIMATE_QUALITY.fallback,
-        stale: true,
-      }).body,
-    ).toContain("não foi possível consultar o trânsito");
-  });
-
-  it("o clima enriquece, mas não é obrigatório", () => {
-    const withWeather = buildDepartureMessage({
-      ...base,
-      quality: ROUTE_ESTIMATE_QUALITY.typical,
-      stale: false,
-      weatherSummary: "Chuva forte na saída.",
-    });
-    expect(withWeather.body).toContain("Chuva forte na saída.");
-
-    const without = buildDepartureMessage({
-      ...base,
-      quality: ROUTE_ESTIMATE_QUALITY.typical,
-      stale: false,
-      weatherSummary: null,
-    });
-    expect(without.body).not.toContain("Chuva");
-    expect(without.title).toBe("Saia às 18:15");
-  });
-
-  it("formata duração em português", () => {
-    expect(formatDurationLabel(60)).toBe("1 min");
-    expect(formatDurationLabel(1800)).toBe("30 min");
-    expect(formatDurationLabel(3600)).toBe("1 h");
-    expect(formatDurationLabel(5400)).toBe("1 h 30 min");
-    expect(formatDurationLabel(10)).toBe("1 min");
+      departureDedupKey({ userId: 1, assignmentId: 2, noticeAtUtc: NOTICE }),
+    ).not.toBe(
+      departureDedupKey({
+        userId: 1,
+        assignmentId: 2,
+        noticeAtUtc: new Date(NOTICE.getTime() + 60 * 60 * 1000),
+      }),
+    );
   });
 });
 
 describe("janela de envio", () => {
-  const departAt = new Date("2026-09-11T21:15:00Z");
-
-  it("envia a partir do instante calculado", () => {
-    expect(shouldSendDeparture({ departAtUtc: departAt, now: departAt })).toBe(
-      true,
-    );
+  it("envia a partir do instante do aviso", () => {
+    expect(shouldSendNotice({ noticeAtUtc: NOTICE, now: NOTICE })).toBe(true);
   });
 
   it("não envia antes da hora", () => {
     expect(
-      shouldSendDeparture({
-        departAtUtc: departAt,
-        now: new Date(departAt.getTime() - 1000),
+      shouldSendNotice({
+        noticeAtUtc: NOTICE,
+        now: new Date(NOTICE.getTime() - 1000),
       }),
     ).toBe(false);
   });
 
   /**
-   * "Saia às 18h07" entregue às 18h40 não ajuda: o médico confere o relógio e
-   * conclui que o app está errado. Passada a tolerância, encerra sem enviar.
+   * Entregue muito depois, o aviso atrapalha: o médico confere o relógio e
+   * conclui que o app está errado.
    */
   it("não envia aviso atrasado demais", () => {
-    const late = new Date(departAt.getTime() + LATE_SEND_TOLERANCE_MS + 1000);
-    expect(shouldSendDeparture({ departAtUtc: departAt, now: late })).toBe(
-      false,
-    );
-    expect(isDepartureExpired({ departAtUtc: departAt, now: late })).toBe(true);
+    const late = new Date(NOTICE.getTime() + LATE_SEND_TOLERANCE_MS + 1000);
+    expect(shouldSendNotice({ noticeAtUtc: NOTICE, now: late })).toBe(false);
+    expect(isNoticeExpired({ noticeAtUtc: NOTICE, now: late })).toBe(true);
   });
 
   it("dentro da tolerância ainda vale", () => {
-    const slightlyLate = new Date(
-      departAt.getTime() + LATE_SEND_TOLERANCE_MS - 1000,
-    );
-    expect(
-      shouldSendDeparture({ departAtUtc: departAt, now: slightlyLate }),
-    ).toBe(true);
-    expect(
-      isDepartureExpired({ departAtUtc: departAt, now: slightlyLate }),
-    ).toBe(false);
+    const slightly = new Date(NOTICE.getTime() + LATE_SEND_TOLERANCE_MS - 1000);
+    expect(shouldSendNotice({ noticeAtUtc: NOTICE, now: slightly })).toBe(true);
+    expect(isNoticeExpired({ noticeAtUtc: NOTICE, now: slightly })).toBe(false);
   });
 });

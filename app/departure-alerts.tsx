@@ -1,8 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Text, TextInput, TouchableOpacity, View } from "react-native";
-import { Car, Footprints, MapPin, Train, Trash2 } from "lucide-react-native";
+import { BellRing, MapPin, Trash2 } from "lucide-react-native";
 
 import { AppButton } from "@/components/ui/AppButton";
+import { ListRow } from "@/components/ui/ListRow";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -12,24 +13,20 @@ import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 
 /**
- * Aviso de "hora de sair".
+ * Aviso de aproximação de plantão.
  *
  * Recurso da CONTA: não lê instituição nem papel. O médico sai de casa uma
  * vez, e o destino pode ser qualquer hospital dos vínculos dele.
  *
- * A tela é explícita sobre privacidade porque o dado é o mais sensível que o
- * sistema toca: o endereço é guardado cifrado, nunca aparece em lista, e há
- * um botão para apagá-lo. Dizer isso na tela não é decoração — é o que
- * permite ao usuário consentir de verdade.
+ * A tela tem UMA decisão obrigatória — ligar ou não. O endereço é opcional e
+ * só serve para o aviso saber o trânsito; sem ele o aviso sai igual, dizendo
+ * que não sabe. Perguntar folga de chegada ou tempo de trajeto transferiria
+ * para o médico uma conta que o sistema tem os dados para fazer.
+ *
+ * A copy é explícita sobre privacidade porque o endereço é o dado mais
+ * sensível que o sistema toca: guardado cifrado, nunca em lista, apagável.
+ * Dizer isso na tela é o que permite consentir de verdade.
  */
-
-const TRAVEL_MODES = [
-  { value: "DRIVING" as const, label: "Carro", Icon: Car },
-  { value: "TRANSIT" as const, label: "Transporte", Icon: Train },
-  { value: "WALKING" as const, label: "A pé", Icon: Footprints },
-];
-
-const MARGIN_OPTIONS = [0, 10, 15, 30, 45, 60];
 
 function Section({
   title,
@@ -67,48 +64,6 @@ function Section({
   );
 }
 
-function Chip({
-  label,
-  selected,
-  onPress,
-  accessibilityLabel,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  accessibilityLabel?: string;
-}) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={accessibilityLabel ?? label}
-      style={{
-        minHeight: 36,
-        paddingHorizontal: theme.space[3],
-        justifyContent: "center",
-        borderRadius: theme.radius.full,
-        borderWidth: 1,
-        borderColor: selected ? theme.colors.primary : theme.colors.border,
-        backgroundColor: selected
-          ? theme.colors.primarySoft
-          : theme.colors.surface,
-      }}
-    >
-      <Text
-        style={{
-          fontSize: theme.text.body.fontSize,
-          fontWeight: selected ? "600" : "500",
-          color: selected ? theme.colors.primary : theme.colors.textSecondary,
-        }}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
 export default function DepartureAlertsScreen() {
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
@@ -116,6 +71,13 @@ export default function DepartureAlertsScreen() {
     staleTime: 15_000,
   });
 
+  /**
+   * A próxima gravação de preferências veio do interruptor?
+   *
+   * Escolher um endereço grava as mesmas preferências, e anunciar "aviso
+   * ligado" ali seria confirmar algo que o médico não fez.
+   */
+  const fromToggle = useRef(false);
   const [search, setSearch] = useState("");
   const [pendingPlaceId, setPendingPlaceId] = useState<string | null>(null);
   const [originLabel, setOriginLabel] = useState("Casa");
@@ -141,11 +103,19 @@ export default function DepartureAlertsScreen() {
   );
 
   const savePreferences = trpc.departure.savePreferences.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
       await utils.departure.status.invalidate();
-      feedback.success("Preferências salvas.");
+      if (fromToggle.current) {
+        fromToggle.current = false;
+        feedback.success(
+          variables.enabled ? "Aviso ligado." : "Aviso desligado.",
+        );
+      }
     },
-    onError: (error) => feedback.error(error.message),
+    onError: (error) => {
+      fromToggle.current = false;
+      feedback.error(error.message);
+    },
   });
 
   const saveOrigin = trpc.departure.saveTravelOrigin.useMutation({
@@ -153,7 +123,7 @@ export default function DepartureAlertsScreen() {
       await utils.departure.status.invalidate();
       setSearch("");
       setPendingPlaceId(null);
-      feedback.success("Origem salva.");
+      feedback.success("Endereço salvo.");
     },
     onError: (error) => feedback.error(error.message),
   });
@@ -161,33 +131,47 @@ export default function DepartureAlertsScreen() {
   const deleteOrigin = trpc.departure.deleteTravelOrigin.useMutation({
     onSuccess: async () => {
       await utils.departure.status.invalidate();
-      feedback.success("Origem apagada.");
+      feedback.success("Endereço apagado.");
     },
     onError: (error) => feedback.error(error.message),
   });
 
   const status = statusQuery.data;
+  /**
+   * Estado exibido do interruptor.
+   *
+   * Enquanto a mutação está no ar, vale o que o médico acabou de escolher —
+   * não o que o servidor ainda devolve. Um interruptor que só se move depois
+   * do round-trip parece quebrado num 3G de corredor de hospital.
+   */
+  const enabled =
+    savePreferences.isPending && savePreferences.variables
+      ? savePreferences.variables.enabled
+      : (status?.enabled ?? false);
   const busy =
     savePreferences.isPending || saveOrigin.isPending || deleteOrigin.isPending;
 
-  const persist = useCallback(
-    (
-      overrides: Partial<{
-        enabled: boolean;
-        travelMode: "DRIVING" | "WALKING" | "TRANSIT";
-        arrivalMarginMinutes: number;
-        fallbackTravelMinutes: number;
-        travelOriginId: number | null;
-      }>,
-    ) => {
+  const toggle = useCallback(
+    (next: boolean) => {
       if (!status) return;
+      fromToggle.current = true;
+      savePreferences.mutate({
+        enabled: next,
+        travelMode: status.travelMode,
+        travelOriginId: status.travelOriginId,
+      });
+    },
+    [status, savePreferences],
+  );
+
+  const chooseOrigin = useCallback(
+    (originId: number) => {
+      if (!status) return;
+      fromToggle.current = false;
       savePreferences.mutate({
         enabled: status.enabled,
         travelMode: status.travelMode,
-        arrivalMarginMinutes: status.arrivalMarginMinutes,
-        fallbackTravelMinutes: status.fallbackTravelMinutes,
-        travelOriginId: status.travelOriginId,
-        ...overrides,
+        travelOriginId: originId,
       });
     },
     [status, savePreferences],
@@ -196,8 +180,8 @@ export default function DepartureAlertsScreen() {
   const removeOrigin = useCallback(
     async (originId: number, label: string) => {
       const confirmed = await feedback.confirmDestructive(
-        "Apagar origem",
-        `"${label}" será removida da sua conta. O aviso passa a usar o tempo fixo até você cadastrar outra.`,
+        "Apagar endereço",
+        `"${label}" será removido da sua conta. O aviso continua chegando, mas sem estimativa de trânsito.`,
         "Apagar",
       );
       if (!confirmed) return;
@@ -215,7 +199,7 @@ export default function DepartureAlertsScreen() {
     return (
       <ScreenGradient>
         <ScreenContainer>
-          <SkeletonList count={4} />
+          <SkeletonList count={3} />
         </ScreenContainer>
       </ScreenGradient>
     );
@@ -226,7 +210,7 @@ export default function DepartureAlertsScreen() {
       <ScreenGradient>
         <ScreenContainer>
           <QueryErrorState
-            title="Não foi possível carregar o aviso de saída"
+            title="Não foi possível carregar o aviso de plantão"
             error={statusQuery.error}
             onRetry={() => {
               statusQuery.refetch();
@@ -249,7 +233,7 @@ export default function DepartureAlertsScreen() {
                 color: theme.colors.textPrimary,
               }}
             >
-              Hora de sair
+              Aviso de plantão
             </Text>
             <Text
               style={{
@@ -258,62 +242,30 @@ export default function DepartureAlertsScreen() {
                 color: theme.colors.textSecondary,
               }}
             >
-              Avisamos quando sair de casa para chegar ao plantão, considerando
-              o trânsito e a previsão do tempo.
+              Uma hora antes de cada plantão você recebe um aviso com o tempo de
+              trânsito estimado e a previsão do tempo.
             </Text>
           </View>
 
-          <Section title="Receber o aviso">
-            <Chip
-              label={status.enabled ? "Ligado" : "Desligado"}
-              selected={status.enabled}
-              onPress={() => persist({ enabled: !status.enabled })}
-              accessibilityLabel={
-                status.enabled
-                  ? "Aviso de saída ligado. Toque para desligar."
-                  : "Aviso de saída desligado. Toque para ligar."
-              }
-            />
-          </Section>
+          <ListRow
+            title="Receber o aviso"
+            subtitle={
+              enabled
+                ? "Ligado para todos os seus plantões."
+                : "Desligado. Nenhum aviso será enviado."
+            }
+            Icon={BellRing}
+            tone={enabled ? "brand" : "default"}
+            toggle={{
+              value: enabled,
+              onValueChange: toggle,
+              accessibilityLabel: "Receber aviso de plantão",
+            }}
+          />
 
           <Section
-            title="Chegar com antecedência"
-            description="Quanto tempo antes do início do plantão você quer estar lá."
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                gap: theme.space[2],
-              }}
-            >
-              {MARGIN_OPTIONS.map((minutes) => (
-                <Chip
-                  key={minutes}
-                  label={minutes === 0 ? "Na hora" : `${minutes} min`}
-                  selected={status.arrivalMarginMinutes === minutes}
-                  onPress={() => persist({ arrivalMarginMinutes: minutes })}
-                />
-              ))}
-            </View>
-          </Section>
-
-          <Section title="Como você vai">
-            <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-              {TRAVEL_MODES.map((mode) => (
-                <Chip
-                  key={mode.value}
-                  label={mode.label}
-                  selected={status.travelMode === mode.value}
-                  onPress={() => persist({ travelMode: mode.value })}
-                />
-              ))}
-            </View>
-          </Section>
-
-          <Section
-            title="De onde você sai"
-            description="Guardamos o endereço cifrado. Ele nunca aparece em lista e você pode apagá-lo quando quiser."
+            title="De onde você costuma sair"
+            description="Opcional. Serve só para calcular o trânsito. Guardamos cifrado, nunca aparece em lista, e você pode apagar quando quiser."
           >
             {status.origins.length > 0 ? (
               <View style={{ gap: theme.space[2] }}>
@@ -342,9 +294,9 @@ export default function DepartureAlertsScreen() {
                         minHeight: 44,
                         justifyContent: "center",
                       }}
-                      onPress={() => persist({ travelOriginId: origin.id })}
+                      onPress={() => chooseOrigin(origin.id)}
                       accessibilityRole="button"
-                      accessibilityLabel={`Usar ${origin.label} como origem`}
+                      accessibilityLabel={`Usar ${origin.label} para calcular o trânsito`}
                     >
                       <Text
                         style={{
@@ -446,7 +398,7 @@ export default function DepartureAlertsScreen() {
                     <TextInput
                       value={originLabel}
                       onChangeText={setOriginLabel}
-                      accessibilityLabel="Nome desta origem"
+                      accessibilityLabel="Nome deste endereço"
                       maxLength={60}
                       style={{
                         minHeight: 44,
@@ -466,11 +418,12 @@ export default function DepartureAlertsScreen() {
                       }}
                     >
                       Ao salvar, você autoriza o Escala+ a guardar este endereço
-                      cifrado e usá-lo apenas para calcular a hora de sair.
+                      cifrado e usá-lo apenas para calcular o tempo de trânsito
+                      até o hospital.
                     </Text>
                     <AppButton
                       title={
-                        saveOrigin.isPending ? "Salvando…" : "Salvar origem"
+                        saveOrigin.isPending ? "Salvando…" : "Salvar endereço"
                       }
                       onPress={() =>
                         saveOrigin.mutate({
@@ -495,31 +448,10 @@ export default function DepartureAlertsScreen() {
                 }}
               >
                 A busca de endereços ainda não está disponível nesta instalação.
-                Sem origem cadastrada, o aviso usa um tempo fixo de trajeto.
+                O aviso continua chegando uma hora antes de cada plantão, sem a
+                estimativa de trânsito.
               </Text>
             )}
-          </Section>
-
-          <Section
-            title="Quando não dá para consultar o trânsito"
-            description="Tempo de trajeto assumido. O aviso sai mesmo assim, avisando que a estimativa é fixa."
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                gap: theme.space[2],
-              }}
-            >
-              {[20, 30, 40, 60, 90].map((minutes) => (
-                <Chip
-                  key={minutes}
-                  label={`${minutes} min`}
-                  selected={status.fallbackTravelMinutes === minutes}
-                  onPress={() => persist({ fallbackTravelMinutes: minutes })}
-                />
-              ))}
-            </View>
           </Section>
         </View>
       </ScreenContainer>

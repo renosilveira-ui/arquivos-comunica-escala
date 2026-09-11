@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import {
   departurePlans,
@@ -17,6 +17,7 @@ import { getDb } from "../server/db";
 import {
   dispatchDueDepartures,
   readTravelOrigin,
+  reconcileEnabledUsers,
   recomputeDuePlans,
   syncDeparturePlans,
   truncateToStoredSecond,
@@ -108,8 +109,24 @@ describe("motor de aviso de saída", () => {
   let userId = 0;
   let originId = 0;
 
-  const NOW = new Date();
+  /**
+   * Instante alinhado ao segundo. `TIMESTAMP` no MySQL não guarda fração e
+   * ARREDONDA o milissegundo; partir de um instante cravado deixa os horários
+   * do plano comparáveis ao milissegundo, sem deriva de 1 s por causa do
+   * relógio da máquina.
+   */
+  const NOW = new Date(Math.floor(Date.now() / 1000) * 1000);
   const SHIFT_START = new Date(NOW.getTime() + 6 * 60 * 60 * 1000);
+  /** Uma hora antes do plantão: o instante do aviso. Fixo. */
+  const NOTICE_AT = new Date(SHIFT_START.getTime() - 60 * 60_000);
+  /**
+   * A rota de cada plantão é calculada 70 min antes dele. Como o segundo
+   * plantão começa uma hora depois do primeiro, cada um vence o recálculo no
+   * seu próprio instante — e não existe um instante em que os dois estejam
+   * vencidos e nenhum aviso tenha expirado.
+   */
+  const RECOMPUTE_AT_FIRST = new Date(SHIFT_START.getTime() - 70 * 60_000);
+  const RECOMPUTE_AT_SECOND = new Date(SHIFT_START.getTime() - 10 * 60_000);
 
   beforeAll(async () => {
     const loaded = await getDb();
@@ -250,22 +267,9 @@ describe("motor de aviso de saída", () => {
   ): Promise<void> {
     await db
       .insert(userDeparturePreferences)
-      .values({
-        userId,
-        enabled: true,
-        travelOriginId: originId,
-        arrivalMarginMinutes: 15,
-        fallbackTravelMinutes: 40,
-        ...overrides,
-      })
+      .values({ userId, enabled: true, travelOriginId: originId, ...overrides })
       .onDuplicateKeyUpdate({
-        set: {
-          enabled: true,
-          travelOriginId: originId,
-          arrivalMarginMinutes: 15,
-          fallbackTravelMinutes: 40,
-          ...overrides,
-        },
+        set: { enabled: true, travelOriginId: originId, ...overrides },
       });
   }
 
@@ -274,6 +278,29 @@ describe("motor de aviso de saída", () => {
       .insert(userDeparturePreferences)
       .values({ userId, enabled: false })
       .onDuplicateKeyUpdate({ set: { enabled: false } });
+  }
+
+  /**
+   * Roda o recálculo no instante devido de cada um dos dois plantões, somando
+   * os resultados. É o que o worker faz ao longo do tempo — aqui condensado,
+   * porque o alvo destes testes é o resultado, não a cadência.
+   */
+  async function recomputeBoth(options: {
+    locationProvider: LocationProvider | null;
+    weatherProvider?: WeatherProvider | null;
+  }): Promise<{
+    withTraffic: number;
+    withoutTraffic: number;
+    expired: number;
+  }> {
+    const total = { withTraffic: 0, withoutTraffic: 0, expired: 0 };
+    for (const now of [RECOMPUTE_AT_FIRST, RECOMPUTE_AT_SECOND]) {
+      const partial = await recomputeDuePlans({ db, ...options, now });
+      total.withTraffic += partial.withTraffic;
+      total.withoutTraffic += partial.withoutTraffic;
+      total.expired += partial.expired;
+    }
+    return total;
   }
 
   describe("opt-in", () => {
@@ -340,10 +367,8 @@ describe("motor de aviso de saída", () => {
     it("plantão que muda de horário invalida o cálculo", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
 
       await db
@@ -369,6 +394,56 @@ describe("motor de aviso de saída", () => {
         .update(shiftInstances)
         .set({ startAt: SHIFT_START })
         .where(eq(shiftInstances.id, shiftIds[0]));
+    });
+
+    /**
+     * O usuário desliga o aviso e religa no dia seguinte. O plano foi
+     * cancelado no desligamento; se a reconciliação o ignorasse por
+     * "assinatura igual", o plantão ficaria para sempre sem aviso.
+     */
+    it("religar o aviso ressuscita o plano cancelado", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await disable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+
+      await enable();
+      const summary = await syncDeparturePlans({ db, userId, now: NOW });
+      expect(summary.refreshed).toBe(2);
+
+      const open = await db
+        .select({ id: departurePlans.id })
+        .from(departurePlans)
+        .where(
+          and(
+            eq(departurePlans.userId, userId),
+            eq(departurePlans.status, "PENDING"),
+          ),
+        );
+      expect(open).toHaveLength(2);
+    });
+
+    /**
+     * O outro lado da mesma moeda: aviso já entregue, mundo inalterado. Voltar
+     * a enfileirar treinaria o médico a silenciar o app.
+     */
+    it("plano já enviado não volta para a fila", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await db
+        .update(departurePlans)
+        .set({ status: "SENT", sentAt: NOW })
+        .where(eq(departurePlans.userId, userId));
+
+      const summary = await syncDeparturePlans({ db, userId, now: NOW });
+      expect(summary.refreshed).toBe(0);
+      expect(summary.created).toBe(0);
+
+      const still = await db
+        .select({ status: departurePlans.status })
+        .from(departurePlans)
+        .where(eq(departurePlans.userId, userId));
+      expect(still.every((plan) => plan.status === "SENT")).toBe(true);
     });
 
     it("alocação removida cancela o plano", async () => {
@@ -397,12 +472,10 @@ describe("motor de aviso de saída", () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
       const provider = fakeLocationProvider({ durationSeconds: 1800 });
-      const summary = await recomputeDuePlans({
-        db,
+      const summary = await recomputeBoth({
         locationProvider: provider,
-        now: NOW,
       });
-      expect(summary.computed).toBeGreaterThan(0);
+      expect(summary.withTraffic).toBeGreaterThan(0);
 
       const [plan] = await db
         .select({
@@ -410,7 +483,6 @@ describe("motor de aviso de saída", () => {
           departAt: departurePlans.departAt,
           quality: departurePlans.estimateQuality,
           duration: departurePlans.estimatedDurationSeconds,
-          desiredArrivalAt: departurePlans.desiredArrivalAt,
         })
         .from(departurePlans)
         .where(eq(departurePlans.assignmentId, assignmentIds[0]))
@@ -419,29 +491,52 @@ describe("motor de aviso de saída", () => {
       expect(plan.status).toBe("SCHEDULED");
       expect(plan.quality).toBe(ROUTE_ESTIMATE_QUALITY.liveTraffic);
       expect(plan.duration).toBe(1800);
-      // Saída = chegada desejada menos a duração.
+      // Saída = início do plantão menos a duração do trajeto.
       expect(plan.departAt?.getTime()).toBe(
-        plan.desiredArrivalAt.getTime() - 1800 * 1000,
+        SHIFT_START.getTime() - 1800 * 1000,
       );
     });
 
     /**
-     * A ausência do Google não pode virar ausência de aviso. O hospital sem
-     * coordenada ainda produz plano — com o número marcado como fallback.
+     * Places e Routes cobram por requisição. A pergunta é "quanto leva agora",
+     * e ela só tem resposta útil agora — uma consulta por plantão, pouco antes
+     * do aviso. Seis consultas convergindo para o mesmo número seriam conta
+     * paga para responder sobre um trânsito que o médico não vai pegar.
      */
-    it("hospital sem coordenada cai no fallback declarado", async () => {
+    it("gasta UMA consulta de rota por plantão", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      const provider = fakeLocationProvider({ durationSeconds: 1800 });
+      await recomputeBoth({
+        locationProvider: provider,
+      });
+      // Só o hospital com coordenada consulta; o outro nem chega ao provedor.
+      expect(provider.calls).toBe(1);
+
+      // Já calculado, não há o que recalcular: o tick seguinte não gasta cota.
+      await recomputeBoth({
+        locationProvider: provider,
+      });
+      expect(provider.calls).toBe(1);
+    });
+
+    /**
+     * A ausência do Google não pode virar ausência de aviso — nem virar um
+     * número inventado. O plano fica de pé, sem estimativa, e a mensagem diz
+     * isso com todas as letras.
+     */
+    it("hospital sem coordenada fica sem estimativa, não com uma chutada", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
 
       const [plan] = await db
         .select({
           quality: departurePlans.estimateQuality,
           duration: departurePlans.estimatedDurationSeconds,
+          departAt: departurePlans.departAt,
           status: departurePlans.status,
         })
         .from(departurePlans)
@@ -449,41 +544,68 @@ describe("motor de aviso de saída", () => {
         .limit(1);
 
       expect(plan.status).toBe("SCHEDULED");
-      expect(plan.quality).toBe(ROUTE_ESTIMATE_QUALITY.fallback);
-      expect(plan.duration).toBe(40 * 60);
+      expect(plan.quality).toBeNull();
+      expect(plan.duration).toBeNull();
+      expect(plan.departAt).toBeNull();
     });
 
-    it("provedor indisponível também cai no fallback, sem derrubar o plano", async () => {
+    it("provedor indisponível não derruba o plano", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      const summary = await recomputeDuePlans({
-        db,
+      const summary = await recomputeBoth({
         locationProvider: fakeLocationProvider({ fail: true }),
-        now: NOW,
       });
-      expect(summary.fallback).toBe(2);
-      expect(summary.computed).toBe(0);
+      expect(summary.withoutTraffic).toBe(2);
+      expect(summary.withTraffic).toBe(0);
     });
 
     it("sem provedor nenhum ainda planeja", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
+      const summary = await recomputeBoth({
+        locationProvider: null,
+      });
+      expect(summary.withoutTraffic).toBe(2);
+    });
+
+    /**
+     * O worker pode ter dormido (plano free do Render) e acordado horas
+     * depois. Consultar a rota de um aviso que não vai mais sair é gastar
+     * cota paga por um resultado que o despacho descartaria em seguida.
+     */
+    it("aviso já vencido é encerrado sem consultar o Google", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      const provider = fakeLocationProvider({ durationSeconds: 1800 });
+
       const summary = await recomputeDuePlans({
         db,
-        locationProvider: null,
-        now: NOW,
+        locationProvider: provider,
+        // Muito depois dos dois avisos: o worker acordou tarde demais.
+        now: new Date(SHIFT_START.getTime() + 6 * 60 * 60_000),
       });
-      expect(summary.fallback).toBe(2);
+
+      expect(provider.calls).toBe(0);
+      expect(summary.expired).toBe(2);
+      expect(summary.withTraffic + summary.withoutTraffic).toBe(0);
+
+      const plans = await db
+        .select({
+          status: departurePlans.status,
+          reason: departurePlans.lastFailureReason,
+        })
+        .from(departurePlans)
+        .where(eq(departurePlans.userId, userId));
+      expect(plans.every((plan) => plan.status === "CANCELLED")).toBe(true);
+      expect(plans.every((plan) => plan.reason === "EXPIRED")).toBe(true);
     });
 
     it("clima entra na mensagem sem bloquear o cálculo", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
         weatherProvider: fakeWeatherProvider(true),
-        now: NOW,
       });
       const [plan] = await db
         .select({ weather: departurePlans.weatherSummary })
@@ -496,11 +618,9 @@ describe("motor de aviso de saída", () => {
     it("tempo bom não polui a mensagem", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
         weatherProvider: fakeWeatherProvider(false),
-        now: NOW,
       });
       const [plan] = await db
         .select({ weather: departurePlans.weatherSummary })
@@ -515,18 +635,16 @@ describe("motor de aviso de saída", () => {
     it("envia uma vez só, mesmo com duas execuções concorrentes", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
 
       const [plan] = await db
-        .select({ departAt: departurePlans.departAt })
+        .select({ noticeAt: departurePlans.noticeAt })
         .from(departurePlans)
         .where(eq(departurePlans.assignmentId, assignmentIds[0]))
         .limit(1);
-      const sendTime = new Date(plan.departAt!.getTime() + 1000);
+      const sendTime = new Date(plan.noticeAt.getTime() + 1000);
 
       const sent: string[] = [];
       const send = async (input: { dedupKey: string; title: string }) => {
@@ -542,19 +660,17 @@ describe("motor de aviso de saída", () => {
       // silenciar o app.
       expect(first.sent + second.sent).toBe(1);
       expect(sent).toHaveLength(1);
-      expect(sent[0]).toContain("Saia às");
+      expect(sent[0]).toContain("Horário do plantão se aproxima");
     });
 
     it("aviso atrasado demais é encerrado sem envio", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
       const [plan] = await db
-        .select({ departAt: departurePlans.departAt })
+        .select({ noticeAt: departurePlans.noticeAt })
         .from(departurePlans)
         .where(eq(departurePlans.assignmentId, assignmentIds[0]))
         .limit(1);
@@ -565,7 +681,7 @@ describe("motor de aviso de saída", () => {
         send: async () => {
           sent.push("enviou");
         },
-        now: new Date(plan.departAt!.getTime() + 30 * 60_000),
+        now: new Date(plan.noticeAt.getTime() + 31 * 60_000),
       });
       expect(summary.expired).toBeGreaterThan(0);
       expect(sent).toHaveLength(0);
@@ -578,10 +694,8 @@ describe("motor de aviso de saída", () => {
     it("falha de entrega não derruba o lote nem reenvia", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
 
       // Os dois planos passam a sair no mesmo instante: o alvo aqui é o
@@ -589,7 +703,7 @@ describe("motor de aviso de saída", () => {
       const sendTime = new Date(NOW.getTime() + 60_000);
       await db
         .update(departurePlans)
-        .set({ departAt: sendTime })
+        .set({ noticeAt: sendTime })
         .where(eq(departurePlans.userId, userId));
 
       let attempts = 0;
@@ -623,31 +737,79 @@ describe("motor de aviso de saída", () => {
     it("não envia antes da hora", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({
-        db,
+      await recomputeBoth({
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: NOW,
       });
       const summary = await dispatchDueDepartures({
         db,
         send: async () => {
           throw new Error("não deveria enviar");
         },
-        now: NOW,
+        // Um minuto antes do aviso. O plano está calculado e pronto — e
+        // mesmo assim não sai.
+        now: new Date(NOTICE_AT.getTime() - 60_000),
       });
       expect(summary.sent).toBe(0);
     });
 
-    it("a mensagem diz a origem do número", async () => {
+    /**
+     * Sem Google o aviso continua saindo — e admite o que não sabe. Um número
+     * inventado, no aparelho do médico, tem a mesma aparência de um calculado.
+     */
+    it("sem rota, o aviso sai admitindo que não sabe o trânsito", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
-      await recomputeDuePlans({ db, locationProvider: null, now: NOW });
+      await recomputeBoth({
+        locationProvider: null,
+      });
 
       const [plan] = await db
-        .select({ departAt: departurePlans.departAt })
+        .select({ noticeAt: departurePlans.noticeAt })
         .from(departurePlans)
         .where(eq(departurePlans.assignmentId, assignmentIds[0]))
         .limit(1);
+
+      let body = "";
+      let title = "";
+      await dispatchDueDepartures({
+        db,
+        send: async (input) => {
+          body = input.body;
+          title = input.title;
+        },
+        now: new Date(plan.noticeAt.getTime() + 1000),
+      });
+      expect(title).toBe("Horário do plantão se aproxima");
+      expect(body).toContain("Estimativas de trânsito não disponíveis.");
+      expect(body).not.toMatch(/\d+\s*min/);
+    });
+
+    /**
+     * O aviso é sempre uma hora antes — não no horário de sair. Se o trajeto
+     * leva 25 minutos, o médico é avisado com 60, e a mensagem diz até que
+     * horas sair.
+     */
+    it("o aviso sai uma hora antes, não na hora de sair", async () => {
+      await enable();
+      await syncDeparturePlans({ db, userId, now: NOW });
+      await recomputeBoth({
+        locationProvider: fakeLocationProvider({ durationSeconds: 1500 }),
+      });
+
+      const [plan] = await db
+        .select({
+          noticeAt: departurePlans.noticeAt,
+          departAt: departurePlans.departAt,
+        })
+        .from(departurePlans)
+        .where(eq(departurePlans.assignmentId, assignmentIds[0]))
+        .limit(1);
+
+      expect(plan.noticeAt.getTime()).toBe(NOTICE_AT.getTime());
+      // A saída fica 35 minutos DEPOIS do aviso: é informação, não gatilho.
+      expect(plan.departAt!.getTime() - plan.noticeAt.getTime()).toBe(
+        35 * 60_000,
+      );
 
       let body = "";
       await dispatchDueDepartures({
@@ -655,9 +817,10 @@ describe("motor de aviso de saída", () => {
         send: async (input) => {
           body = input.body;
         },
-        now: new Date(plan.departAt!.getTime() + 1000),
+        now: new Date(plan.noticeAt.getTime() + 1000),
       });
-      expect(body).toContain("não foi possível consultar o trânsito");
+      expect(body).toContain("25 min");
+      expect(body).toMatch(/saia até \d{2}:\d{2}/);
     });
   });
 
@@ -681,21 +844,101 @@ describe("motor de aviso de saída", () => {
       ).toBe("2026-09-11T10:00:00.000Z");
     });
 
-    it("um plano criado com fração de segundo é visto pelo worker no mesmo instante", async () => {
+    /**
+     * O worker roda EXATAMENTE no instante gravado. Se o banco tivesse
+     * arredondado para cima, a linha estaria 1 s no futuro e este tick não a
+     * enxergaria — o aviso só sairia no tick seguinte, ou não sairia.
+     */
+    it("o plano é visto pelo worker no instante exato que ficou gravado", async () => {
       await enable();
-      // Instante com .700: sem truncar, o banco guardaria T+1s e o recálculo
-      // abaixo, feito exatamente em T, não encontraria nada.
-      const fractional = new Date(
-        Math.floor(NOW.getTime() / 1000) * 1000 + 700,
+      // Reconciliação com fração de segundo no relógio: o horário do plano
+      // deriva do plantão, e não pode herdar a fração nem o arredondamento.
+      await syncDeparturePlans({
+        db,
+        userId,
+        now: new Date(NOW.getTime() + 700),
+      });
+
+      const [plan] = await db
+        .select({
+          noticeAt: departurePlans.noticeAt,
+          nextRecomputeAt: departurePlans.nextRecomputeAt,
+        })
+        .from(departurePlans)
+        .where(eq(departurePlans.assignmentId, assignmentIds[0]))
+        .limit(1);
+
+      expect(plan.noticeAt.getTime()).toBe(NOTICE_AT.getTime());
+      expect(plan.nextRecomputeAt!.getTime()).toBe(
+        NOTICE_AT.getTime() - 10 * 60_000,
       );
-      await syncDeparturePlans({ db, userId, now: fractional });
 
       const summary = await recomputeDuePlans({
         db,
         locationProvider: fakeLocationProvider({ durationSeconds: 1800 }),
-        now: fractional,
+        now: plan.nextRecomputeAt!,
       });
-      expect(summary.computed + summary.fallback).toBeGreaterThan(0);
+      expect(summary.withTraffic + summary.withoutTraffic).toBeGreaterThan(0);
+    });
+  });
+
+  /**
+   * A escala muda toda semana. Se o aviso só existisse para plantões que já
+   * estavam lá quando o médico ligou a preferência, o gestor alocaria, o
+   * médico não receberia nada, e ninguém descobriria por quê.
+   */
+  describe("reconciliação periódica", () => {
+    it("plantão alocado DEPOIS de ligar o aviso também vira plano", async () => {
+      await enable();
+      await db.delete(departurePlans).where(eq(departurePlans.userId, userId));
+
+      const summary = await reconcileEnabledUsers({ db, now: NOW });
+      expect(summary.scanned).toBeGreaterThan(0);
+      expect(summary.created).toBe(2);
+
+      const plans = await db
+        .select({ id: departurePlans.id })
+        .from(departurePlans)
+        .where(eq(departurePlans.userId, userId));
+      expect(plans).toHaveLength(2);
+    });
+
+    it("quem está com o aviso desligado não gera trabalho", async () => {
+      await disable();
+      const summary = await reconcileEnabledUsers({
+        db,
+        now: NOW,
+        afterUserId: userId - 1,
+        limit: 1,
+      });
+      expect(summary.scanned).toBe(0);
+      expect(summary.created).toBe(0);
+    });
+
+    /**
+     * O cursor avança por `user_id` e dá a volta ao chegar ao fim. Sem a
+     * volta, quem tem id menor que o último visto nunca mais seria
+     * reconciliado.
+     */
+    it("o cursor avança e volta ao início ao terminar a lista", async () => {
+      await enable();
+      const page = await reconcileEnabledUsers({
+        db,
+        now: NOW,
+        afterUserId: userId - 1,
+        limit: 1,
+      });
+      expect(page.scanned).toBe(1);
+      expect(page.nextCursor).toBe(userId);
+
+      const last = await reconcileEnabledUsers({
+        db,
+        now: NOW,
+        afterUserId: userId,
+        limit: 1,
+      });
+      expect(last.scanned).toBe(0);
+      expect(last.nextCursor).toBe(0);
     });
   });
 

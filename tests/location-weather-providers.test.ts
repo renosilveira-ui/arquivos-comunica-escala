@@ -112,13 +112,16 @@ describe("Routes — duração", () => {
   /**
    * Só chamamos de trânsito atual o que o Google diferenciou do tempo
    * estático. Igual quer dizer que ele não aplicou trânsito — e dizer que
-   * aplicou seria inventar precisão que o aviso de saída vai propagar.
+   * aplicou seria inventar precisão que o aviso vai propagar.
+   *
+   * E não há terceiro valor. Houve um `FALLBACK`, para um tempo que o próprio
+   * sistema assumia quando o provedor falhava — removido porque um número
+   * inventado, no aparelho do médico, tem a mesma aparência de um calculado.
    */
-  it("o vocabulário de qualidade distingue as três origens do número", () => {
+  it("só existe trânsito atual e tempo típico — nada inventado", () => {
     expect(Object.values(ROUTE_ESTIMATE_QUALITY)).toEqual([
       "LIVE_TRAFFIC",
       "TYPICAL",
-      "FALLBACK",
     ]);
   });
 });

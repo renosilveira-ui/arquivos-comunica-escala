@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 
 import {
   departurePlans,
@@ -13,17 +13,18 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import {
-  buildDepartureMessage,
-  computeDeparture,
+  PLANNING_HORIZON_MS,
+  buildShiftNoticeMessage,
   departureDedupKey,
-  desiredArrival,
-  isDepartureExpired,
+  departureFor,
+  isNoticeExpired,
   isWithinPlanningHorizon,
-  nextRecomputeAt,
+  noticeAt,
   normalizePreferences,
   originSignature,
+  routeComputeAt,
   shiftSignature,
-  shouldSendDeparture,
+  shouldSendNotice,
   type DeparturePreferences,
   type RouteSample,
 } from "./departure-planning";
@@ -34,7 +35,6 @@ import {
 import { openExternalCredential } from "./external-credentials-crypto";
 import { resolveScheduleTimeZone } from "./institution-time-zone";
 import type { LocationProvider } from "./integrations/providers/location-provider";
-import { ROUTE_ESTIMATE_QUALITY } from "./integrations/providers/location-provider";
 import type { WeatherProvider } from "./integrations/providers/weather-provider";
 import { weatherAdviceLine } from "./integrations/apple/weatherkit-client";
 import {
@@ -173,8 +173,6 @@ export async function readDeparturePreferences(
       enabled: userDeparturePreferences.enabled,
       travelOriginId: userDeparturePreferences.travelOriginId,
       travelMode: userDeparturePreferences.travelMode,
-      arrivalMarginMinutes: userDeparturePreferences.arrivalMarginMinutes,
-      fallbackTravelMinutes: userDeparturePreferences.fallbackTravelMinutes,
     })
     .from(userDeparturePreferences)
     .where(eq(userDeparturePreferences.userId, userId))
@@ -255,6 +253,48 @@ export async function listUpcomingAssignments(input: {
     .limit(200);
 }
 
+/** Estados em que um plano ainda pode virar aviso. */
+const OPEN_PLAN_STATUSES = ["PENDING", "SCHEDULED"] as const;
+
+type ExistingPlan = {
+  status: (typeof departurePlans.$inferSelect)["status"];
+  shiftSignature: string | null;
+  originSignature: string | null;
+};
+
+/**
+ * O plano precisa voltar para o início da fila?
+ *
+ * Três respostas distintas, e confundi-las custa caro nos dois sentidos:
+ * ressuscitar o que já foi enviado vira aviso repetido; deixar dormindo o que
+ * mudou vira plantão sem aviso.
+ */
+export function needsReset(input: {
+  current: ExistingPlan;
+  shiftFingerprint: string;
+  originFingerprint: string;
+  notice: Date;
+  now: Date;
+}): boolean {
+  const changed =
+    input.current.shiftSignature !== input.shiftFingerprint ||
+    input.current.originSignature !== input.originFingerprint;
+  // Plantão remarcado, setor trocado, origem nova: o cálculo anterior
+  // descreve outro mundo.
+  if (changed) return true;
+  // Mesmo mundo e plano aberto: já está na fila, nada a fazer.
+  if (
+    input.current.status === "PENDING" ||
+    input.current.status === "SCHEDULED"
+  )
+    return false;
+  // Mesmo mundo e já enviado: reenviar treinaria o médico a ignorar.
+  if (input.current.status === "SENT") return false;
+  // Cancelado com aviso ainda no futuro — foi o usuário desligando e
+  // religando o recurso. Cancelado com aviso vencido fica no passado.
+  return input.notice.getTime() > input.now.getTime();
+}
+
 export type SyncPlansSummary = {
   created: number;
   refreshed: number;
@@ -265,8 +305,8 @@ export type SyncPlansSummary = {
  * Reconcilia os planos do usuário com as alocações dele.
  *
  * Cancela o que perdeu a origem (plantão removido, trocado, preferência
- * desligada) e cria o que falta. Não calcula rota — isso é da fase 2, e
- * misturar as duas faria uma falha de rede impedir o cancelamento de um
+ * desligada) e cria o que falta. Não chama rede — isso é da fase seguinte, e
+ * misturar as duas faria uma falha do Google impedir o cancelamento de um
  * plano que já não deveria existir.
  */
 export async function syncDeparturePlans(input: {
@@ -278,26 +318,19 @@ export async function syncDeparturePlans(input: {
   const summary: SyncPlansSummary = { created: 0, refreshed: 0, cancelled: 0 };
   const preferences = await readDeparturePreferences(input.db, input.userId);
 
-  const existing = await input.db
-    .select({
-      id: departurePlans.id,
-      assignmentId: departurePlans.assignmentId,
-      status: departurePlans.status,
-      shiftSignature: departurePlans.shiftSignature,
-      originSignature: departurePlans.originSignature,
-    })
-    .from(departurePlans)
-    .where(
-      and(
-        eq(departurePlans.userId, input.userId),
-        inArray(departurePlans.status, ["PENDING", "SCHEDULED", "UNAVAILABLE"]),
-      ),
-    );
-
-  // Desligou o aviso: todo plano aberto some. Manter planos de quem optou por
-  // não receber seria guardar intenção que o usuário revogou.
+  // Desligou o aviso: todo plano aberto some. Manter intenção que o usuário
+  // revogou seria guardar o que ele pediu para esquecer.
   if (!preferences.enabled) {
-    if (existing.length > 0) {
+    const open = await input.db
+      .select({ id: departurePlans.id })
+      .from(departurePlans)
+      .where(
+        and(
+          eq(departurePlans.userId, input.userId),
+          inArray(departurePlans.status, OPEN_PLAN_STATUSES),
+        ),
+      );
+    if (open.length > 0) {
       await input.db
         .update(departurePlans)
         .set({
@@ -307,10 +340,10 @@ export async function syncDeparturePlans(input: {
         .where(
           inArray(
             departurePlans.id,
-            existing.map((plan) => plan.id),
+            open.map((plan) => plan.id),
           ),
         );
-      summary.cancelled = existing.length;
+      summary.cancelled = open.length;
     }
     return summary;
   }
@@ -324,8 +357,42 @@ export async function syncDeparturePlans(input: {
     db: input.db,
     userId: input.userId,
     now,
-    horizonMs: 30 * 24 * 60 * 60 * 1000,
+    horizonMs: PLANNING_HORIZON_MS,
   });
+
+  /**
+   * Planos que interessam a esta reconciliação: os ainda abertos (para
+   * cancelar os órfãos) e os de QUALQUER status cujas alocações continuam de
+   * pé.
+   *
+   * Incluir os terminais é o que permite ressuscitar um plano cancelado
+   * quando o médico volta a ligar o aviso, e o que evita cair no caminho de
+   * INSERT — onde a chave única `(user_id, assignment_id)` transformaria a
+   * reconciliação num erro de duplicidade.
+   */
+  const assignmentIds = assignments.map(
+    (assignment) => assignment.assignmentId,
+  );
+  const existing = await input.db
+    .select({
+      id: departurePlans.id,
+      assignmentId: departurePlans.assignmentId,
+      status: departurePlans.status,
+      shiftSignature: departurePlans.shiftSignature,
+      originSignature: departurePlans.originSignature,
+    })
+    .from(departurePlans)
+    .where(
+      and(
+        eq(departurePlans.userId, input.userId),
+        assignmentIds.length > 0
+          ? or(
+              inArray(departurePlans.status, OPEN_PLAN_STATUSES),
+              inArray(departurePlans.assignmentId, assignmentIds),
+            )
+          : inArray(departurePlans.status, OPEN_PLAN_STATUSES),
+      ),
+    );
 
   const existingByAssignment = new Map(
     existing.map((plan) => [plan.assignmentId, plan]),
@@ -358,31 +425,48 @@ export async function syncDeparturePlans(input: {
         destination && isValidGeoPoint(destination) ? destination : null,
       preferences,
     });
-    const arrival = desiredArrival(
-      assignment.startAt,
-      preferences.arrivalMarginMinutes,
-    );
+
+    const notice = noticeAt(assignment.startAt);
+    const computeAt = routeComputeAt(assignment.startAt);
 
     const current = existingByAssignment.get(assignment.assignmentId);
     if (current) {
-      const unchanged =
-        current.shiftSignature === shiftFingerprint &&
-        current.originSignature === originFingerprint;
-      if (unchanged) continue;
-      // Mundo mudou: o cálculo anterior descreve uma realidade que não existe
-      // mais. Volta para PENDING em vez de disparar o horário antigo.
+      if (
+        !needsReset({
+          current,
+          shiftFingerprint,
+          originFingerprint,
+          notice,
+          now,
+        })
+      )
+        continue;
+      // Mundo mudou (ou o aviso foi religado): o estado anterior descreve uma
+      // realidade que não existe mais. Volta para PENDING com chave de
+      // deduplicação nova, em vez de disparar a estimativa antiga — ou de
+      // ficar preso num status terminal e nunca mais avisar.
       await input.db
         .update(departurePlans)
         .set({
           status: "PENDING",
-          desiredArrivalAt: arrival,
+          noticeAt: truncateToStoredSecond(notice),
+          dedupKey: departureDedupKey({
+            userId: input.userId,
+            assignmentId: assignment.assignmentId,
+            noticeAtUtc: notice,
+          }),
           shiftSignature: shiftFingerprint,
           originSignature: originFingerprint,
           travelOriginId: origin?.id ?? null,
           departAt: null,
-          nextRecomputeAt: truncateToStoredSecond(now),
           estimatedDurationSeconds: null,
+          estimatedDistanceMeters: null,
           estimateQuality: null,
+          weatherSummary: null,
+          computedAt: null,
+          sentAt: null,
+          lastFailureReason: null,
+          nextRecomputeAt: truncateToStoredSecond(computeAt),
           version: sql`${departurePlans.version} + 1`,
         })
         .where(eq(departurePlans.id, current.id));
@@ -390,7 +474,7 @@ export async function syncDeparturePlans(input: {
       continue;
     }
 
-    await input.db
+    const [inserted] = await input.db
       .insert(departurePlans)
       .values({
         userId: input.userId,
@@ -399,27 +483,31 @@ export async function syncDeparturePlans(input: {
         shiftInstanceId: assignment.shiftInstanceId,
         travelOriginId: origin?.id ?? null,
         status: "PENDING",
-        desiredArrivalAt: arrival,
-        nextRecomputeAt: truncateToStoredSecond(now),
+        noticeAt: truncateToStoredSecond(notice),
+        nextRecomputeAt: truncateToStoredSecond(computeAt),
         shiftSignature: shiftFingerprint,
         originSignature: originFingerprint,
-        // Chave provisória até haver horário: única por alocação, para a
-        // inserção concorrente não duplicar o plano.
-        dedupKey: `departure-pending:${input.userId}:${assignment.assignmentId}`,
+        dedupKey: departureDedupKey({
+          userId: input.userId,
+          assignmentId: assignment.assignmentId,
+          noticeAtUtc: notice,
+        }),
       })
+      // Rede de concorrência: duas reconciliações simultâneas do mesmo
+      // usuário. A que perder a corrida não pode virar erro de duplicidade —
+      // a vencedora já gravou o plano correto.
       .onDuplicateKeyUpdate({
-        set: {
-          desiredArrivalAt: arrival,
-          shiftSignature: shiftFingerprint,
-          originSignature: originFingerprint,
-          version: sql`${departurePlans.version} + 1`,
-        },
+        set: { version: sql`${departurePlans.version} + 1` },
       });
-    summary.created += 1;
+    // `affectedRows` 1 = inseriu; 2 = a outra execução chegou antes. Contar a
+    // corrida perdida como criação faria o log do worker mentir.
+    if (inserted?.affectedRows === 1) summary.created += 1;
   }
 
   const orphans = existing.filter(
-    (plan) => !liveAssignmentIds.has(plan.assignmentId),
+    (plan) =>
+      !liveAssignmentIds.has(plan.assignmentId) &&
+      (plan.status === "PENDING" || plan.status === "SCHEDULED"),
   );
   if (orphans.length > 0) {
     await input.db
@@ -437,18 +525,112 @@ export async function syncDeparturePlans(input: {
   return summary;
 }
 
-export type RecomputeSummary = {
-  computed: number;
-  fallback: number;
-  unavailable: number;
+/**
+ * Quantos usuários uma passada de reconciliação examina.
+ *
+ * A reconciliação não chama rede — é só banco —, mas varrer todo mundo a cada
+ * tick seria trabalho constante para um recurso opt-in. O cursor avança por
+ * `user_id` e dá a volta: em poucos minutos todos foram vistos.
+ */
+export const RECONCILE_BATCH_SIZE = 100;
+
+export type ReconcileSummary = SyncPlansSummary & {
+  /** Usuários examinados nesta passada. */
+  scanned: number;
+  /** Onde a próxima passada recomeça. Zero = volta ao início. */
+  nextCursor: number;
 };
 
 /**
- * Calcula rota (e clima) para os planos vencidos.
+ * Reconcilia os planos de quem tem o aviso ligado.
  *
- * O clima é enriquecimento: uma falha dele nunca impede o cálculo nem o
- * envio. Já a rota tem hierarquia explícita — fresca, última válida, ou
- * fallback declarado — implementada em `computeDeparture`.
+ * Sem isto o aviso só existiria para plantões que já estavam na escala quando
+ * o médico ligou a preferência: uma alocação feita depois — que é o caso
+ * normal, a escala muda toda semana — nunca viraria aviso. O gestor aloca, o
+ * médico não recebe nada, e ninguém descobre por quê.
+ *
+ * É a única fase que varre usuários, e por isso é a única com cursor.
+ */
+export async function reconcileEnabledUsers(input: {
+  db: EngineDb;
+  now?: Date;
+  afterUserId?: number;
+  limit?: number;
+}): Promise<ReconcileSummary> {
+  const now = input.now ?? new Date();
+  const limit = input.limit ?? RECONCILE_BATCH_SIZE;
+  const cursor = input.afterUserId ?? 0;
+
+  const enabled = await input.db
+    .select({ userId: userDeparturePreferences.userId })
+    .from(userDeparturePreferences)
+    .where(
+      and(
+        eq(userDeparturePreferences.enabled, true),
+        gt(userDeparturePreferences.userId, cursor),
+      ),
+    )
+    .orderBy(asc(userDeparturePreferences.userId))
+    .limit(limit);
+
+  const summary: ReconcileSummary = {
+    created: 0,
+    refreshed: 0,
+    cancelled: 0,
+    scanned: enabled.length,
+    // Lote incompleto significa fim da lista: a próxima passada recomeça.
+    nextCursor:
+      enabled.length < limit ? 0 : (enabled[enabled.length - 1]?.userId ?? 0),
+  };
+
+  for (const row of enabled) {
+    // Um usuário com dados inconsistentes não pode travar a fila dos outros.
+    try {
+      const one = await syncDeparturePlans({
+        db: input.db,
+        userId: row.userId,
+        now,
+      });
+      summary.created += one.created;
+      summary.refreshed += one.refreshed;
+      summary.cancelled += one.cancelled;
+    } catch (error) {
+      if (isRetryableSyncFailure(error)) continue;
+      throw error;
+    }
+  }
+
+  return summary;
+}
+
+/**
+ * Falha de um usuário isolado não derruba a varredura — exceto quando a causa
+ * é estrutural (tabela ausente), que precisa chegar ao worker para ele
+ * adormecer em vez de repetir o erro a cada minuto.
+ */
+function isRetryableSyncFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return true;
+  return (error as { code?: unknown }).code !== "ER_NO_SUCH_TABLE";
+}
+
+export type RecomputeSummary = {
+  /** Planos que ganharam estimativa de trânsito. */
+  withTraffic: number;
+  /** Planos que vão sair sem estimativa — e dizendo isso. */
+  withoutTraffic: number;
+  /** Planos cujo aviso já passou da tolerância; encerrados sem consultar rota. */
+  expired: number;
+};
+
+/**
+ * Calcula a rota e o clima pouco antes do aviso.
+ *
+ * **Uma consulta por plantão.** A pergunta é "quanto leva agora", e ela só
+ * tem resposta útil agora — calcular na véspera gastaria cota para responder
+ * sobre um trânsito que não é o que o médico vai pegar.
+ *
+ * Sem rota o plano continua de pé: o aviso sai na mesma hora, dizendo que não
+ * sabe o trânsito.
  */
 export async function recomputeDuePlans(input: {
   db: EngineDb;
@@ -459,9 +641,9 @@ export async function recomputeDuePlans(input: {
 }): Promise<RecomputeSummary> {
   const now = input.now ?? new Date();
   const summary: RecomputeSummary = {
-    computed: 0,
-    fallback: 0,
-    unavailable: 0,
+    withTraffic: 0,
+    withoutTraffic: 0,
+    expired: 0,
   };
 
   const due = await input.db
@@ -471,26 +653,51 @@ export async function recomputeDuePlans(input: {
       assignmentId: departurePlans.assignmentId,
       shiftInstanceId: departurePlans.shiftInstanceId,
       travelOriginId: departurePlans.travelOriginId,
-      desiredArrivalAt: departurePlans.desiredArrivalAt,
-      estimatedDurationSeconds: departurePlans.estimatedDurationSeconds,
-      estimateQuality: departurePlans.estimateQuality,
-      computedAt: departurePlans.computedAt,
+      noticeAt: departurePlans.noticeAt,
       version: departurePlans.version,
     })
     .from(departurePlans)
     .where(
       and(
-        inArray(departurePlans.status, ["PENDING", "SCHEDULED"]),
-        or(
-          isNull(departurePlans.nextRecomputeAt),
-          lte(departurePlans.nextRecomputeAt, now),
-        ),
+        inArray(departurePlans.status, OPEN_PLAN_STATUSES),
+        // `next_recompute_at` NULL significa "já calculado, nada a fazer" —
+        // nunca "calcule agora". Tratar NULL como vencido faria cada tick do
+        // worker reconsultar o Google para todo plano já resolvido, e
+        // Places/Routes cobram por requisição.
+        lte(departurePlans.nextRecomputeAt, now),
       ),
     )
-    .orderBy(asc(departurePlans.desiredArrivalAt))
+    .orderBy(asc(departurePlans.noticeAt))
     .limit(input.limit ?? RECOMPUTE_BATCH_SIZE);
 
   for (const plan of due) {
+    /**
+     * Aviso vencido não vira consulta paga.
+     *
+     * O worker pode ter dormido (plano free do Render) e acordado horas
+     * depois com planos vencidos na fila. Perguntar ao Google quanto leva o
+     * trajeto de um aviso que não vai mais sair é gastar cota por nada — e o
+     * despacho descartaria o resultado logo em seguida.
+     */
+    if (isNoticeExpired({ noticeAtUtc: plan.noticeAt, now })) {
+      const [closed] = await input.db
+        .update(departurePlans)
+        .set({
+          status: "CANCELLED",
+          lastFailureReason: "EXPIRED",
+          nextRecomputeAt: null,
+          version: sql`${departurePlans.version} + 1`,
+        })
+        .where(
+          and(
+            eq(departurePlans.id, plan.id),
+            eq(departurePlans.version, plan.version),
+          ),
+        );
+      if (closed && closed.affectedRows === 1) summary.expired += 1;
+      continue;
+    }
+
     const preferences = await readDeparturePreferences(input.db, plan.userId);
     const origin = await readTravelOrigin(
       input.db,
@@ -503,112 +710,84 @@ export async function recomputeDuePlans(input: {
         startAt: shiftInstances.startAt,
         hospitalLatitude: hospitals.latitude,
         hospitalLongitude: hospitals.longitude,
+        hospitalTimeZone: hospitals.timeZone,
+        institutionTimeZone: institutions.timeZone,
       })
       .from(shiftInstances)
       .innerJoin(sectors, eq(sectors.id, shiftInstances.sectorId))
       .innerJoin(hospitals, eq(hospitals.id, sectors.hospitalId))
+      .innerJoin(institutions, eq(institutions.id, hospitals.institutionId))
       .where(eq(shiftInstances.id, plan.shiftInstanceId))
       .limit(1);
+    if (!shift) continue;
 
     const destination =
-      shift?.hospitalLatitude && shift?.hospitalLongitude
+      shift.hospitalLatitude && shift.hospitalLongitude
         ? {
             latitude: Number(shift.hospitalLatitude),
             longitude: Number(shift.hospitalLongitude),
           }
         : null;
 
-    let fresh: RouteSample | null = null;
+    let sample: RouteSample | null = null;
     if (
       input.locationProvider &&
       origin &&
       destination &&
       isValidGeoPoint(destination)
     ) {
-      // Primeira passada com a chegada desejada como referência de partida;
-      // a Routes modela trânsito a partir da saída, então convergir uma vez
-      // aproxima o suficiente sem dobrar o custo de cota.
-      const guess = await input.locationProvider.computeRoute({
+      // Partida no instante do aviso: é o trânsito daquele horário que
+      // interessa, e é sobre ele que a mensagem vai falar.
+      const route = await input.locationProvider.computeRoute({
         origin: origin.location,
         destination,
         travelMode: preferences.travelMode,
-        departAtUtc: new Date(
-          Math.max(
-            now.getTime(),
-            plan.desiredArrivalAt.getTime() - 60 * 60 * 1000,
-          ),
-        ),
+        departAtUtc: plan.noticeAt,
       });
-      if (guess.ok) {
-        const refined = await input.locationProvider.computeRoute({
-          origin: origin.location,
-          destination,
-          travelMode: preferences.travelMode,
-          departAtUtc: new Date(
-            plan.desiredArrivalAt.getTime() -
-              guess.value.durationSeconds * 1000,
-          ),
-        });
-        const chosen = refined.ok ? refined.value : guess.value;
-        fresh = {
-          durationSeconds: chosen.durationSeconds,
-          distanceMeters: chosen.distanceMeters,
-          quality: chosen.quality,
-          computedAtUtc: chosen.computedAtUtc,
+      if (route.ok) {
+        sample = {
+          durationSeconds: route.value.durationSeconds,
+          distanceMeters: route.value.distanceMeters,
+          quality: route.value.quality,
+          computedAtUtc: route.value.computedAtUtc,
         };
       }
     }
-
-    const lastKnown: RouteSample | null =
-      plan.estimatedDurationSeconds && plan.computedAt && plan.estimateQuality
-        ? {
-            durationSeconds: plan.estimatedDurationSeconds,
-            distanceMeters: 0,
-            quality: plan.estimateQuality,
-            computedAtUtc: plan.computedAt,
-          }
-        : null;
-
-    const computed = computeDeparture({
-      desiredArrivalAtUtc: plan.desiredArrivalAt,
-      fresh,
-      lastKnown,
-      fallbackTravelMinutes: preferences.fallbackTravelMinutes,
-      now,
-    });
 
     let weatherSummary: string | null = null;
     if (input.weatherProvider && destination && isValidGeoPoint(destination)) {
       const forecast = await input.weatherProvider.forecastAt({
         coarseLocation: coarsenGeoPoint(destination),
-        atUtc: computed.departAt,
-        timeZone: "America/Sao_Paulo",
+        atUtc: plan.noticeAt,
+        // Fuso do hospital, não um fixo: "noite com chuva" precisa ser noite
+        // onde o plantão acontece. Instituição nova em outro fuso herda o
+        // comportamento certo sem configuração extra.
+        timeZone: resolveScheduleTimeZone({
+          hospitalTimeZone: shift.hospitalTimeZone,
+          institutionTimeZone: shift.institutionTimeZone,
+        }),
       });
-      // Clima é ornamento: falha aqui não altera o cálculo nem impede o envio.
+      // Clima é ornamento: falha aqui não altera o aviso nem o impede.
       if (forecast.ok) weatherSummary = weatherAdviceLine(forecast.value);
     }
-
-    const dedupKey = departureDedupKey({
-      userId: plan.userId,
-      assignmentId: plan.assignmentId,
-      departAtUtc: computed.departAt,
-    });
 
     const [updated] = await input.db
       .update(departurePlans)
       .set({
         status: "SCHEDULED",
-        departAt: truncateToStoredSecond(computed.departAt),
-        estimatedDurationSeconds: computed.durationSeconds,
-        estimatedDistanceMeters: fresh?.distanceMeters ?? null,
-        estimateQuality: computed.quality,
+        departAt: sample
+          ? truncateToStoredSecond(
+              departureFor(shift.startAt, sample.durationSeconds),
+            )
+          : null,
+        estimatedDurationSeconds: sample?.durationSeconds ?? null,
+        estimatedDistanceMeters: sample?.distanceMeters ?? null,
+        estimateQuality: sample?.quality ?? null,
         weatherSummary,
-        dedupKey,
         computedAt: now,
-        nextRecomputeAt: (() => {
-          const next = nextRecomputeAt(computed.departAt, now);
-          return next ? truncateToStoredSecond(next) : null;
-        })(),
+        // Uma consulta por plantão: calculado o trânsito do horário do aviso,
+        // não há o que recalcular.
+        nextRecomputeAt: null,
         lastFailureReason: null,
         version: sql`${departurePlans.version} + 1`,
       })
@@ -621,12 +800,8 @@ export async function recomputeDuePlans(input: {
       );
 
     if (!updated || updated.affectedRows !== 1) continue;
-
-    if (computed.quality === ROUTE_ESTIMATE_QUALITY.fallback) {
-      summary.fallback += 1;
-    } else {
-      summary.computed += 1;
-    }
+    if (sample) summary.withTraffic += 1;
+    else summary.withoutTraffic += 1;
   }
 
   return summary;
@@ -652,9 +827,9 @@ export type DepartureSender = (input: {
 /**
  * Envia os avisos cuja hora chegou.
  *
- * O status vira `SENT` por CAS **antes** do envio: se o push falhar, o
- * plano não é reenviado num loop. Perder um aviso é ruim; mandar cinco é
- * pior — treina o médico a silenciar o app.
+ * O status vira `SENT` por CAS **antes** do envio: se o push falhar, o plano
+ * não é reenviado num loop. Perder um aviso é ruim; mandar cinco é pior —
+ * treina o médico a silenciar o app.
  */
 export async function dispatchDueDepartures(input: {
   db: EngineDb;
@@ -671,10 +846,9 @@ export async function dispatchDueDepartures(input: {
       userId: departurePlans.userId,
       institutionId: departurePlans.institutionId,
       shiftInstanceId: departurePlans.shiftInstanceId,
-      departAt: departurePlans.departAt,
+      noticeAt: departurePlans.noticeAt,
       dedupKey: departurePlans.dedupKey,
       estimatedDurationSeconds: departurePlans.estimatedDurationSeconds,
-      estimateQuality: departurePlans.estimateQuality,
       weatherSummary: departurePlans.weatherSummary,
       version: departurePlans.version,
     })
@@ -682,18 +856,16 @@ export async function dispatchDueDepartures(input: {
     .where(
       and(
         eq(departurePlans.status, "SCHEDULED"),
-        lte(departurePlans.departAt, now),
+        lte(departurePlans.noticeAt, now),
       ),
     )
-    .orderBy(asc(departurePlans.departAt))
+    .orderBy(asc(departurePlans.noticeAt))
     .limit(input.limit ?? DISPATCH_BATCH_SIZE);
 
   for (const plan of due) {
-    if (!plan.departAt) continue;
-
-    if (isDepartureExpired({ departAtUtc: plan.departAt, now })) {
-      // "Saia às 18h07" entregue às 18h40 não ajuda: o médico confere o
-      // relógio e conclui que o app está errado.
+    if (isNoticeExpired({ noticeAtUtc: plan.noticeAt, now })) {
+      // Entregue muito depois, o aviso atrapalha: o médico confere o relógio
+      // e conclui que o app está errado.
       await input.db
         .update(departurePlans)
         .set({
@@ -711,7 +883,7 @@ export async function dispatchDueDepartures(input: {
       continue;
     }
 
-    if (!shouldSendDeparture({ departAtUtc: plan.departAt, now })) continue;
+    if (!shouldSendNotice({ noticeAtUtc: plan.noticeAt, now })) continue;
 
     const [shift] = await input.db
       .select({
@@ -729,19 +901,17 @@ export async function dispatchDueDepartures(input: {
       .limit(1);
     if (!shift) continue;
 
-    const message = buildDepartureMessage({
-      departAtUtc: plan.departAt,
+    const message = buildShiftNoticeMessage({
       shiftStartsAtUtc: shift.startAt,
-      durationSeconds: plan.estimatedDurationSeconds ?? 0,
-      quality: plan.estimateQuality ?? ROUTE_ESTIMATE_QUALITY.fallback,
-      stale: plan.estimateQuality === ROUTE_ESTIMATE_QUALITY.fallback,
       sectorName: shift.sectorName,
       hospitalName: shift.hospitalName,
       timeZone: resolveScheduleTimeZone({
         hospitalTimeZone: shift.hospitalTimeZone,
         institutionTimeZone: shift.institutionTimeZone,
       }),
+      durationSeconds: plan.estimatedDurationSeconds,
       weatherSummary: plan.weatherSummary,
+      now,
     });
 
     // Marca antes de enviar: falha de push não pode virar loop de avisos.
@@ -774,10 +944,10 @@ export async function dispatchDueDepartures(input: {
       });
       summary.sent += 1;
     } catch {
-      // Uma entrega que falha não pode derrubar o lote: os outros médicos do
-      // mesmo tick têm plantão hoje também. O plano continua SENT de
-      // propósito — o outbox de push já tem retry próprio, e reverter aqui
-      // abriria a porta para o mesmo aviso sair duas vezes.
+      // Uma entrega que falha não derruba o lote: os outros médicos do mesmo
+      // tick têm plantão hoje também. O plano continua SENT de propósito — o
+      // outbox de push tem retry próprio, e reverter aqui abriria a porta
+      // para o mesmo aviso sair duas vezes.
       await input.db
         .update(departurePlans)
         .set({ lastFailureReason: "SEND_FAILED" })

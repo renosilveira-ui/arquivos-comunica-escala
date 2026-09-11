@@ -46,15 +46,17 @@ export type TravelMode = (typeof TRAVEL_MODES)[keyof typeof TRAVEL_MODES];
 /**
  * Qualidade da estimativa devolvida.
  *
- * `LIVE_TRAFFIC` é a única que pode ser apresentada como trânsito atual.
- * `TYPICAL` usa o histórico do provedor. `FALLBACK` é cálculo nosso quando o
- * provedor falhou — precisa aparecer como tal para o usuário, nunca
- * disfarçada de dado do Google.
+ * `LIVE_TRAFFIC` é a única que pode ser apresentada como trânsito atual;
+ * `TYPICAL` usa o histórico do provedor.
+ *
+ * Não existe terceiro valor de propósito. Houve um `FALLBACK` aqui, para um
+ * tempo de trajeto que o próprio sistema assumia quando o provedor falhava —
+ * removido porque, no aparelho do médico, um número inventado tem a mesma
+ * aparência de um calculado. Sem rota, o aviso sai sem estimativa e diz isso.
  */
 export const ROUTE_ESTIMATE_QUALITY = {
   liveTraffic: "LIVE_TRAFFIC",
   typical: "TYPICAL",
-  fallback: "FALLBACK",
 } as const;
 
 export type RouteEstimateQuality =

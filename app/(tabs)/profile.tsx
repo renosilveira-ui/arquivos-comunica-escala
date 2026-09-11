@@ -621,11 +621,11 @@ export default function ProfileScreen() {
                 accessibilityLabel="Vincular ou gerenciar o Google Agenda"
               />
               <ListRow
-                title="Hora de sair"
-                subtitle="Avisar quando sair de casa, com trânsito e clima"
+                title="Aviso de plantão"
+                subtitle="Uma hora antes, com trânsito e previsão do tempo"
                 Icon={Navigation}
                 onPress={go("/departure-alerts")}
-                accessibilityLabel="Configurar o aviso de hora de sair"
+                accessibilityLabel="Configurar o aviso de plantão"
               />
               <ListRow
                 title="Alterar senha"

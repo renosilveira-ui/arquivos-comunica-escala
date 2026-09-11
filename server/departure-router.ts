@@ -8,19 +8,16 @@ import {
   userDeparturePreferences,
   userTravelOrigins,
 } from "../drizzle/schema";
-import { TRAVEL_ORIGIN_SEAL_SCOPE } from "../lib/integration-providers";
+import {
+  PROVIDER_CONFIGURATION_STATES,
+  TRAVEL_ORIGIN_SEAL_SCOPE,
+} from "../lib/integration-providers";
 import {
   getTenantActorFromContext,
   assertCanCreateHospital,
 } from "./_core/policy";
 import { router, sessionProcedure, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import {
-  MAX_ARRIVAL_MARGIN_MINUTES,
-  MAX_FALLBACK_TRAVEL_MINUTES,
-  MIN_ARRIVAL_MARGIN_MINUTES,
-  MIN_FALLBACK_TRAVEL_MINUTES,
-} from "./departure-planning";
 import {
   readDeparturePreferences,
   syncDeparturePlans,
@@ -29,7 +26,6 @@ import { sealExternalCredential } from "./external-credentials-crypto";
 import { googleMapsConfiguration } from "./integrations/providers/configuration";
 import { createGoogleLocationProvider } from "./integrations/google/places-client";
 import { isValidPlaceId } from "./integrations/providers/location-provider";
-import { PROVIDER_CONFIGURATION_STATES } from "../lib/integration-providers";
 
 /**
  * Aviso de "hora de sair": preferências, origem de deslocamento e destino
@@ -106,8 +102,6 @@ export const departureRouter = router({
         PROVIDER_CONFIGURATION_STATES.configured,
       enabled: preferences.enabled,
       travelMode: preferences.travelMode,
-      arrivalMarginMinutes: preferences.arrivalMarginMinutes,
-      fallbackTravelMinutes: preferences.fallbackTravelMinutes,
       travelOriginId: preferences.travelOriginId,
       origins,
     };
@@ -121,16 +115,6 @@ export const departureRouter = router({
           travelMode: z
             .enum(["DRIVING", "WALKING", "TRANSIT"])
             .default("DRIVING"),
-          arrivalMarginMinutes: z
-            .number()
-            .int()
-            .min(MIN_ARRIVAL_MARGIN_MINUTES)
-            .max(MAX_ARRIVAL_MARGIN_MINUTES),
-          fallbackTravelMinutes: z
-            .number()
-            .int()
-            .min(MIN_FALLBACK_TRAVEL_MINUTES)
-            .max(MAX_FALLBACK_TRAVEL_MINUTES),
           travelOriginId: z.number().int().positive().nullable().default(null),
         })
         .strict(),
@@ -165,16 +149,12 @@ export const departureRouter = router({
           userId: ctx.user.id,
           enabled: input.enabled,
           travelMode: input.travelMode,
-          arrivalMarginMinutes: input.arrivalMarginMinutes,
-          fallbackTravelMinutes: input.fallbackTravelMinutes,
           travelOriginId: input.travelOriginId,
         })
         .onDuplicateKeyUpdate({
           set: {
             enabled: input.enabled,
             travelMode: input.travelMode,
-            arrivalMarginMinutes: input.arrivalMarginMinutes,
-            fallbackTravelMinutes: input.fallbackTravelMinutes,
             travelOriginId: input.travelOriginId,
             version: sql`${userDeparturePreferences.version} + 1`,
           },

@@ -49,21 +49,41 @@ describe("migration manual — aviso de hora de sair", () => {
     expect(migration).toContain("enabled TINYINT(1) NOT NULL DEFAULT 0");
   });
 
-  it("o banco recusa margem e fallback fora do intervalo", () => {
-    expect(migration).toContain("chk_departure_margin");
-    expect(migration).toContain("arrival_margin_minutes BETWEEN 0 AND 240");
-    expect(migration).toContain("chk_departure_fallback");
-    expect(migration).toContain("fallback_travel_minutes BETWEEN 5 AND 480");
+  /**
+   * O sistema não pergunta nada ao médico: nem folga de chegada, nem tempo de
+   * trajeto assumido. Se essas colunas voltarem, voltou a pergunta.
+   */
+  it("não existe coluna de folga nem de tempo chutado", () => {
+    expect(migration).not.toContain("arrival_margin_minutes");
+    expect(migration).not.toContain("fallback_travel_minutes");
+    expect(migration).not.toContain("desired_arrival_at");
+    expect(migration).not.toContain("'FALLBACK'");
   });
 
   /**
-   * Um plano marcado como enviado sem horário calculado produziria um aviso
-   * sem hora no aparelho do médico.
+   * O horário do aviso é fixo e não depende de cálculo nenhum — por isso a
+   * coluna é NOT NULL enquanto todas as de estimativa são opcionais.
    */
-  it("o banco recusa plano ENVIADO sem horário", () => {
+  it("o horário do aviso é obrigatório; a estimativa, não", () => {
+    expect(migration).toContain("notice_at TIMESTAMP NOT NULL");
+    expect(migration).toContain("estimated_duration_seconds INT NULL");
+    expect(migration).toContain("depart_at TIMESTAMP NULL");
+  });
+
+  it("o banco recusa plano ENVIADO sem carimbo de envio", () => {
     expect(migration).toContain("chk_departure_plan_sent");
+    expect(migration).toContain("(status <> 'SENT') OR (sent_at IS NOT NULL)");
+  });
+
+  /**
+   * Horário de saída e duração andam juntos. Sem esta trava, um plano com
+   * `depart_at` e duração nula renderizaria "saia até" num aviso que existe
+   * justamente por não saber o trajeto.
+   */
+  it("o banco recusa estimativa pela metade", () => {
+    expect(migration).toContain("chk_departure_plan_estimate");
     expect(migration).toContain(
-      "(status <> 'SENT') OR (depart_at IS NOT NULL AND sent_at IS NOT NULL)",
+      "(depart_at IS NULL AND estimated_duration_seconds IS NULL)",
     );
   });
 
@@ -111,7 +131,7 @@ describe("schema Drizzle e migration convergem", () => {
       ...migration.matchAll(/UNIQUE KEY\s+(uniq_[a-z0-9_]+)/gi),
     ].map((match) => match[1]);
     const scoped = declared.filter((name) => /departure/.test(name));
-    expect(scoped.length).toBeGreaterThanOrEqual(8);
+    expect(scoped.length).toBeGreaterThanOrEqual(9);
     for (const name of scoped) {
       expect(schema, `schema declara ${name}`).toContain(`"${name}"`);
     }
@@ -119,7 +139,7 @@ describe("schema Drizzle e migration convergem", () => {
 
   it("as colunas do plano existem nos dois lados", () => {
     for (const column of [
-      "desired_arrival_at",
+      "notice_at",
       "estimated_duration_seconds",
       "estimate_quality",
       "depart_at",

@@ -56,12 +56,9 @@ CREATE TABLE IF NOT EXISTS user_departure_preferences (
   -- Desligado por padrão. Conveniência que ninguém pediu vira ruído, e ruído
   -- em app de plantão treina o médico a ignorar notificação.
   enabled TINYINT(1) NOT NULL DEFAULT 0,
+  -- Endereço de origem. Opcional: sem ele o aviso sai igual, sem estimativa.
   travel_origin_id INT NULL,
   travel_mode ENUM('DRIVING','WALKING','TRANSIT') NOT NULL DEFAULT 'DRIVING',
-  arrival_margin_minutes INT NOT NULL DEFAULT 15,
-  -- Tempo assumido quando a rota não pôde ser calculada: a ausência do
-  -- Google não pode virar ausência de aviso.
-  fallback_travel_minutes INT NOT NULL DEFAULT 40,
   version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -71,13 +68,7 @@ CREATE TABLE IF NOT EXISTS user_departure_preferences (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_departure_preference_origin
     FOREIGN KEY (travel_origin_id) REFERENCES user_travel_origins(id)
-    ON DELETE SET NULL,
-  CONSTRAINT chk_departure_margin CHECK (
-    arrival_margin_minutes BETWEEN 0 AND 240
-  ),
-  CONSTRAINT chk_departure_fallback CHECK (
-    fallback_travel_minutes BETWEEN 5 AND 480
-  )
+    ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
@@ -91,12 +82,17 @@ CREATE TABLE IF NOT EXISTS departure_plans (
   assignment_id INT NOT NULL,
   shift_instance_id INT NOT NULL,
   travel_origin_id INT NULL,
-  status ENUM('PENDING','SCHEDULED','SENT','CANCELLED','UNAVAILABLE')
+  status ENUM('PENDING','SCHEDULED','SENT','CANCELLED')
     NOT NULL DEFAULT 'PENDING',
-  desired_arrival_at TIMESTAMP NOT NULL,
+  -- Uma hora antes do plantão. Fixo: não depende do trânsito nem de o Google
+  -- responder. Aviso que só existe quando tudo dá certo não é confiável.
+  notice_at TIMESTAMP NOT NULL,
+  -- Todas as colunas de estimativa são opcionais, e essa é a decisão de
+  -- desenho: sem rota o aviso sai igual, dizendo que não sabe o trânsito.
+  -- Não existe "tempo médio assumido".
   estimated_duration_seconds INT NULL,
   estimated_distance_meters INT NULL,
-  estimate_quality ENUM('LIVE_TRAFFIC','TYPICAL','FALLBACK') NULL,
+  estimate_quality ENUM('LIVE_TRAFFIC','TYPICAL') NULL,
   depart_at TIMESTAMP NULL,
   next_recompute_at TIMESTAMP NULL,
   computed_at TIMESTAMP NULL,
@@ -119,7 +115,7 @@ CREATE TABLE IF NOT EXISTS departure_plans (
   UNIQUE KEY uniq_departure_plan_dedup (dedup_key),
   UNIQUE KEY uniq_departure_plan_assignment (user_id, assignment_id),
   KEY idx_departure_plan_due (status, next_recompute_at),
-  KEY idx_departure_plan_send (status, depart_at),
+  KEY idx_departure_plan_send (status, notice_at),
   CONSTRAINT fk_departure_plan_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_departure_plan_institution
@@ -128,11 +124,15 @@ CREATE TABLE IF NOT EXISTS departure_plans (
     FOREIGN KEY (travel_origin_id) REFERENCES user_travel_origins(id)
     ON DELETE SET NULL,
   CONSTRAINT chk_departure_plan_attempts CHECK (attempt_count >= 0),
-  -- Um plano ENVIADO precisa ter de fato horário calculado. Sem esta trava,
-  -- um bug marcaria como enviado algo que nunca teve hora — e o médico
-  -- receberia um aviso sem horário.
   CONSTRAINT chk_departure_plan_sent CHECK (
-    (status <> 'SENT') OR (depart_at IS NOT NULL AND sent_at IS NOT NULL)
+    (status <> 'SENT') OR (sent_at IS NOT NULL)
+  ),
+  -- Coerência da estimativa: horário de saída e duração andam juntos. Sem
+  -- isto, um plano com depart_at e duração nula renderizaria "saia até" num
+  -- aviso que existe justamente por não saber o trajeto.
+  CONSTRAINT chk_departure_plan_estimate CHECK (
+    (depart_at IS NULL AND estimated_duration_seconds IS NULL)
+    OR (depart_at IS NOT NULL AND estimated_duration_seconds IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -145,11 +145,9 @@ SET @da_missing := (
   FROM (
     SELECT 'user_departure_preferences' AS t, 'enabled' AS c, 'tinyint' AS dt
     UNION ALL SELECT 'user_departure_preferences', 'travel_mode', 'enum'
-    UNION ALL SELECT 'user_departure_preferences', 'arrival_margin_minutes', 'int'
-    UNION ALL SELECT 'user_departure_preferences', 'fallback_travel_minutes', 'int'
     UNION ALL SELECT 'departure_plans', 'assignment_id', 'int'
     UNION ALL SELECT 'departure_plans', 'status', 'enum'
-    UNION ALL SELECT 'departure_plans', 'desired_arrival_at', 'timestamp'
+    UNION ALL SELECT 'departure_plans', 'notice_at', 'timestamp'
     UNION ALL SELECT 'departure_plans', 'depart_at', 'timestamp'
     UNION ALL SELECT 'departure_plans', 'next_recompute_at', 'timestamp'
     UNION ALL SELECT 'departure_plans', 'estimate_quality', 'enum'
@@ -179,11 +177,11 @@ SET @da_missing_keys := (
   FROM (
     SELECT 'user_departure_preferences' AS t, 'uniq_departure_preference_user' AS n
     UNION ALL SELECT 'user_departure_preferences', 'fk_departure_preference_user'
-    UNION ALL SELECT 'user_departure_preferences', 'chk_departure_margin'
     UNION ALL SELECT 'departure_plans', 'uniq_departure_plan_dedup'
     UNION ALL SELECT 'departure_plans', 'uniq_departure_plan_assignment'
     UNION ALL SELECT 'departure_plans', 'fk_departure_plan_user'
     UNION ALL SELECT 'departure_plans', 'chk_departure_plan_sent'
+    UNION ALL SELECT 'departure_plans', 'chk_departure_plan_estimate'
   ) AS expected
   LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS actual
     ON actual.CONSTRAINT_SCHEMA = DATABASE()

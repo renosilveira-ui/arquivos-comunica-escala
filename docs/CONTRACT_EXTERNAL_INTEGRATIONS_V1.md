@@ -217,10 +217,12 @@ Chave server-side. O app nunca fala com o Google — pede ao nosso servidor,
 que decide, limita e registra. Nenhum método aceita URL: não existe caminho em
 que dado do usuário escolha o destino da requisição (SSRF).
 
-`RouteEstimateQuality` separa `LIVE_TRAFFIC`, `TYPICAL` e `FALLBACK`. Só a
-primeira pode ser apresentada como trânsito atual. Fallback precisa aparecer
-como fallback — número inventado com cara de dado do Google é pior que não ter
-número.
+`RouteEstimateQuality` tem exatamente dois valores: `LIVE_TRAFFIC` e
+`TYPICAL`. Só o primeiro pode ser apresentado como trânsito atual. Não existe
+terceiro valor: houve um `FALLBACK` aqui, para um tempo que o sistema assumia
+quando a rota falhava, e ele foi removido de propósito — número inventado com
+cara de dado do Google é pior que não ter número. Sem rota, o aviso sai
+dizendo que não sabe o trânsito.
 
 ### WeatherKit
 
