@@ -30,6 +30,7 @@
     "test:auth-recovery-migration": "vitest run --config vitest.migration.config.ts tests/auth-recovery-migration-mysql.test.ts",
     "test:core-schema-repro-migration": "vitest run --config vitest.migration.config.ts tests/core-schema-reproducibility-migration-mysql.test.ts",
     "test:pi-drop-user-role-migration": "vitest run --config vitest.migration.config.ts tests/professional-institutions-drop-user-role-migration-mysql.test.ts",
+    "test:audit-trail-enum-migration": "vitest run --config vitest.migration.config.ts tests/audit-trail-action-enum-migration-mysql.test.ts",
     "test:personal-calendar-domain": "vitest run --config vitest.pure.config.ts tests/personal-calendar-domain.test.ts",
     "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",

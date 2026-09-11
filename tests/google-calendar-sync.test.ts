@@ -410,6 +410,46 @@ describe("vínculo e sincronização com o Google Agenda", () => {
       assignmentIds[1] = restored.insertId;
     });
 
+    it("alocação inativa (troca ou remoção) sai do Google sem apagar a linha", async () => {
+      await ensureLinked(ownerUserId);
+      await resetMirror(ownerUserId);
+      const provider = createFakeCalendarProvider();
+      const first = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+      expect(first.ok).toBe(true);
+      const before = provider.events.size;
+      expect(before).toBeGreaterThan(1);
+
+      // Troca e remoção não apagam a alocação: marcam is_active = 0.
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ isActive: false })
+        .where(eq(shiftAssignmentsV2.id, assignmentIds[1]));
+      try {
+        const after = await runGoogleCalendarExport({
+          db,
+          userId: ownerUserId,
+          config: CONFIG,
+          provider,
+          timeZone: "America/Sao_Paulo",
+        });
+        expect(after.ok).toBe(true);
+        if (!after.ok) return;
+        expect(after.value.deleted).toBe(1);
+        expect(provider.events.size).toBe(before - 1);
+      } finally {
+        await db
+          .update(shiftAssignmentsV2)
+          .set({ isActive: true })
+          .where(eq(shiftAssignmentsV2.id, assignmentIds[1]));
+      }
+    });
+
     it("uma falha pontual não aborta o ciclo inteiro", async () => {
       await ensureLinked(ownerUserId);
       await resetMirror(ownerUserId);
@@ -465,6 +505,43 @@ describe("vínculo e sincronização com o Google Agenda", () => {
       // O vínculo continua de pé: 410 não é credencial rejeitada.
       expect(link?.linkState).toBe(EXTERNAL_LINK_STATES.connected);
       expect(link?.syncCursor).toBeNull();
+    });
+
+    it("mudanças em várias páginas são lidas até o fim e o cursor avança", async () => {
+      await ensureLinked(ownerUserId);
+      await resetMirror(ownerUserId);
+      const provider = createFakeCalendarProvider();
+      const exported = await runGoogleCalendarExport({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+        timeZone: "America/Sao_Paulo",
+      });
+      expect(exported.ok).toBe(true);
+      const ids = [...provider.events.keys()];
+      expect(ids.length).toBeGreaterThan(1);
+
+      // Uma página por evento: o cancelado fica na última, e o sync token
+      // só vem nela. Ler só a primeira página não veria nem um nem outro.
+      provider.pageSize = 1;
+      provider.externallyCancel(ids[ids.length - 1]!);
+      const listCallsBefore = provider.calls.list;
+
+      const pulled = await pullGoogleCalendarChanges({
+        db,
+        userId: ownerUserId,
+        config: CONFIG,
+        provider,
+      });
+      expect(pulled.ok).toBe(true);
+      if (!pulled.ok) return;
+      expect(pulled.value.forgotten).toBe(1);
+      expect(pulled.value.truncated).toBe(false);
+      expect(provider.calls.list - listCallsBefore).toBe(ids.length);
+
+      const link = await readGoogleLink(db, ownerUserId);
+      expect(link?.syncCursor).toMatch(/^sync-/);
     });
 
     it("evento nosso cancelado no Google é esquecido para ser recriado", async () => {

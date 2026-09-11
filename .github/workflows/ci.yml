@@ -133,6 +133,10 @@ jobs:
 
       - name: Validate professional_institutions.user_role removal migration
         run: pnpm test:pi-drop-user-role-migration
+      - name: Validate audit trail action enum migration
+        # Prova com ANSI_QUOTES + STRICT_ALL_TABLES sobre o enum de 29 valores
+        # do banco real: rerodável, preserva linhas, recusa valor desconhecido.
+        run: pnpm test:audit-trail-enum-migration
 
       - name: Validate readiness fence V1 over Drizzle PREPARED schema
         # Exercita o único estado retomável: o schema foi criado pelo Drizzle,
