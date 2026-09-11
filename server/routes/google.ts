@@ -13,7 +13,10 @@ import {
   type GoogleOAuthReturnTarget,
 } from "../integrations/google/oauth";
 import { canCreateDedicatedCalendar } from "../integrations/providers/calendar-provider";
-import { resolveUserTimeZone } from "../institution-time-zone";
+import {
+  DEFAULT_SCHEDULE_TIME_ZONE,
+  resolveUserTimeZone,
+} from "../institution-time-zone";
 
 /**
  * Callback do OAuth do Google.
@@ -176,7 +179,11 @@ googleRouter.get(CALLBACK_PATH, async (req: Request, res: Response) => {
     // Cria o calendário dedicado já no vínculo: o primeiro sync encontra
     // tudo pronto, e o usuário vê "Escala+" na conta dele imediatamente.
     const provider = createGoogleCalendarProvider(config);
-    const timeZone = await resolveUserTimeZone(db, consumed.userId);
+    // O fuso é conveniência; uma leitura que falhe não pode derrubar o
+    // vínculo que o Google acabou de conceder.
+    const timeZone = await resolveUserTimeZone(db, consumed.userId).catch(
+      () => DEFAULT_SCHEDULE_TIME_ZONE,
+    );
     const calendar = await provider.ensureDedicatedCalendar({
       accessToken: grant.value.accessToken,
       timeZone,

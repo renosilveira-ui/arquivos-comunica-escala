@@ -22,6 +22,7 @@ import {
 } from "../integrations/google/sync-policy";
 import type { ExternalCalendarProvider } from "../integrations/providers/calendar-provider";
 import { resolveUserTimeZone } from "../institution-time-zone";
+import { SchemaDormancy, isMissingSchema } from "./schema-dormancy";
 
 /**
  * Sincronização automática com o Google Agenda.
@@ -62,21 +63,9 @@ const GOOGLE_SYNC_BATCH = 10;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let activeTick: Promise<void> | null = null;
 let acceptingTicks = false;
-/**
- * Sem as tabelas (migração manual ainda não aplicada), o worker pausa e
- * volta a tentar sozinho. A migração é aplicada fora do deploy; exigir um
- * restart para reativar o worker deixava a sincronização parada sem que
- * ninguém percebesse.
- */
-const SCHEMA_REPROBE_INTERVAL_MS = 10 * 60_000;
-let schemaDormantUntilMs = 0;
+const schemaDormancy = new SchemaDormancy();
 let warnedNotConfigured = false;
 const lastAttemptAtMs = new Map<number, number>();
-
-function isMissingSchema(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  return (error as { code?: unknown }).code === "ER_NO_SUCH_TABLE";
-}
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
@@ -84,7 +73,7 @@ function errorName(error: unknown): string {
 
 /** Somente para teste: esquece tentativas e reabilita o worker. */
 export function resetGoogleCalendarSyncState(): void {
-  schemaDormantUntilMs = 0;
+  schemaDormancy.reset();
   warnedNotConfigured = false;
   lastAttemptAtMs.clear();
 }
@@ -112,6 +101,8 @@ export async function selectGoogleSyncCandidates(
 ): Promise<
   {
     userId: number;
+    /** Versão da sessão no instante da varredura; o CAS de escrita revalida. */
+    sessionVersion: number;
     lastSyncedAt: Date | null;
     updatedAt: Date;
     consecutiveFailureCount: number;
@@ -121,6 +112,7 @@ export async function selectGoogleSyncCandidates(
   return db
     .select({
       userId: userExternalCredentials.userId,
+      sessionVersion: users.sessionVersion,
       lastSyncedAt: userExternalCredentials.lastSyncedAt,
       updatedAt: userExternalCredentials.updatedAt,
       consecutiveFailureCount: userExternalCredentials.consecutiveFailureCount,
@@ -150,7 +142,7 @@ export async function tickGoogleCalendarSync(
   deps: GoogleCalendarSyncDeps = {},
 ): Promise<void> {
   if (activeTick) return activeTick;
-  if (now.getTime() < schemaDormantUntilMs) return;
+  if (schemaDormancy.isDormant(now)) return;
 
   let tick!: Promise<void>;
   tick = (async () => {
@@ -199,22 +191,11 @@ export async function tickGoogleCalendarSync(
         lastAttemptAtMs.set(candidate.userId, now.getTime());
 
         try {
-          const [user] = await db
-            .select({ sessionVersion: users.sessionVersion })
-            .from(users)
-            .where(
-              and(eq(users.id, candidate.userId), isNull(users.deletedAt)),
-            )
-            .limit(1);
-          if (!user) {
-            skipped += 1;
-            continue;
-          }
           const timeZone = await resolveUserTimeZone(db, candidate.userId);
           const result = await runGoogleFullSync({
             db,
             userId: candidate.userId,
-            expectedSessionVersion: user.sessionVersion,
+            expectedSessionVersion: candidate.sessionVersion,
             config,
             provider,
             timeZone,
@@ -225,6 +206,15 @@ export async function tickGoogleCalendarSync(
             synced += 1;
           } else {
             failed += 1;
+          }
+          if (summary.pullTruncated) {
+            // Mais de 8 páginas de mudanças num ciclo: o cursor não avançou
+            // e o próximo ciclo relê do mesmo ponto. Raro; se virar rotina,
+            // o teto de páginas é o que precisa mudar.
+            logger.warn(
+              { event: "google_sync_pull_truncated", userId: candidate.userId },
+              "google calendar change feed exceeded the page cap; cursor kept",
+            );
           }
           importedCreated += summary.importedCreated;
           exportedCreated += summary.created;
@@ -257,11 +247,10 @@ export async function tickGoogleCalendarSync(
       }
     } catch (error) {
       if (isMissingSchema(error)) {
-        schemaDormantUntilMs = now.getTime() + SCHEMA_REPROBE_INTERVAL_MS;
         logger.warn(
           {
             event: "google_sync_schema_missing",
-            retryInSeconds: SCHEMA_REPROBE_INTERVAL_MS / 1000,
+            retryInSeconds: schemaDormancy.markMissing(now),
           },
           "google sync tables absent; worker pauses and retries after the manual migration runs",
         );

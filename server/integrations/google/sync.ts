@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 
 import {
   externalCalendarEventLinks,
@@ -562,40 +562,33 @@ export async function pullGoogleCalendarChanges(input: {
           } as const);
 
       let forgotten = 0;
-      let nextSyncToken: string | null = null;
       let pageToken: string | undefined;
       let pages = 0;
+      let page: Awaited<ReturnType<typeof input.provider.listChanges>>;
       // Segue o `nextPageToken` até a última página, que é a única que traz
       // o sync token. Ler só a primeira deixava o cursor parado e escondia
       // qualquer cancelamento além dela.
       do {
-        const page = await input.provider.listChanges({
+        page = await input.provider.listChanges({
           accessToken,
           calendarId: link.externalCalendarId,
           cursor,
           pageToken,
         });
-
-        if (!page.ok) {
-          if (page.reason === PROVIDER_FAILURE_REASONS.notFound) {
-            // Sync token expirado: esquece o cursor e recomeça limpo.
-            await saveGoogleSyncCursor({
-              db: input.db,
-              userId: input.userId,
-              cursor: null,
-              now,
-            });
-            return { forgotten, resynced: true, truncated: false };
-          }
-          return { forgotten, resynced: false, truncated: false };
-        }
+        if (!page.ok) break;
         pages += 1;
 
-        for (const event of page.value.events) {
-          if (!event.cancelled) continue;
-          // Só nos importa o que NÓS criamos. Evento alheio cancelado é
-          // assunto do usuário, e reagir a ele seria invadir a agenda dele.
-          if (event.originMarker !== ESCALA_ORIGIN_MARKER) continue;
+        // Só nos importa o que NÓS criamos. Evento alheio cancelado é
+        // assunto do usuário, e reagir a ele seria invadir a agenda dele.
+        const cancelledOurs = page.value.events
+          .filter(
+            (event) =>
+              event.cancelled && event.originMarker === ESCALA_ORIGIN_MARKER,
+          )
+          .map((event) => event.externalEventId);
+        if (cancelledOurs.length > 0) {
+          // Um UPDATE por página, não por evento: uma limpeza em massa no
+          // Google vira poucas idas ao banco. Idempotente pelo `deletedAt`.
           const [updated] = await input.db
             .update(externalCalendarEventLinks)
             .set({ deletedAt: now })
@@ -603,25 +596,38 @@ export async function pullGoogleCalendarChanges(input: {
               and(
                 eq(externalCalendarEventLinks.userId, input.userId),
                 eq(externalCalendarEventLinks.provider, PROVIDER),
-                eq(
-                  externalCalendarEventLinks.externalEventId,
-                  event.externalEventId,
-                ),
+                inArray(externalCalendarEventLinks.externalEventId, cancelledOurs),
                 isNull(externalCalendarEventLinks.deletedAt),
               ),
             );
-          if (updated && updated.affectedRows > 0) forgotten += 1;
+          forgotten += updated?.affectedRows ?? 0;
         }
 
-        nextSyncToken = page.value.nextSyncToken;
         pageToken = page.value.nextPageToken ?? undefined;
       } while (pageToken && pages < PULL_MAX_PAGES_PER_RUN);
 
-      if (nextSyncToken) {
+      if (!page.ok) {
+        // Sync token expirado é estado ESPERADO: esquece o cursor e o próximo
+        // ciclo faz leitura completa. Qualquer outra falha mantém o cursor;
+        // o que já foi esquecido nesta passada continua esquecido (é
+        // idempotente reler as mesmas páginas).
+        const expired = page.reason === PROVIDER_FAILURE_REASONS.notFound;
+        if (expired) {
+          await saveGoogleSyncCursor({
+            db: input.db,
+            userId: input.userId,
+            cursor: null,
+            now,
+          });
+        }
+        return { forgotten, resynced: expired, truncated: false };
+      }
+
+      if (page.value.nextSyncToken) {
         await saveGoogleSyncCursor({
           db: input.db,
           userId: input.userId,
-          cursor: nextSyncToken,
+          cursor: page.value.nextSyncToken,
           now,
         });
       }
