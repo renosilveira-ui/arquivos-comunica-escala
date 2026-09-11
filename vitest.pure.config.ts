@@ -137,6 +137,7 @@ export default defineConfig({
       "tests/contextual-push-presentation-boundary.test.ts",
       "tests/account-wide-notification-badge-parser.test.ts",
       "tests/sso-client-boundaries.test.ts",
+      "tests/sso-launch-url.test.ts",
       "tests/swap-offer-outbox.test.ts",
       "tests/phone-e164.test.ts",
       "tests/user-contact-channels-migration.test.ts",

@@ -3628,6 +3628,9 @@ describe("SSO client tenant boundaries", () => {
     }));
     vi.doMock("react-native", () => ({ Platform: { OS: "web" } }));
     vi.doMock("@/lib/_core/api", () => ({
+      // Mesma origem que o apiFetch abaixo já assume: o launch-code é
+      // servido pelo próprio Escala, e a cerca de openURL compara com ela.
+      getApiBaseUrl: () => "https://escala.example",
       apiFetch: async (path: string, options?: RequestInit) => {
         const response = await fetch(`https://escala.example${path}`, options);
         return {
@@ -3725,6 +3728,9 @@ describe("SSO client tenant boundaries", () => {
       Linking: { openURL },
     }));
     vi.doMock("@/lib/_core/api", () => ({
+      // Mesma origem que o apiFetch abaixo já assume: o launch-code é
+      // servido pelo próprio Escala, e a cerca de openURL compara com ela.
+      getApiBaseUrl: () => "https://escala.example",
       apiFetch: async (path: string, options?: RequestInit) => {
         const response = await fetch(`https://escala.example${path}`, options);
         return {
@@ -3798,6 +3804,9 @@ describe("SSO client tenant boundaries", () => {
     }));
     vi.doMock("react-native", () => ({ Platform: { OS: "web" } }));
     vi.doMock("@/lib/_core/api", () => ({
+      // Mesma origem que o apiFetch abaixo já assume: o launch-code é
+      // servido pelo próprio Escala, e a cerca de openURL compara com ela.
+      getApiBaseUrl: () => "https://escala.example",
       apiFetch: async (path: string, options?: RequestInit) => {
         const response = await fetch(`https://escala.example${path}`, options);
         return {
