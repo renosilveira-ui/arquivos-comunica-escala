@@ -13,13 +13,18 @@ import {
   professionalAccess,
   medicalSpecialties,
   passwordResets,
-  personalCalendarItems,
   shiftAssignmentsV2,
   shiftInstances,
   userContactChannels,
   authRecoveryRequests,
   type User,
 } from "../../drizzle/schema";
+import { purgeUserOwnedData } from "../account-data-purge";
+import {
+  readGoogleRefreshTokenForRevocation,
+  type GoogleRefreshTokenForRevocation,
+} from "../integrations/google/link-service";
+import { revokeGoogleToken } from "../integrations/google/oauth";
 import {
   AuthenticationInfrastructureError,
   sdk,
@@ -1503,6 +1508,14 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
   // transação abaixo revogou; falhas precommit restauram o valor observado.
   rotateBrowserSessionFence(req, res);
 
+  // Sai da transação para ser revogado no Google DEPOIS do commit: a chamada
+  // de rede não pode segurar os locks da exclusão, e um Google fora do ar não
+  // pode impedir a conta de ser excluída.
+  let googleCredential: GoogleRefreshTokenForRevocation = {
+    token: null,
+    state: "none",
+  };
+
   try {
     await withPushAccountMutex(
       db,
@@ -1865,13 +1878,22 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
               }
             }
 
-            // Agenda pessoal é privada e account-wide. Como a exclusão da conta
-            // é um soft-delete do usuário, a FK não executaria CASCADE sozinha;
-            // remove o agregado inteiro dentro da mesma transação antes de
-            // anonimizar a identidade.
-            await tx
-              .delete(personalCalendarItems)
-              .where(eq(personalCalendarItems.ownerUserId, lockedUser.id));
+            // Dados que pertencem à pessoa e somem com a conta (agenda
+            // pessoal, Google, deslocamento, WhatsApp). O soft-delete do
+            // usuário não dispara CASCADE nenhum; a lista única está em
+            // server/account-data-purge.ts, e um teste garante que toda FK
+            // para `users` tem decisão lá (LGPD: finalidade encerrada = dado
+            // eliminado). O token do Google é lido antes de a linha sumir,
+            // para ser revogado depois do commit.
+            googleCredential = await readGoogleRefreshTokenForRevocation(
+              tx,
+              lockedUser.id,
+            );
+            const externalDataPurged = await purgeUserOwnedData(
+              tx,
+              lockedUser.id,
+              now,
+            );
             const nextSessionVersion = lockedUser.sessionVersion + 1;
             const updateResult = await tx
               .update(users)
@@ -1936,6 +1958,8 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
                   sessionVersionBefore: lockedUser.sessionVersion,
                   sessionVersionAfter: nextSessionVersion,
                   revokedPushTokenCount,
+                  externalDataPurged,
+                  googleCredential: googleCredential.state,
                 },
                 institutionId: auditInstitutionId,
               },
@@ -1957,6 +1981,33 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     );
     res.status(500).json({ error: "Falha ao excluir conta" });
     return;
+  }
+
+  // A credencial já saiu do banco no commit. A revogação no Google é melhor
+  // esforço e NÃO segura a resposta: a exclusão já está feita, e um Google
+  // lento não pode virar quinze segundos de espera no app. Se falhar, o token
+  // não existe mais aqui e o usuário ainda pode revogar na conta Google.
+  if (googleCredential.token) {
+    void revokeGoogleToken({ refreshToken: googleCredential.token })
+      .then((revocation) => {
+        if (!revocation.ok) {
+          console.warn(
+            "[delete-account] Revogação no Google não confirmada",
+            JSON.stringify({ userId: authUser.id, reason: revocation.reason }),
+          );
+        }
+      })
+      .catch((error) => {
+        console.warn(
+          "[delete-account] Revogação no Google falhou",
+          safeErrorDiagnostic(error, "network"),
+        );
+      });
+  } else if (googleCredential.state === "unreadable") {
+    console.warn(
+      "[delete-account] Credencial Google ilegível: apagada sem revogar",
+      JSON.stringify({ userId: authUser.id }),
+    );
   }
 
   // O commit já tornou toda sessão antiga inválida por sessionVersion. A

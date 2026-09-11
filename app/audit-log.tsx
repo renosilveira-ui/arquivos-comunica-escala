@@ -1,5 +1,6 @@
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView, TextInput } from "react-native";
 import { useState, useMemo } from "react";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
@@ -98,10 +99,19 @@ export default function AuditLogScreen() {
       limit: 200,
     },
     { enabled: !!user?.id },
-  ) ?? { data: undefined, isLoading: false, refetch: () => {} };
+  ) ?? {
+    data: undefined,
+    isLoading: false,
+    // Sem o procedimento no servidor a tela não tem o que afirmar. `isError`
+    // aqui evita que o optional chaining vire "nenhuma movimentação" eterno.
+    isError: true,
+    error: undefined,
+    refetch: () => {},
+  };
 
   const data = useMemo(() => (auditQuery.data ?? []) as any[], [auditQuery.data]);
   const isLoading = auditQuery.isLoading as boolean;
+  const isError = Boolean(auditQuery.isError);
 
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -244,6 +254,14 @@ export default function AuditLogScreen() {
               Carregando movimentações...
             </Text>
           </View>
+        ) : isError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as movimentações"
+            error={auditQuery.error}
+            onRetry={() => {
+              void auditQuery.refetch?.();
+            }}
+          />
         ) : filteredRows.length === 0 ? (
           <View className="items-center justify-center py-20">
             <History size={64} color={theme.colors.textMuted} />

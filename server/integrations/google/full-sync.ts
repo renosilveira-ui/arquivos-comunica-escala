@@ -38,7 +38,11 @@ export type GoogleFullSyncDb = ExportDb & PullDb & ImportDb;
 
 export type GoogleFullSyncResult = {
   exported: ProviderCallResult<SyncSummary>;
-  pulled: ProviderCallResult<{ forgotten: number; resynced: boolean }> | null;
+  pulled: ProviderCallResult<{
+    forgotten: number;
+    resynced: boolean;
+    truncated: boolean;
+  }> | null;
   imported: ProviderCallResult<ImportSummary> | null;
 };
 
@@ -104,6 +108,8 @@ export function summarizeGoogleFullSync(result: GoogleFullSyncResult): {
   unchanged: number;
   considered: number;
   resynced: boolean;
+  /** Parou no teto de páginas sem chegar ao sync token; o cursor não avançou. */
+  pullTruncated: boolean;
   importedCreated: number;
   importedUpdated: number;
   importedRemoved: number;
@@ -118,6 +124,7 @@ export function summarizeGoogleFullSync(result: GoogleFullSyncResult): {
     unchanged: exported?.unchanged ?? 0,
     considered: exported?.considered ?? 0,
     resynced: result.pulled?.ok ? result.pulled.value.resynced : false,
+    pullTruncated: result.pulled?.ok ? result.pulled.value.truncated : false,
     importedCreated: imported?.created ?? 0,
     importedUpdated: imported?.updated ?? 0,
     importedRemoved: imported?.removed ?? 0,
