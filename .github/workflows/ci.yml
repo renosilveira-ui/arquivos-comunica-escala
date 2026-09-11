@@ -28,7 +28,8 @@ jobs:
         # Patch fixo: o manifesto das migrations compara CHECK_CLAUSE com a
         # serialização exata do catálogo, que varia entre patches do MySQL.
         # Subir o patch exige reler o catálogo e reescrever os literais.
-        image: mysql:8.0.46
+        # Mesma versão do banco real (DigitalOcean, 8.0.45). Subir junto com ele.
+        image: mysql:8.0.45
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: escalas_test
@@ -133,6 +134,8 @@ jobs:
 
       - name: Validate push token provenance v2 migration
         run: pnpm test:push-token-v2-migration
+      - name: Validate manual migration ledger
+        run: pnpm test:manual-migration-ledger
       - name: Validate professional_institutions.user_role removal migration
         run: pnpm test:pi-drop-user-role-migration
       - name: Validate audit trail action enum migration

@@ -21,6 +21,7 @@ export default defineConfig({
       "tests/auth-recovery-migration-mysql.test.ts",
       "tests/core-schema-reproducibility-migration-mysql.test.ts",
       "tests/push-token-provenance-v2-migration-mysql.test.ts",
+      "tests/manual-migration-ledger-mysql.test.ts",
       "tests/professional-institutions-drop-user-role-migration-mysql.test.ts",
       "tests/audit-trail-action-enum-migration-mysql.test.ts",
     ],

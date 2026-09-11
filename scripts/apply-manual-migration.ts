@@ -1,6 +1,7 @@
 /**
  * Aplica um arquivo SQL de drizzle/migrations/manual/ no banco apontado por
- * DATABASE_URL. Idempotência depende do próprio arquivo SQL.
+ * DATABASE_URL. Idempotência depende do próprio arquivo SQL. Cada aplicação
+ * bem-sucedida fica registrada em `manual_migration_ledger`.
  *
  * Uso:
  *   DATABASE_URL='mysql://...' DATABASE_SSL=insecure \
@@ -12,6 +13,7 @@ import { basename, resolve } from "node:path";
 import mysql from "mysql2/promise";
 import { pathToFileURL } from "node:url";
 import { resolveSslConfig } from "../server/_core/db-ssl";
+import { recordManualMigration } from "./manual-migration-ledger";
 
 const READINESS_FENCE_V1_MIGRATION_BASENAME =
   "2026-09-01-readiness-fence-v1-clean.sql";
@@ -93,6 +95,13 @@ export async function applyManualMigration(sqlPath: string): Promise<void> {
   const connection = await mysql.createConnection(buildConnectionOptions());
   try {
     await connection.query(sql);
+    // Só depois do sucesso: um ledger que registra tentativa é um ledger
+    // que mente. Hash do conteúdo aplicado, para denunciar arquivo editado
+    // depois. Ver docs/operations/migrations-ledger-and-drift.md.
+    await recordManualMigration(connection, {
+      fileName: basename(absolutePath),
+      content: sql,
+    });
     console.log(`Migração aplicada: ${absolutePath}`);
   } finally {
     await connection.end();
