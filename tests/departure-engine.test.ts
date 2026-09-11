@@ -5,6 +5,7 @@ import {
   departurePlans,
   hospitals,
   institutions,
+  notifications,
   professionals,
   sectors,
   shiftAssignmentsV2,
@@ -14,8 +15,8 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { sendDeparture } from "../server/cron/departure-dispatcher";
 import {
-  DEPARTURE_MAX_SEND_ATTEMPTS,
   dispatchDueDepartures,
   readTravelOrigin,
   reconcileEnabledUsers,
@@ -524,6 +525,12 @@ describe("motor de aviso de saída", () => {
         const summary = await syncDeparturePlans({ db, userId, now: NOW });
         expect(summary.cancelled).toBe(before.created);
         expect(summary.created).toBe(0);
+        // E sai da varredura: a preferência é desligada de vez.
+        const [preference] = await db
+          .select({ enabled: userDeparturePreferences.enabled })
+          .from(userDeparturePreferences)
+          .where(eq(userDeparturePreferences.userId, userId));
+        expect(preference?.enabled).toBe(false);
       } finally {
         await db
           .update(users)
@@ -867,7 +874,7 @@ describe("motor de aviso de saída", () => {
       expect(third.failed).toBe(0);
     });
 
-    it("esgotadas as tentativas, o plano fica SENT com o motivo, sem loop", async () => {
+    it("reaberto por falha, o plano só é encerrado quando a janela do aviso passa", async () => {
       await enable();
       await syncDeparturePlans({ db, userId, now: NOW });
       await recomputeBoth({
@@ -879,26 +886,27 @@ describe("motor de aviso de saída", () => {
         .set({ noticeAt: sendTime })
         .where(eq(departurePlans.userId, userId));
 
-      let attempts = 0;
       const failing = async () => {
-        attempts += 1;
         throw new Error("transporte indisponível");
       };
-      for (let tick = 1; tick <= DEPARTURE_MAX_SEND_ATTEMPTS; tick += 1) {
-        await dispatchDueDepartures({
+      // Cinco ticks dentro da janela: os dois planos reabrem a cada vez.
+      for (let tick = 1; tick <= 5; tick += 1) {
+        const summary = await dispatchDueDepartures({
           db,
           send: failing,
-          now: new Date(sendTime.getTime() + tick * 1000),
+          now: new Date(sendTime.getTime() + tick * 60_000),
         });
+        expect(summary.failed).toBe(2);
+        expect(summary.sent).toBe(0);
       }
-      // Dois planos × teto de tentativas, e nem uma a mais.
-      expect(attempts).toBe(2 * DEPARTURE_MAX_SEND_ATTEMPTS);
-      const after = await dispatchDueDepartures({
+      // Passada a janela de 30 minutos: encerra sem enviar, e sem loop.
+      const late = await dispatchDueDepartures({
         db,
         send: failing,
-        now: new Date(sendTime.getTime() + 60_000),
+        now: new Date(sendTime.getTime() + 31 * 60_000),
       });
-      expect(after.sent + after.failed).toBe(0);
+      expect(late.expired).toBe(2);
+      expect(late.failed).toBe(0);
       const plans = await db
         .select({
           status: departurePlans.status,
@@ -910,10 +918,36 @@ describe("motor de aviso de saída", () => {
       expect(plans).toHaveLength(2);
       for (const plan of plans) {
         expect(plan).toEqual({
-          status: "SENT",
-          reason: "SEND_FAILED",
-          attempts: DEPARTURE_MAX_SEND_ATTEMPTS,
+          status: "CANCELLED",
+          reason: "EXPIRED",
+          attempts: 5,
         });
+      }
+    });
+
+    it("retentativa com texto diferente não colide: a intenção gravada vale como enviada", async () => {
+      const dedupKey = `departure-test:${stamp}`;
+      const base = {
+        institutionId: institutionIds[0],
+        userId,
+        shiftInstanceId: shiftIds[0],
+        dedupKey,
+        deepLink: `/shift-details?shiftInstanceId=${shiftIds[0]}`,
+        title: "Horário do plantão se aproxima",
+      };
+      try {
+        await sendDeparture({ ...base, body: "Saia até 10:00." });
+        // O relógio andou: a mesma intenção agora seria "saia agora".
+        await expect(
+          sendDeparture({ ...base, body: "Saia agora." }),
+        ).resolves.toBeUndefined();
+        const rows = await db
+          .select({ id: notifications.id })
+          .from(notifications)
+          .where(eq(notifications.dedupKey, dedupKey));
+        expect(rows).toHaveLength(1);
+      } finally {
+        await db.delete(notifications).where(eq(notifications.dedupKey, dedupKey));
       }
     });
 

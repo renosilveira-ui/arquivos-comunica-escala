@@ -450,6 +450,23 @@ export async function syncDeparturePlans(input: {
     .where(eq(users.id, input.userId))
     .limit(1);
   const accountClosed = !owner || owner.deletedAt !== null;
+  if (accountClosed && preferences.enabled) {
+    // Desliga a preferência de vez: a reconciliação varre só quem está
+    // ligado, e uma conta excluída não pode ficar sendo revisitada a cada
+    // cinco minutos para sempre.
+    await input.db
+      .update(userDeparturePreferences)
+      .set({
+        enabled: false,
+        version: sql`${userDeparturePreferences.version} + 1`,
+      })
+      .where(
+        and(
+          eq(userDeparturePreferences.userId, input.userId),
+          eq(userDeparturePreferences.enabled, true),
+        ),
+      );
+  }
 
   // Desligou o aviso: todo plano aberto some. Manter intenção que o usuário
   // revogou seria guardar o que ele pediu para esquecer.
@@ -943,19 +960,11 @@ export async function recomputeDuePlans(input: {
 export type DispatchSummary = {
   sent: number;
   expired: number;
-  /** Enfileiramentos que falharam; o plano reabre até o teto de tentativas. */
+  /** Enfileiramentos que falharam; o plano reabre para o próximo tick. */
   failed: number;
   /** Planos de conta excluída, encerrados sem envio. */
   cancelled: number;
 };
-
-/**
- * Tentativas de enfileirar o aviso antes de desistir. O enfileiramento é
- * idempotente por `dedupKey`, então reabrir o plano não duplica o push; o
- * teto existe para uma falha permanente (conta sem token, banco recusando)
- * não virar um aviso reaberto a cada minuto até o plantão começar.
- */
-export const DEPARTURE_MAX_SEND_ATTEMPTS = 3;
 
 export type DepartureSender = (input: {
   institutionId: number;
@@ -973,9 +982,10 @@ export type DepartureSender = (input: {
  * O status vira `SENT` por CAS **antes** do envio: dois workers não mandam o
  * mesmo aviso. Se o enfileiramento falhar, o plano reabre para o próximo
  * tick — o outbox de push é idempotente por `dedupKey`, então não há
- * duplicata — até `DEPARTURE_MAX_SEND_ATTEMPTS`; depois fica `SENT` com o
- * motivo. Perder um aviso é ruim; mandar cinco é pior — treina o médico a
- * silenciar o app.
+ * duplicata. Quem limita as retentativas é a janela do aviso
+ * (`isNoticeExpired`, 30 min): passada ela, o plano é encerrado como
+ * EXPIRED sem enviar. Perder um aviso é ruim; mandar cinco é pior — treina
+ * o médico a silenciar o app.
  */
 export async function dispatchDueDepartures(input: {
   db: EngineDb;
@@ -1020,7 +1030,7 @@ export async function dispatchDueDepartures(input: {
     if (plan.ownerDeletedAt) {
       // Conta excluída: a exclusão apaga os planos, mas um que tenha
       // sobrevivido não pode virar push para quem encerrou a conta.
-      await input.db
+      const [closed] = await input.db
         .update(departurePlans)
         .set({
           status: "CANCELLED",
@@ -1033,14 +1043,15 @@ export async function dispatchDueDepartures(input: {
             eq(departurePlans.version, plan.version),
           ),
         );
-      summary.cancelled += 1;
+      // CAS perdido: outro passo já mexeu no plano; conta só o que aconteceu.
+      if (closed && closed.affectedRows === 1) summary.cancelled += 1;
       continue;
     }
 
     if (isNoticeExpired({ noticeAtUtc: plan.noticeAt, now })) {
       // Entregue muito depois, o aviso atrapalha: o médico confere o relógio
       // e conclui que o app está errado.
-      await input.db
+      const [expired] = await input.db
         .update(departurePlans)
         .set({
           status: "CANCELLED",
@@ -1053,7 +1064,7 @@ export async function dispatchDueDepartures(input: {
             eq(departurePlans.version, plan.version),
           ),
         );
-      summary.expired += 1;
+      if (expired && expired.affectedRows === 1) summary.expired += 1;
       continue;
     }
 
@@ -1119,24 +1130,20 @@ export async function dispatchDueDepartures(input: {
       summary.sent += 1;
     } catch {
       // Uma entrega que falha não derruba o lote: os outros médicos do mesmo
-      // tick têm plantão hoje também. O que falhou aqui foi o ENFILEIRAMENTO
-      // (nada chegou ao outbox), então reabrir o plano para o próximo tick
-      // não duplica nada — o outbox é idempotente por dedupKey. Esgotado o
-      // teto, o plano fica SENT com o motivo, em vez de reabrir a cada
-      // minuto até o plantão começar.
-      const reopen = plan.attemptCount + 1 < DEPARTURE_MAX_SEND_ATTEMPTS;
-      await input.db
+      // tick têm plantão hoje também. O que falhou aqui foi o ENFILEIRAMENTO,
+      // então reabrir o plano para o próximo tick não duplica nada — o
+      // outbox é idempotente por dedupKey, e o envio trata a intenção já
+      // gravada como entregue. Quem encerra as retentativas é a janela do
+      // aviso (`isNoticeExpired`): passada ela, o plano vira EXPIRED sem
+      // enviar, e não há loop.
+      const [reopened] = await input.db
         .update(departurePlans)
-        .set(
-          reopen
-            ? {
-                status: "SCHEDULED",
-                sentAt: null,
-                lastFailureReason: "SEND_FAILED",
-                version: sql`${departurePlans.version} + 1`,
-              }
-            : { lastFailureReason: "SEND_FAILED" },
-        )
+        .set({
+          status: "SCHEDULED",
+          sentAt: null,
+          lastFailureReason: "SEND_FAILED",
+          version: sql`${departurePlans.version} + 1`,
+        })
         .where(
           and(
             eq(departurePlans.id, plan.id),
@@ -1144,7 +1151,8 @@ export async function dispatchDueDepartures(input: {
             eq(departurePlans.version, plan.version + 1),
           ),
         );
-      summary.failed += 1;
+      // CAS perdido: outro processo já decidiu o destino deste plano.
+      if (reopened && reopened.affectedRows === 1) summary.failed += 1;
     }
   }
 
