@@ -42,6 +42,8 @@ export type PersonalCalendarOccurrenceLike = {
   endsAtUtc: Date | string;
   alertOffsets?: readonly number[];
   conflict?: PersonalCalendarConflictSummary;
+  /** De onde veio: criado aqui ou importado do Google (somente leitura). */
+  source?: "LOCAL" | "GOOGLE";
 };
 
 export type HolidayLike = {

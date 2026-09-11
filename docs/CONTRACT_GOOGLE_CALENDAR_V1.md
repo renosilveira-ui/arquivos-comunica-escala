@@ -201,3 +201,44 @@ Três travas, independentes:
    "nada para exportar ainda", não "em dia".
 
 Importação Google → Escala+ continua fora desta frente; a tela agora diz isso.
+
+## 12. Importação — Google → Escala+ (12/09/2026)
+
+O PO decidiu que o Escala+ é o centro da gestão de tempo do médico: os
+compromissos do Google precisam aparecer aqui, não só os plantões lá.
+
+**O que entra.** Só o calendário principal (`primary`) da conta vinculada.
+Título, início, fim, dia inteiro e disponibilidade (ocupado/livre). Nunca
+notas, participantes, anexos nem localização — privacidade por omissão.
+
+**O que não entra.** Eventos com o marcador de origem do Escala+ (§2): são
+os nossos plantões voltando pelo espelho. Sem essa exclusão haveria laço.
+
+**Autoridade.** Compromisso importado é **somente leitura no app**. O
+serviço recusa editar ou apagar (`PRECONDITION_FAILED`, mensagem em
+português apontando para o Google) e o editor mostra o aviso e desabilita
+salvar/apagar. A verdade é o Google; o app acompanha na próxima
+sincronização. Cancelou lá → some aqui. Mudou lá (etag) → atualiza aqui.
+
+**Idempotência.** Duas chaves únicas no banco
+(`personal_calendar_external_links`): um evento origina no máximo um
+compromisso por conta, e um compromisso tem no máximo uma origem. A
+inserção do compromisso usa `client_mutation_id = google:<calendário>:<evento>`
+(determinístico, ≤ 64 caracteres). Um cursor expirado (410) força leitura
+completa sem duplicar nada.
+
+**Cursor.** `personal_calendar_import_cursors` guarda o sync token por
+conta e calendário. NULL = leitura completa da janela (§ SYNC_PAST_DAYS).
+Lote máximo de 200 eventos por execução.
+
+**Quando roda.** Junto com a exportação: no `syncNow` da tela Google Agenda
+e no reconcile periódico. O resultado do `syncNow` traz
+`importedCreated / importedUpdated / importedRemoved / importOk`.
+
+**Onde aparece.** Aba Agenda → vista **Compromissos**: feriados, plantões
+da pessoa, compromissos criados aqui e os importados (com a etiqueta "Do
+seu Google Agenda · edite lá"), por dia, no mês navegado.
+
+Migração: `drizzle/migrations/manual/2026-09-12-personal-calendar-google-import.sql`
+(aditiva, InnoDB, não toca nas tabelas da fundação da agenda).
+

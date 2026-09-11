@@ -176,12 +176,15 @@ export default function GoogleCalendarScreen() {
       // janela de 92 dias, a mensagem certa é dizer que não havia o que
       // exportar — senão o usuário procura no Google um evento que nunca
       // existiu e conclui que o vínculo está quebrado.
+      const imported = result.importedCreated + result.importedUpdated;
       feedback.success(
-        result.considered === 0
-          ? "Nada para exportar ainda: você não tem plantões nem compromissos nos próximos 92 dias."
-          : touched === 0
-            ? "Tudo já estava em dia."
-            : `Sincronizado: ${result.created} criados, ${result.updated} atualizados, ${result.deleted} removidos.`,
+        imported > 0
+          ? `${imported} compromisso${imported === 1 ? "" : "s"} do seu Google ${imported === 1 ? "entrou" : "entraram"} na sua agenda.`
+          : result.considered === 0
+            ? "Nada para exportar ainda: você não tem plantões nem compromissos nos próximos 92 dias."
+            : touched === 0
+              ? "Tudo já estava em dia."
+              : `Sincronizado: ${result.created} criados, ${result.updated} atualizados, ${result.deleted} removidos.`,
       );
     },
     onError: (error) => feedback.error(error.message),
@@ -248,8 +251,10 @@ export default function GoogleCalendarScreen() {
               }}
             >
               Seus plantões e compromissos aparecem num calendário dedicado
-              chamado &quot;Escala+&quot; na sua conta do Google. É só de ida:
-              compromissos criados no seu Google não entram no Escala+.
+              chamado &quot;Escala+&quot; na sua conta do Google. E os
+              compromissos do seu calendário principal do Google entram na sua
+              agenda aqui — para editar ou apagar, use o Google; o Escala+
+              acompanha.
             </Text>
           </View>
 

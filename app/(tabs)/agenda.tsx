@@ -23,7 +23,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
 import { WeatherGreeting } from "@/components/home/WeatherGreeting";
-import { ListRow } from "@/components/ui/ListRow";
+import { UnifiedCalendar } from "@/components/agenda/UnifiedCalendar";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -107,7 +107,7 @@ type AgendaScope = "geral" | "minha";
 // Lista = dia-a-dia; Calendário = folha de mês; Panorama = hospital × dia.
 // No celular a grade hospital × dia não cabe (47 pt por coluna), então o
 // Panorama mobile É a folha de mês e "Calendário" não é oferecido.
-type AgendaViewMode = "lista" | "calendario" | "panorama";
+type AgendaViewMode = "lista" | "calendario" | "panorama" | "compromissos";
 
 const DAY_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"] as const;
 const MOBILE_BREAKPOINT = 1024;
@@ -260,6 +260,10 @@ export default function AgendaScreen() {
     toDateKey(startOfWeekMon(new Date())),
   );
   const todayKey = useMemo(() => toDateKey(new Date()), []);
+  const deviceTimeZone = useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paulo",
+    [],
+  );
   const [selectedDayKey, setSelectedDayKey] = useState(todayKey);
   const weeksCount = isDesktop ? 4 : 2;
 
@@ -269,8 +273,8 @@ export default function AgendaScreen() {
   );
   // Folha de mês: "Calendário" no desktop, "Panorama" no celular.
   const isMonthSheet = isDesktop
-    ? viewMode === "calendario"
-    : viewMode === "panorama";
+    ? viewMode === "calendario" || viewMode === "compromissos"
+    : viewMode === "panorama" || viewMode === "compromissos";
   // Grade hospital × dia (semanas): só no desktop.
   const isHospitalGrid = isDesktop && viewMode === "panorama";
   // No celular, Lista e Panorama são duas apresentações da mesma competência
@@ -751,22 +755,19 @@ export default function AgendaScreen() {
               stretch
               subtle
             />
+            {/* Compromissos: o calendário da PESSOA — feriados, plantões
+                dela, compromissos daqui e do Google, lembretes. Lista e
+                Panorama são a escala do tenant; isto é outro domínio, e
+                por isso ganha vista própria em vez de virar filtro. */}
+            <SegButton
+              label="Compromissos"
+              Icon={CalendarHeart}
+              active={viewMode === "compromissos"}
+              onPress={() => selectAgendaView("compromissos")}
+              stretch
+              subtle
+            />
           </Segmented>
-
-          {/* A agenda pessoal se acessa AQUI, não em Perfil. Perfil é onde se
-              ajusta o sistema — vincular o Google, ligar o aviso.
-              Compromisso é conteúdo, e conteúdo de agenda mora na aba Agenda.
-              Não é uma vista da escala (um dado é do tenant, o outro é
-              privado do usuário), por isso fica fora do seletor e leva
-              chevron: é outro lugar, e a tela diz isso. */}
-          <ListRow
-            title="Minha agenda"
-            subtitle="Compromissos, lembretes e aniversários — só seus"
-            Icon={CalendarHeart}
-            divided={false}
-            onPress={() => router.push("/personal-calendar")}
-            accessibilityLabel="Abrir minha agenda de compromissos"
-          />
 
           {!isDesktop && viewMode === "lista" ? (
             <View
@@ -1083,6 +1084,29 @@ export default function AgendaScreen() {
                 }}
               />
             ) : null}
+          {viewMode === "compromissos" ? (
+            <UnifiedCalendar
+              monthKey={anchorMonthKey}
+              todayKey={todayKey}
+              timeZone={deviceTimeZone}
+              weeks={weeksForRender}
+              onShiftPress={(id) =>
+                router.push({
+                  pathname: "/shift-details",
+                  params: { id: String(id) },
+                })
+              }
+              onOccurrencePress={(occurrence) =>
+                router.push({
+                  pathname: "/personal-event",
+                  params: { itemId: String(occurrence.itemId) },
+                })
+              }
+              onCreate={(dayKey) =>
+                router.push({ pathname: "/personal-event", params: { dayKey } })
+              }
+            />
+          ) : (
           <MonthAgenda
             weeks={weeksForRender}
             monthKey={anchorMonthKey}
@@ -1104,6 +1128,7 @@ export default function AgendaScreen() {
             }
             onOfferPress={() => router.push("/(tabs)/pending" as any)}
           />
+          )}
           </View>
         ) : isHospitalGrid ? (
           <PanoramicAgenda

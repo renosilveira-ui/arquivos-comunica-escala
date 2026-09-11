@@ -9,6 +9,7 @@ import {
 } from "../lib/integration-providers";
 import { router, sessionProcedure } from "./_core/trpc";
 import { canCreateDedicatedCalendar } from "./integrations/providers/calendar-provider";
+import { runGoogleCalendarImport } from "./integrations/google/import";
 import { getDb } from "./db";
 import { googleCalendarConfiguration } from "./integrations/providers/configuration";
 import { createGoogleCalendarProvider } from "./integrations/google/calendar-client";
@@ -206,6 +207,18 @@ export const googleCalendarRouter = router({
         provider,
       });
 
+      // Google → Escala+: compromissos do calendário principal. Falha aqui
+      // não desfaz a exportação que já saiu; vira contagem zero e o vínculo
+      // registra o motivo.
+      const imported = await runGoogleCalendarImport({
+        db,
+        userId: ctx.user.id,
+        expectedSessionVersion: ctx.user.sessionVersion,
+        config,
+        provider,
+        timeZone: input.timeZone,
+      });
+
       return {
         created: exported.value.created,
         updated: exported.value.updated,
@@ -213,6 +226,10 @@ export const googleCalendarRouter = router({
         unchanged: exported.value.unchanged,
         considered: exported.value.considered,
         resynced: pulled.ok ? pulled.value.resynced : false,
+        importedCreated: imported.ok ? imported.value.created : 0,
+        importedUpdated: imported.ok ? imported.value.updated : 0,
+        importedRemoved: imported.ok ? imported.value.removed : 0,
+        importOk: imported.ok,
       };
     }),
 });

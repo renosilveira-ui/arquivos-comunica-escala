@@ -457,7 +457,15 @@ export default function PersonalEventScreen() {
     updateMutation.isPending ||
     deleteMutation.isPending;
 
+  const external = itemQuery.data?.external ?? null;
+
   const submit = useCallback(() => {
+    if (external) {
+      feedback.error(
+        "Este compromisso vem do seu Google Agenda. Edite ou apague lá; o Escala+ acompanha na próxima sincronização.",
+      );
+      return;
+    }
     if (!title.trim()) {
       feedback.error("Informe um título para o compromisso.");
       return;
@@ -481,6 +489,7 @@ export default function PersonalEventScreen() {
       alertOffsets,
     });
   }, [
+    external,
     title,
     buildItem,
     buildRecurrence,
@@ -544,6 +553,18 @@ export default function PersonalEventScreen() {
           >
             {isEditing ? "Editar compromisso" : "Novo compromisso"}
           </Text>
+          {external ? (
+            <Text
+              style={{
+                fontSize: theme.text.body.fontSize,
+                lineHeight: theme.text.body.lineHeight,
+                color: theme.colors.textSecondary,
+              }}
+            >
+              Este compromisso vem do seu Google Agenda. Para editar ou apagar,
+              use o Google — o Escala+ acompanha na próxima sincronização.
+            </Text>
+          ) : null}
 
           <Field label="Tipo">
             <View style={{ flexDirection: "row", gap: theme.space[2] }}>
@@ -843,13 +864,13 @@ export default function PersonalEventScreen() {
             onPress={submit}
             variant="primary"
             fullWidth
-            disabled={saving}
+            disabled={saving || Boolean(external)}
           />
 
           {isEditing ? (
             <TouchableOpacity
               onPress={remove}
-              disabled={saving}
+              disabled={saving || Boolean(external)}
               accessibilityRole="button"
               accessibilityLabel="Excluir compromisso"
               style={{

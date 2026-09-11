@@ -3708,6 +3708,96 @@ export const externalCalendarEventLinks = mysqlTable(
 );
 
 /**
+ * Procedência de um compromisso importado do Google.
+ *
+ * Tabela separada de `personal_calendar_items` de propósito: a migração de
+ * fundação da agenda confere um hash estrutural das suas cinco tabelas toda
+ * vez que roda, e acrescentar colunas lá a faria passar a recusar. O mesmo
+ * padrão da exportação (`external_calendar_event_links`), na direção oposta.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-12-personal-calendar-google-import.sql
+ */
+export const personalCalendarExternalLinks = mysqlTable(
+  "personal_calendar_external_links",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    ownerUserId: int("owner_user_id").notNull(),
+    itemId: int("item_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    externalCalendarId: varchar("external_calendar_id", {
+      length: 255,
+    }).notNull(),
+    externalEventId: varchar("external_event_id", { length: 255 }).notNull(),
+    externalEtag: varchar("external_etag", { length: 255 }),
+    importedAt: timestamp("imported_at").notNull().defaultNow(),
+    /** Cancelado no Google: o item some, o vínculo fica contra duplicata. */
+    deletedAt: timestamp("deleted_at"),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPcExternalLinkEvent: unique("uniq_pc_external_link_event").on(
+      table.ownerUserId,
+      table.provider,
+      table.externalCalendarId,
+      table.externalEventId,
+    ),
+    uniqPcExternalLinkItem: unique("uniq_pc_external_link_item").on(
+      table.itemId,
+    ),
+    fkPcExternalLinkOwner: foreignKey({
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id],
+      name: "fk_pc_external_link_owner",
+    }).onDelete("cascade"),
+    fkPcExternalLinkItem: foreignKey({
+      columns: [table.itemId],
+      foreignColumns: [personalCalendarItems.id],
+      name: "fk_pc_external_link_item",
+    }).onDelete("cascade"),
+    chkPcExternalLinkProvider: check(
+      "chk_pc_external_link_provider",
+      sql`CHAR_LENGTH(TRIM(${table.provider})) > 0`,
+    ),
+    chkPcExternalLinkEvent: check(
+      "chk_pc_external_link_event",
+      sql`CHAR_LENGTH(TRIM(${table.externalEventId})) > 0`,
+    ),
+  }),
+);
+
+/** Cursor incremental por calendário lido do provedor. NULL = leitura completa. */
+export const personalCalendarImportCursors = mysqlTable(
+  "personal_calendar_import_cursors",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    ownerUserId: int("owner_user_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    externalCalendarId: varchar("external_calendar_id", {
+      length: 255,
+    }).notNull(),
+    syncCursor: varchar("sync_cursor", { length: 512 }),
+    lastImportedAt: timestamp("last_imported_at"),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPcImportCursor: unique("uniq_pc_import_cursor").on(
+      table.ownerUserId,
+      table.provider,
+      table.externalCalendarId,
+    ),
+    fkPcImportCursorOwner: foreignKey({
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id],
+      name: "fk_pc_import_cursor_owner",
+    }).onDelete("cascade"),
+  }),
+);
+
+/**
  * Preferências de aviso de saída, por CONTA.
  *
  * Uma preferência só: ligado ou desligado. O sistema não pergunta ao médico
