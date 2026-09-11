@@ -347,4 +347,45 @@ describe("mailer via Resend", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("não registra a chave de idempotência nem o conteúdo da mensagem", async () => {
+    withResendKey();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ id: "opaque-correlation" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errors = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const idempotencyKey = "a".repeat(64);
+
+    const result = await mailer.sendMail(
+      {
+        ...SAMPLE,
+        to: "secret-recipient@test.local",
+        text: "INVITE-CODE-SECRET",
+      },
+      { idempotencyKey },
+    );
+
+    expect(result.kind).toBe("ACCEPTED");
+    // A chave é derivada do código do convite: registrá-la equivaleria a
+    // registrar o próprio segredo, mesmo sem o texto da mensagem.
+    const observedLogs = [...logs.mock.calls, ...errors.mock.calls]
+      .flat()
+      .join(" ");
+    expect(observedLogs).not.toContain(idempotencyKey);
+    expect(observedLogs).not.toContain("secret-recipient@test.local");
+    expect(observedLogs).not.toContain("INVITE-CODE-SECRET");
+  });
 });

@@ -321,20 +321,6 @@ export async function assertManagerScopeAccessForUpdate(
     });
   }
 
-  const [membershipSnapshot] = await tx
-    .select({
-      id: professionalInstitutions.id,
-    })
-    .from(professionalInstitutions)
-    .where(
-      and(
-        eq(professionalInstitutions.userId, actor.userId),
-        eq(professionalInstitutions.professionalId, actor.professionalId),
-        eq(professionalInstitutions.institutionId, actor.institutionId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .limit(1);
   const [currentUser] = await tx
     .select({
       id: users.id,
@@ -371,22 +357,23 @@ export async function assertManagerScopeAccessForUpdate(
     )
     .limit(1)
     .for("update");
-  const [membership] = membershipSnapshot
-    ? await tx
-        .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
-        .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.id, membershipSnapshot.id),
-            eq(professionalInstitutions.userId, actor.userId),
-            eq(professionalInstitutions.professionalId, actor.professionalId),
-            eq(professionalInstitutions.institutionId, actor.institutionId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
-        .limit(1)
-        .for("update")
-    : [];
+  // A primeira leitura do vínculo também precisa ser uma locking read.
+  // Em REPEATABLE READ, selecionar o id sem lock e só depois bloquear essa
+  // linha reutilizava um snapshot antigo quando a autoridade era alterada no
+  // meio da transação.
+  const [membership] = await tx
+    .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.userId, actor.userId),
+        eq(professionalInstitutions.professionalId, actor.professionalId),
+        eq(professionalInstitutions.institutionId, actor.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1)
+    .for("update");
   if (!currentUser || !currentProfessional || !membership) {
     throw new TRPCError({
       code: "FORBIDDEN",

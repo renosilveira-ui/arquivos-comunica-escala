@@ -21,7 +21,8 @@ import {
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
+  hashScheduleInviteCodeV2,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
@@ -147,7 +148,8 @@ describe("recusa explícita de convite nominal", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(normalizeScheduleInviteCode(code)),
+        codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(code)),
+        codeHashVersion: "SHA256_V1",
         createdByUserId,
         invitedUserId,
         invitedEmail: `invitee-${stamp}@example.test`,
@@ -526,6 +528,94 @@ describe("recusa explícita de convite nominal", () => {
     expect(access).toBeUndefined();
   });
 
+  it("falha fechado quando a conta aponta para mais de um professional", async () => {
+    const ambiguous = await createIdentity("ambiguous-professional", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const [duplicateProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: ambiguous.userId,
+        name: ambiguous.name,
+        role: "Médico",
+        specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
+        userRole: "USER",
+      })
+      .$returningId();
+    professionalIds.push(duplicateProfessional.id);
+
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      creator.userId,
+      ambiguous.userId,
+    );
+    const session = await login(ambiguous.email);
+    const redeemed = await redeemInvite(code, cookieOf(session));
+
+    expect(redeemed.status).toBe(409);
+    expect(redeemed.body.error).toContain("Identidade profissional inconsistente");
+    expect((await inviteRow(inviteId))?.redeemedCount).toBe(0);
+    const access = await db
+      .select({ id: professionalAccess.id })
+      .from(professionalAccess)
+      .where(
+        inArray(professionalAccess.professionalId, [
+          ambiguous.professionalId,
+          duplicateProfessional.id,
+        ]),
+      );
+    expect(access).toHaveLength(0);
+  });
+
+  it("falha fechado quando o vínculo user_id aponta para professional de outro usuário", async () => {
+    const target = await createIdentity("crossed-membership-target", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const other = await createIdentity("crossed-membership-owner", institutionB, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalB,
+      sectorId: sectorB,
+      withAccess: false,
+    });
+    await db
+      .update(professionalInstitutions)
+      .set({ professionalId: other.professionalId })
+      .where(
+        and(
+          eq(professionalInstitutions.userId, target.userId),
+          eq(professionalInstitutions.institutionId, institutionA),
+        ),
+      );
+
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      creator.userId,
+      target.userId,
+    );
+    const session = await login(target.email);
+    const redeemed = await redeemInvite(code, cookieOf(session));
+
+    expect(redeemed.status).toBe(409);
+    expect(redeemed.body.error).toContain("Identidade profissional inconsistente");
+    expect((await inviteRow(inviteId))?.redeemedCount).toBe(0);
+    const access = await db
+      .select({ id: professionalAccess.id })
+      .from(professionalAccess)
+      .where(eq(professionalAccess.professionalId, target.professionalId));
+    expect(access).toHaveLength(0);
+  });
+
   it("outro convite do mesmo usuário não é afetado", async () => {
     const first = await createInvite(
       institutionA,
@@ -577,6 +667,140 @@ describe("recusa explícita de convite nominal", () => {
     const declinedRow = await inviteRow(declinedInvite.inviteId);
     expect(declinedRow?.revokedAt).toBeNull();
     expect(declinedRow?.declinedAt).not.toBeNull();
+  });
+
+  it("resgata HMAC V2 com o pepper anterior durante rotação", async () => {
+    const rotatingInvitee = await createIdentity(
+      "rotating-pepper-invitee",
+      institutionA,
+      {
+        roleInInstitution: "USER",
+        hospitalId: hospitalA,
+        sectorId: sectorA,
+        withAccess: false,
+      },
+    );
+    const code = generateScheduleInviteCode();
+    const normalized = normalizeScheduleInviteCode(code);
+    const previous =
+      "pepper-anterior-integracao-com-mais-de-trinta-dois-bytes";
+    vi.stubEnv(
+      "SCHEDULE_INVITE_CODE_PEPPER",
+      "pepper-corrente-integracao-com-mais-de-trinta-dois-bytes",
+    );
+    vi.stubEnv("SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER", previous);
+    try {
+      const [invite] = await db
+        .insert(scheduleInvites)
+        .values({
+          institutionId: institutionA,
+          hospitalId: hospitalA,
+          sectorId: sectorA,
+          codeHash: hashScheduleInviteCodeV2(normalized, previous),
+          codeHashVersion: "HMAC_SHA256_V2",
+          createdByUserId: creator.userId,
+          invitedUserId: rotatingInvitee.userId,
+          invitedEmail: rotatingInvitee.email,
+          maxRedemptions: 1,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        })
+        .$returningId();
+      const session = await login(rotatingInvitee.email);
+      const redeemed = await redeemInvite(code, cookieOf(session));
+
+      expect(redeemed.status).toBe(200);
+      expect((await inviteRow(invite.id))?.redeemedCount).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("pepper ausente recusa o resgate sem consumir o convite", async () => {
+    const missingSecretInvitee = await createIdentity(
+      "missing-secret-invitee",
+      institutionA,
+      {
+        roleInInstitution: "USER",
+        hospitalId: hospitalA,
+        sectorId: sectorA,
+        withAccess: false,
+      },
+    );
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      creator.userId,
+      missingSecretInvitee.userId,
+    );
+    const session = await login(missingSecretInvitee.email);
+    vi.stubEnv("SCHEDULE_INVITE_CODE_PEPPER", "");
+    try {
+      const rejected = await redeemInvite(code, cookieOf(session));
+      expect(rejected.status).toBe(500);
+      expect(rejected.body.error).toBe(
+        "Falha ao entrar na escala. Tente novamente.",
+      );
+      expect((await inviteRow(inviteId))?.redeemedCount).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const retried = await redeemInvite(code, cookieOf(session));
+    expect(retried.status).toBe(200);
+  });
+
+  it("falha fechado se o mesmo código corresponder a V1 e V2", async () => {
+    const ambiguousVersionInvitee = await createIdentity(
+      "ambiguous-version-invitee",
+      institutionA,
+      {
+        roleInInstitution: "USER",
+        hospitalId: hospitalA,
+        sectorId: sectorA,
+        withAccess: false,
+      },
+    );
+    const code = generateScheduleInviteCode();
+    const normalized = normalizeScheduleInviteCode(code);
+    const currentPepper = process.env.SCHEDULE_INVITE_CODE_PEPPER!;
+    const ids = await db
+      .insert(scheduleInvites)
+      .values([
+        {
+          institutionId: institutionA,
+          hospitalId: hospitalA,
+          sectorId: sectorA,
+          codeHash: hashLegacyScheduleInviteCode(normalized),
+          codeHashVersion: "SHA256_V1",
+          createdByUserId: creator.userId,
+          invitedUserId: ambiguousVersionInvitee.userId,
+          invitedEmail: ambiguousVersionInvitee.email,
+          maxRedemptions: 1,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+        {
+          institutionId: institutionA,
+          hospitalId: hospitalA,
+          sectorId: sectorA,
+          codeHash: hashScheduleInviteCodeV2(normalized, currentPepper),
+          codeHashVersion: "HMAC_SHA256_V2",
+          createdByUserId: creator.userId,
+          invitedUserId: ambiguousVersionInvitee.userId,
+          invitedEmail: ambiguousVersionInvitee.email,
+          maxRedemptions: 1,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      ])
+      .$returningId();
+    const session = await login(ambiguousVersionInvitee.email);
+    const redeemed = await redeemInvite(code, cookieOf(session));
+
+    expect(redeemed.status).toBe(400);
+    expect(redeemed.body.error).toContain("inválido ou expirado");
+    for (const row of ids) {
+      expect((await inviteRow(row.id))?.redeemedCount).toBe(0);
+    }
   });
 
   it("persiste audit sem código, hash ou token", async () => {
@@ -951,7 +1175,8 @@ describe("recusa explícita de convite nominal", () => {
         institutionId: institutionA,
         hospitalId: hospitalA,
         sectorId: sectorA,
-        codeHash: hashScheduleInviteCode(normalizeScheduleInviteCode(newCode)),
+        codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(newCode)),
+        codeHashVersion: "SHA256_V1",
         createdByUserId: creator.userId,
         invitedUserId: localInvitee.userId,
         invitedEmail: localInvitee.email,

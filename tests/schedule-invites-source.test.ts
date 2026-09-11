@@ -54,31 +54,48 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(decline).not.toContain("requireSingleInviteProfessionalId");
   });
 
-  it("não confirma o convite sem ACCEPTED e preserva o estado tri-state", () => {
+  // O envio inline com revogação preventiva foi aposentado: a intenção agora
+  // é persistida antes do egress e só o par aceite + ativação confirma o
+  // convite. REJECTED/UNKNOWN continuam cobertos, mas pelo estado durável
+  // (PROVIDER_UNKNOWN, PROVIDER_ACCEPTED_ACTIVATION_FAILED) e não por revogar.
+  it("persiste intenção antes do envio e só confirma após aceite + ativação", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("const delivery = await mailer.sendMail(mail, {");
-    expect(source).toContain("idempotencyKey: codeHash");
-    expect(source).toContain('if (delivery.kind === "REJECTED")');
-    expect(source).toContain('if (delivery.kind === "UNKNOWN")');
+    expect(source.indexOf('event: "CLAIMED"')).toBeLessThan(
+      source.indexOf("providerResult = await mailer.sendMail(claim.mail"),
+    );
+    expect(source).toContain('providerResult.kind !== "ACCEPTED"');
+    expect(source).toContain("outcome: providerResult.kind");
+    expect(source).toContain("idempotencyKey:");
+    expect(source).toContain("persistedMaterial.providerRequestFingerprint");
+    expect(source).toContain("fingerprintProviderRequest(claim.mail)");
+    expect(source).toContain("PROVIDER_REQUEST_CHANGED_BEFORE_EGRESS");
+    expect(source).toContain("ATTEMPT_EXPIRED_BEFORE_EGRESS");
+    expect(source).toContain('activationFailureCode = "ACTIVATION_EXPIRED"');
+    expect(source).toContain('outcome: "UNKNOWN"');
+    expect(source).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
+    expect(source).toContain("assertManagerScopeAccessForUpdate");
+    expect(source).toContain("{ db: tx, strict: true }");
+    expect(source).toContain("accepted,");
+    expect(source).toContain("codeHash: outboxKey.hash(normalized)");
+    expect(source).toContain("codeHashVersion: hashPolicy.write.version");
+    expect(source).toContain("scheduleInviteIssuanceFences.leaseToken");
+    expect(source).toContain("claim.material.leaseToken");
+    expect(source).toContain("claim.material.generation");
     expect(source).toContain(
-      "O provedor não aceitou o pedido de envio. Tente novamente.",
+      'eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED")',
     );
-    expect(source).toContain(
-      "entrega na caixa postal não é comprovada nesta integração",
-    );
-    expect(source).toContain(
-      "O resultado do pedido de envio foi inconclusivo; o convite foi revogado.",
-    );
-    expect(source).not.toContain(
-      'delivery.transport === "resend" && delivery.kind !== "ACCEPTED"',
-    );
+    expect(source).not.toContain("withScheduleInviteIssuanceMutex");
+    expect(source).not.toContain("GET_LOCK");
+    expect(source).not.toContain("getConnection()");
   });
 
   it("a lista padrão inclui a sala de espera e filtra por nome sem acento", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     expect(source).toContain("foldCandidateSearch");
-    expect(source).toContain("notExists");
-    expect(source).toContain("eq(professionalInstitutions.active, true)");
+    expect(source).toContain("row.active && row.institutionId");
+    expect(source).toContain(
+      "canonicalProfessionalByUser.get(row.userId) !== row.professionalId",
+    );
     expect(source).toContain("name: z.string().trim().max(120).optional()");
     expect(source).toContain(
       'foldCandidateSearch(row.name ?? "").includes(nameNeedle)',
@@ -107,6 +124,98 @@ describe("wiring fail-closed dos convites nominais", () => {
     );
     expect(listActive.match(/new Date\(\)/g)).toHaveLength(1);
   });
+
+  it("materializa outbox e journal append-only sem persistir código/e-mail", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const schema = readFileSync("drizzle/schema.ts", "utf8");
+    const migration = readFileSync(
+      "drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql",
+      "utf8",
+    );
+    expect(source).toContain("scheduleInviteIssuanceFences");
+    expect(schema).toContain("schedule_invite_issuance_fences");
+    expect(schema).toContain("schedule_invite_issuance_journal");
+    expect(migration).toContain("schedule_invite_issuance_fences");
+    expect(migration).toContain("schedule_invite_issuance_journal");
+    expect(schema).toContain("uniq_schedule_invite_issuance_scope");
+    expect(schema).toContain("PROVIDER_UNKNOWN");
+    expect(schema).toContain("provider_idempotency_key");
+    expect(schema).toContain("provider_request_fingerprint");
+    expect(schema).toContain("recipient_binding_hash");
+    expect(migration).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
+    expect(migration).toContain("Aplicar ANTES da migration hash V2");
+    expect(source).toContain("appendInviteIssuanceJournal");
+    expect(source).toContain("fingerprintProviderRequest");
+    expect(migration).toContain(
+      "trg_schedule_invite_issuance_journal_no_update",
+    );
+    expect(migration).toContain(
+      "trg_schedule_invite_issuance_journal_no_delete",
+    );
+    expect(migration).toContain("INFORMATION_SCHEMA.CHECK_CONSTRAINTS");
+    expect(migration).toContain("INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS");
+    expect(migration).toContain("POSITION_IN_UNIQUE_CONSTRAINT");
+    expect(migration).toContain("referential_constraints.UPDATE_RULE");
+    expect(migration).toContain("referential_constraints.DELETE_RULE");
+    expect(migration).toContain("check_manifest.NORMALIZED_CLAUSE =");
+    expect(source).not.toContain(".update(scheduleInviteIssuanceJournal)");
+    expect(migration).not.toMatch(
+      /\b(code_hash|invited_email|plaintext_code|provider_payload)\b/i,
+    );
+    expect(source).not.toMatch(
+      /console\.(?:log|warn|error)\([^)]*(?:formatted|normalized|codeHash|invitee\.email|providerIdempotencyKey)/s,
+    );
+  });
+
+  it("versiona HMAC, exige pepper dedicado e mantém V1 só para compatibilidade", () => {
+    const domain = readFileSync("lib/schedule-invite-code.ts", "utf8");
+    const policy = readFileSync(
+      "server/schedule-invite-code-policy.ts",
+      "utf8",
+    );
+    const migration = readFileSync(
+      "drizzle/migrations/manual/2026-09-10-schedule-invite-code-hash-v2.sql",
+      "utf8",
+    );
+    expect(domain).toContain("createHmac");
+    expect(domain).toContain("HMAC_SHA256_V2");
+    expect(policy).toContain("SCHEDULE_INVITE_CODE_PEPPER");
+    expect(policy).toContain("SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER");
+    expect(policy).toContain("COOKIE_SECRET");
+    expect(policy).toContain("TWILIO_AUTH_TOKEN");
+    expect(policy).not.toMatch(/console\.(log|warn|error)/);
+    expect(migration).toContain("code_hash_version");
+    expect(migration).toContain("SHA256_V1");
+    expect(migration).toContain("HMAC_SHA256_V2");
+    expect(migration).toContain("DEFAULT ''HMAC_SHA256_V2'' AFTER code_hash");
+    expect(migration).not.toContain("SCHEDULE_INVITE_CODE_PEPPER=");
+  });
+
+  it("mantém o remetente do fingerprint alinhado ao fallback real do mailer", () => {
+    const mailerSource = readFileSync("server/mailer.ts", "utf8");
+    const fingerprintSource = readFileSync(
+      "server/schedule-invite-provider-request.ts",
+      "utf8",
+    );
+    const fallback = "Escala+ <no-reply@escalas.app>";
+    expect(mailerSource).toContain(`DEFAULT_FROM = "${fallback}"`);
+    expect(fingerprintSource).toContain(`"${fallback}"`);
+    expect(fingerprintSource).toContain('createHmac("sha256", pepper)');
+    expect(fingerprintSource).not.toContain("createHash");
+  });
+
+  it("documenta o bloqueador de composição do reset administrativo", () => {
+    const contract = readFileSync(
+      "docs/operations/admin-reset-durable-delivery-contract.md",
+      "utf8",
+    );
+    expect(contract).toContain("não pode trocar `password_hash`");
+    expect(contract).toContain("Em `REJECTED`, não alterar a credencial");
+    expect(contract).toContain("Em `UNKNOWN`");
+    expect(contract).toContain("Sem e-mail, rejeitar antes");
+    expect(contract).toContain("Nunca retornar\n   `{ ok: true }`");
+  });
+
   it("o app não importa o gerador de código com crypto de Node", () => {
     const signup = readFileSync("app/signup.tsx", "utf8");
     const join = readFileSync("app/join-schedule.tsx", "utf8");
