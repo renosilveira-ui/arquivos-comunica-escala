@@ -21,6 +21,8 @@ import {
   isNull,
   or,
 } from "drizzle-orm";
+import { logger } from "../_core/logger";
+import { safeErrorDiagnostic } from "../_core/safe-error";
 import { getDb } from "../db";
 import {
   shiftInstances,
@@ -897,14 +899,30 @@ export async function notifyManagersConfirmationEscalation(
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Registra POR QUE o tick falhou, não só que falhou.
+ *
+ * A versão anterior escrevia apenas "TICK_FAILED". Como este cron roda a cada
+ * 60 segundos, uma falha permanente produzia 1.440 linhas por dia, todas
+ * idênticas e todas inúteis: dava para ver que estava quebrado havia semanas
+ * e era impossível saber do quê. O diagnóstico é sanitizado — categoria e
+ * código do driver, nunca mensagem crua nem dado de escala.
+ */
+function logTickFailure(error: unknown): void {
+  logger.error(
+    { event: "confirmation_tick_failed", ...safeErrorDiagnostic(error) },
+    "[ConfirmationCron] TICK_FAILED",
+  );
+}
+
 export function startConfirmationCron() {
   if (intervalId) return;
   console.log("[ConfirmationCron] Started (checks every 60s)");
   // Run immediately on start
-  tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
+  tick().catch(logTickFailure);
   // Then every 60 seconds
   intervalId = setInterval(() => {
-    tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
+    tick().catch(logTickFailure);
   }, 60_000);
 }
 
