@@ -15,17 +15,15 @@ services:
   - type: web
     name: escalas-staging
     runtime: node
-    # free = a instância DORME após 15 min sem tráfego e leva 30–60 s para
-    # acordar (o app abre do cache nesse meio-tempo, mas dados novos só
-    # chegam depois). Para o piloto não depender disso: `starter`
-    # (US$ 7/mês, sem spin-down). Decisão de custo do PO — ver
-    # docs/operations/cold-start.md.
+    # Decisão de custo do PO em 10/09/2026: o serviço saiu do free e está em
+    # instância sempre ligada (1 CPU / 2 GB — "standard" no Render). Sem
+    # spin-down: os workers in-process (confirmação, deslocamento, Google)
+    # rodam contínuos. Este valor PRECISA espelhar o dashboard: se o
+    # Blueprint sincronizar com `free`, o serviço volta a dormir.
     #
-    # O dispatcher de confirmação (setInterval 60s neste processo) some
-    # com o spin-down. 24/7 = EXTERNAL_INFRA_ACTION_REQUIRED (Starter ou
-    # Cron cobrado). Não criar type: cron aqui sem aprovação de custo —
-    # ver docs/operations/confirmation-coverage.md.
-    plan: free
+    # Não criar type: cron aqui sem aprovação de custo — ver
+    # docs/operations/confirmation-coverage.md.
+    plan: standard
     region: oregon
     branch: main
     buildCommand: pnpm install --frozen-lockfile && pnpm build:all
