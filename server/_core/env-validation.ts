@@ -104,6 +104,25 @@ export function collectExternalIntegrationWarnings(
   return [...issues];
 }
 
+/**
+ * Estado de cada integração externa, para o log de boot.
+ *
+ * Só nome e estado — nunca valor. Existe porque `collectExternalIntegrationWarnings`
+ * só fala quando a configuração está pela METADE: um provedor de chave única,
+ * como o Google Maps, nunca fica "pela metade", então a ausência dele era
+ * invisível de fora. Descobrir se a chave estava lá exigia adivinhar, e
+ * adivinhar sobre configuração foi o que custou 3h16 de staging em 10/09.
+ */
+export function describeExternalIntegrations(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const summary: Record<string, string> = {};
+  for (const report of externalProviderConfigurations(env)) {
+    summary[report.provider] = report.state;
+  }
+  return summary;
+}
+
 export function collectProductionSecretIssues(
   options: EnvValidationOptions = {},
 ): string[] {
