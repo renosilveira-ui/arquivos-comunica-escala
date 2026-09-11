@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_TRAVEL_MODE,
   LATE_SEND_TOLERANCE_MS,
   NOTICE_LEAD_MS,
   PLANNING_HORIZON_MS,
@@ -57,8 +58,21 @@ describe("o sistema não pergunta nada ao médico", () => {
     expect(normalizePreferences({ enabled: true }).enabled).toBe(true);
   });
 
-  it("carro é o padrão, e valor inválido não quebra o cálculo", () => {
+  /**
+   * Médico de plantão vai de carro. Não é um padrão que outra escrita possa
+   * sobrescrever — é a regra, aplicada na leitura. Um "a pé" gravado à mão no
+   * banco calcularia uma rota de pedestre e mandaria o médico sair horas
+   * antes; a normalização não deixa esse valor chegar ao cálculo.
+   */
+  it("é sempre carro, mesmo contra o que estiver gravado", () => {
+    expect(DEFAULT_TRAVEL_MODE).toBe("DRIVING");
     expect(normalizePreferences({ enabled: true }).travelMode).toBe("DRIVING");
+    expect(normalizePreferences({ travelMode: "WALKING" }).travelMode).toBe(
+      "DRIVING",
+    );
+    expect(normalizePreferences({ travelMode: "TRANSIT" }).travelMode).toBe(
+      "DRIVING",
+    );
     expect(
       normalizePreferences({ travelMode: "TELEPORTE" as never }).travelMode,
     ).toBe("DRIVING");
@@ -305,7 +319,7 @@ describe("assinaturas — invalidação do cálculo", () => {
     expect(shiftSignature({ ...base, hospitalId: 9 })).not.toBe(reference);
   });
 
-  it("mudar origem, destino ou modo invalida o cálculo", () => {
+  it("mudar origem ou destino invalida o cálculo", () => {
     const preferences = normalizePreferences({ enabled: true });
     const origin = {
       travelOriginId: 7,
@@ -326,12 +340,13 @@ describe("assinaturas — invalidação do cálculo", () => {
         destination: { latitude: -23.55, longitude: -46.63 },
       }),
     ).not.toBe(reference);
+    // O modo não varia mais: a assinatura depende de origem e destino.
     expect(
       originSignature({
         ...origin,
-        preferences: { ...preferences, travelMode: "TRANSIT" },
+        preferences: normalizePreferences({ travelMode: "TRANSIT" }),
       }),
-    ).not.toBe(reference);
+    ).toBe(reference);
   });
 });
 
