@@ -11,8 +11,10 @@ Diagnóstico de 23/08/2026, a partir dos logs e métricas do Render
 | 06:50Z | dormindo → "Running" 06:49:38, `listening` 06:50:06 | **47–64 s** (lote enviado 2×) |
 | build 14, 02:10Z | reiniciando por deploy | 15 s |
 
-- O serviço está no **plano free** do Render: dorme após 15 min sem
-  tráfego e acorda com o primeiro pedido. Acordar = agendar o container
+- Na época, o serviço estava no **plano free** do Render (dorme após 15 min
+  sem tráfego e acorda com o primeiro pedido). Desde 10/09/2026 está no
+  plano `1c-2g`, sempre ligado — o cold start descrito aqui não ocorre mais
+  no staging. Acordar = agendar o container
   (~10–30 s) + `pnpm start` (~20 s só para chegar ao `node`, 0,1 CPU) +
   boot do Node (~10 s, com "Reparsing as ES module") + primeira conexão
   TLS ao MySQL da DigitalOcean em NYC.

@@ -56,10 +56,11 @@ import {
  * Não cria vínculo, não pede permissão, não toca em conta desconectada.
  * Não registra nada além de contagens e o id numérico da conta que falhou.
  *
- * **Limite operacional conhecido**: no plano free do Render o processo dorme
- * após 15 minutos sem tráfego, e com ele este `setInterval`. Nada se perde —
- * o próximo acesso acorda a instância e a varredura retoma pelos mais
- * atrasados. Cobertura contínua exige instância sempre-on (decisão do PO).
+ * **Plano do Render**: desde 10/09/2026 o staging está em instância sempre
+ * ligada (`1c-2g`), e este `setInterval` roda contínuo. Num plano que dorme
+ * (free), o processo pararia após 15 minutos sem tráfego e o timer com ele;
+ * nada se perderia — o próximo acesso acordaria a instância e a varredura
+ * retomaria pelos mais atrasados.
  */
 
 const GOOGLE_SYNC_TICK_MS = 60_000;
