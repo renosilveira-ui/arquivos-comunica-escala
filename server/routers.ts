@@ -54,6 +54,7 @@ import { notificationsRouter } from "./notifications-router";
 import { personalCalendarRouter } from "./personal-calendar-router";
 import { calendarAuxiliaryRouter } from "./calendar-auxiliary-router";
 import { googleCalendarRouter } from "./google-calendar-router";
+import { departureRouter } from "./departure-router";
 import {
   actionableVacancyFiltersSchema,
   listActionableVacancyRows,
@@ -1144,6 +1145,7 @@ export const appRouter = router({
   personalCalendar: personalCalendarRouter,
   calendarAuxiliary: calendarAuxiliaryRouter,
   googleCalendar: googleCalendarRouter,
+  departure: departureRouter,
   corporateReadiness: corporateReadinessRouter,
 });
 

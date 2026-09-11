@@ -211,6 +211,55 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  /**
+   * Preferências e origem do aviso de saída são atos da PRÓPRIA conta sobre
+   * um recurso privado. Notificar alguém sobre a rotina de deslocamento do
+   * médico seria expor hábito pessoal sob aparência de transparência.
+   *
+   * O efeito já aparece na tela que ele está olhando; um push repetiria o que
+   * ele acabou de fazer.
+   */
+  "departure.deleteTravelOrigin": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário apaga uma origem de deslocamento",
+        audience: [],
+      },
+    ],
+  },
+  "departure.savePreferences": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário liga, desliga ou ajusta o aviso de saída",
+        audience: [],
+      },
+    ],
+  },
+  "departure.saveTravelOrigin": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário grava a origem de deslocamento",
+        audience: [],
+      },
+    ],
+  },
+  /**
+   * Localização do hospital é configuração institucional de topologia, no
+   * mesmo nível de criar hospital: registra-se em auditoria e não gera push.
+   * Ninguém precisa ser interrompido porque o gestor ajustou uma coordenada.
+   */
+  "departure.saveHospitalLocation": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o gestor define a localização de um hospital da instituição ativa",
+        audience: [],
+      },
+    ],
+  },
   "editor.assignDirect": {
     targets: [
       {

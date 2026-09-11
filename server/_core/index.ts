@@ -45,6 +45,10 @@ import {
   stopAuthRecoveryCron,
 } from "../cron/auth-recovery-dispatcher";
 import {
+  startDepartureCron,
+  stopDepartureCron,
+} from "../cron/departure-dispatcher";
+import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
@@ -260,6 +264,7 @@ async function startServer() {
     );
     startConfirmationCron();
     startAuthRecoveryCron();
+    startDepartureCron();
     startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
@@ -294,6 +299,17 @@ async function startServer() {
           "stopAuthRecoveryCron failed",
         );
       }
+      // O tick de saída pode estar no meio de um envio. Drenar antes de
+      // encerrar evita marcar um plano como SENT e morrer antes do push.
+      let departureDrain = Promise.resolve();
+      try {
+        departureDrain = stopDepartureCron();
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopDepartureCron failed",
+        );
+      }
       try {
         stopWhatsAppNlDriver();
       } catch (err) {
@@ -308,6 +324,14 @@ async function startServer() {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
           "stopAuthRecoveryCron failed",
+        );
+      }
+      try {
+        await departureDrain;
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopDepartureCron failed",
         );
       }
       try {

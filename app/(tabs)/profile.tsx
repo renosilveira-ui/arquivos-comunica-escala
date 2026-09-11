@@ -41,6 +41,7 @@ import {
   Building2,
   CalendarHeart,
   CalendarSync,
+  Navigation,
   History,
   Inbox,
   KeyRound,
@@ -618,6 +619,13 @@ export default function ProfileScreen() {
                 Icon={CalendarSync}
                 onPress={go("/google-calendar")}
                 accessibilityLabel="Vincular ou gerenciar o Google Agenda"
+              />
+              <ListRow
+                title="Hora de sair"
+                subtitle="Avisar quando sair de casa, com trânsito e clima"
+                Icon={Navigation}
+                onPress={go("/departure-alerts")}
+                accessibilityLabel="Configurar o aviso de hora de sair"
               />
               <ListRow
                 title="Alterar senha"

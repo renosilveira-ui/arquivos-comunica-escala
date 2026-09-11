@@ -73,10 +73,15 @@ export type ComputeRouteRequest = {
   destination: GeoPoint;
   travelMode: TravelMode;
   /**
-   * Chegada desejada. O provedor otimiza para chegar até aqui; é o que
-   * transforma "quanto demora" em "que horas sair".
+   * Instante da PARTIDA.
+   *
+   * A Routes API modela trânsito a partir da saída, não da chegada: o custo
+   * do trajeto depende de quando se entra nele. Transformar "quero chegar às
+   * 19h" em "saia às 18h07" é convergência de duas chamadas, e mora no motor
+   * de aviso de saída — não aqui. Esconder isso atrás de um parâmetro
+   * `arrivalAt` faria o contrato prometer o que a API não entrega.
    */
-  arrivalAtUtc: Date;
+  departAtUtc: Date;
 };
 
 export interface LocationProvider {

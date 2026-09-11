@@ -3707,6 +3707,175 @@ export const externalCalendarEventLinks = mysqlTable(
   }),
 );
 
+/**
+ * Preferências de aviso de saída, por CONTA.
+ *
+ * Opt-in explícito: sem linha aqui, nenhum plano é criado e nenhum push é
+ * enviado. Conveniência que ninguém pediu vira ruído, e ruído em app de
+ * plantão treina o médico a ignorar notificação — inclusive as que importam.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-departure-alerts.sql
+ */
+export const userDeparturePreferences = mysqlTable(
+  "user_departure_preferences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    enabled: boolean("enabled").notNull().default(false),
+    /** Origem padrão do deslocamento; null = usar a marcada como padrão. */
+    travelOriginId: int("travel_origin_id"),
+    travelMode: mysqlEnum("travel_mode", ["DRIVING", "WALKING", "TRANSIT"])
+      .notNull()
+      .default("DRIVING"),
+    /** Folga para chegar antes do início do plantão. */
+    arrivalMarginMinutes: int("arrival_margin_minutes").notNull().default(15),
+    /**
+     * Tempo assumido quando a rota não pôde ser calculada.
+     *
+     * Existe para que a ausência do Google não signifique ausência de aviso:
+     * é melhor avisar com estimativa declarada como fixa do que não avisar.
+     */
+    fallbackTravelMinutes: int("fallback_travel_minutes").notNull().default(40),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqDeparturePreferenceUser: unique("uniq_departure_preference_user").on(
+      table.userId,
+    ),
+    fkDeparturePreferenceUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_departure_preference_user",
+    }).onDelete("cascade"),
+    fkDeparturePreferenceOrigin: foreignKey({
+      columns: [table.travelOriginId],
+      foreignColumns: [userTravelOrigins.id],
+      name: "fk_departure_preference_origin",
+    }).onDelete("set null"),
+    chkDepartureMargin: check(
+      "chk_departure_margin",
+      sql`${table.arrivalMarginMinutes} BETWEEN 0 AND 240`,
+    ),
+    chkDepartureFallback: check(
+      "chk_departure_fallback",
+      sql`${table.fallbackTravelMinutes} BETWEEN 5 AND 480`,
+    ),
+  }),
+);
+
+/**
+ * Plano de saída de UM plantão.
+ *
+ * É a tabela de jobs do aviso: o cálculo não pode viver em `setTimeout`, que
+ * morre com o processo — e no plano free do Render o processo dorme a cada
+ * 15 minutos sem tráfego. Persistir a intenção é o que faz o aviso sobreviver
+ * ao deploy, ao spin-down e ao reinício.
+ *
+ * `dedup_key` é a identidade do aviso: `user:assignment:janela`. Duas
+ * execuções concorrentes do worker disputam a mesma chave e só uma envia.
+ *
+ * As colunas `*_signature` guardam de que MUNDO o cálculo saiu. Se o plantão
+ * mudou de horário, se o usuário trocou a origem ou a margem, a assinatura
+ * deixa de bater e o plano é recalculado em vez de disparar um aviso baseado
+ * num mundo que não existe mais.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-departure-alerts.sql
+ */
+export const departurePlans = mysqlTable(
+  "departure_plans",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    /** Tenant do plantão. Presente para auditoria e limpeza, nunca para autorizar. */
+    institutionId: int("institution_id").notNull(),
+    assignmentId: int("assignment_id").notNull(),
+    shiftInstanceId: int("shift_instance_id").notNull(),
+    travelOriginId: int("travel_origin_id"),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "SCHEDULED",
+      "SENT",
+      "CANCELLED",
+      "UNAVAILABLE",
+    ])
+      .notNull()
+      .default("PENDING"),
+    /** Chegada desejada = início do plantão menos a margem. */
+    desiredArrivalAt: timestamp("desired_arrival_at").notNull(),
+    estimatedDurationSeconds: int("estimated_duration_seconds"),
+    estimatedDistanceMeters: int("estimated_distance_meters"),
+    estimateQuality: mysqlEnum("estimate_quality", [
+      "LIVE_TRAFFIC",
+      "TYPICAL",
+      "FALLBACK",
+    ]),
+    /** Instante calculado da saída. Null enquanto não há estimativa. */
+    departAt: timestamp("depart_at"),
+    /** Quando o worker deve recalcular. Escalona conforme o plantão se aproxima. */
+    nextRecomputeAt: timestamp("next_recompute_at"),
+    computedAt: timestamp("computed_at"),
+    sentAt: timestamp("sent_at"),
+    /** Assinatura do plantão (início+fim+setor) que originou o cálculo. */
+    shiftSignature: char("shift_signature", { length: 64 }),
+    /** Assinatura da origem + preferências que originaram o cálculo. */
+    originSignature: char("origin_signature", { length: 64 }),
+    weatherSummary: varchar("weather_summary", { length: 120 }),
+    dedupKey: binaryVarchar("dedup_key", { length: 191 }).notNull(),
+    attemptCount: int("attempt_count").notNull().default(0),
+    lastFailureReason: varchar("last_failure_reason", { length: 32 }),
+    version: int("version").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqDeparturePlanDedup: unique("uniq_departure_plan_dedup").on(
+      table.dedupKey,
+    ),
+    uniqDeparturePlanAssignment: unique("uniq_departure_plan_assignment").on(
+      table.userId,
+      table.assignmentId,
+    ),
+    idxDeparturePlanDue: index("idx_departure_plan_due").on(
+      table.status,
+      table.nextRecomputeAt,
+    ),
+    idxDeparturePlanSend: index("idx_departure_plan_send").on(
+      table.status,
+      table.departAt,
+    ),
+    fkDeparturePlanUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_departure_plan_user",
+    }).onDelete("cascade"),
+    fkDeparturePlanInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_departure_plan_institution",
+    }),
+    fkDeparturePlanOrigin: foreignKey({
+      columns: [table.travelOriginId],
+      foreignColumns: [userTravelOrigins.id],
+      name: "fk_departure_plan_origin",
+    }).onDelete("set null"),
+    chkDeparturePlanAttempts: check(
+      "chk_departure_plan_attempts",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    /**
+     * Um plano ENVIADO precisa ter de fato um instante de saída calculado.
+     * Sem esta trava, um bug poderia marcar como enviado algo que nunca teve
+     * horário — e o médico receberia um aviso sem hora.
+     */
+    chkDeparturePlanSent: check(
+      "chk_departure_plan_sent",
+      sql`(${table.status} <> 'SENT') OR (${table.departAt} IS NOT NULL AND ${table.sentAt} IS NOT NULL)`,
+    ),
+  }),
+);
+
 // ========================================
 // RELATIONS (Multi-Tenant Hierarchy)
 // ========================================
