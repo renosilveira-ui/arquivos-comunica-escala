@@ -21,6 +21,7 @@ import {
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
+import { WeatherGreeting } from "@/components/home/WeatherGreeting";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -520,6 +521,11 @@ export default function AgendaScreen() {
           ) : undefined
         }
       >
+        {/* Saudação com o clima de onde o médico está. Fica acima do
+            cabeçalho da escala porque é da PESSOA, não da instituição — e
+            some sozinha se não houver clima. */}
+        <WeatherGreeting />
+
         {/* Cabeçalho único das três vistas (proposta de design 23/08):
             título + navegação de período, "Hoje" e voz; instituição +
             Geral/Minha; trocador de vista de largura cheia; e, só para
