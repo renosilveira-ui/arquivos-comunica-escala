@@ -38,6 +38,7 @@ const expectedMutationPaths = [
   "googleCalendar.startLink",
   "googleCalendar.syncNow",
   "hospitals.create",
+  "institutionPolicy.setConfirmationEscalation",
   "notifications.acknowledgeAccountBadge",
   "personalCalendar.checkConflicts",
   "personalCalendar.createItem",

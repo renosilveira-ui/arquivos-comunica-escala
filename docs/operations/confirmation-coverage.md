@@ -170,3 +170,31 @@ Isso **vai acontecer de novo** para todo médico sem o app instalado: o push
 falha, escala ao gestor, e a confirmação fica parada em `PENDING` até alguém
 agir. É o comportamento desenhado — a diferença é que agora ele não custa o
 subsistema inteiro.
+
+## Estado terminal EXPIRED e o aviso ao gestor como escolha (12/09/2026)
+
+Parecer de bancos (12/09): 83 confirmações `PENDING` no staging, 79 de
+plantões já terminados, a mais antiga de 26/08. Depois da escalação ao
+gestor a confirmação esperava um humano — e nada a encerrava quando o
+plantão terminava. Decisão do PO:
+
+- **Plantão não confirmado continua sendo avisado ao gestor da escala**, mas
+  cada instituição pode desligar o aviso: "é uma decisão do grupo de
+  trabalho, não imposição do sistema; nós oferecemos a ferramenta".
+  Chave em Perfil → Gestão → **Plantão não confirmado** (só quem gerencia a
+  escala; auditado como `INSTITUTION_FEATURE_UPDATED`). Coluna
+  `institutions.notify_manager_on_unconfirmed`, ligada por padrão.
+- **Confirmação sem resposta encerra quando o plantão termina**: passo
+  `expireStaleConfirmations` do tick — abertas (`PENDING`, `NOMINATED`,
+  `DECLINED`, `REPLACEMENT_DECLINED`) com `end_at < now` viram `EXPIRED`
+  (`expired_at`), sem notificação. Terminal: ninguém sai de `EXPIRED`.
+  As pendências antigas foram descartadas por este caminho na primeira
+  rodada após o deploy.
+- Com o aviso desligado, a escalação não cria intenção nenhuma e marca
+  `escalation_suppressed_at`; a descoberta trata como escalado (não re-arma,
+  não redescobre), e a confirmação segue até `EXPIRED`.
+- Notificações do "produto" (o que dizer ao médico e ao gestor quando o
+  plantão vira produto de verdade): dívida registrada, a resolver depois.
+
+Migração: `drizzle/migrations/manual/2026-09-12-confirmation-expiry-and-escalation-policy.sql`.
+
