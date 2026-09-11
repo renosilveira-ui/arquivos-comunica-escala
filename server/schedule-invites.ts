@@ -1,23 +1,47 @@
-import { and, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   hospitals,
+  institutions,
   professionalAccess,
   professionalInstitutions,
   professionals,
   scheduleInvites,
+  scheduleInviteIssuanceFences,
+  scheduleInviteIssuanceJournal,
+  scheduleContexts,
   sectors,
   users,
 } from "../drizzle/schema";
-import { mailer } from "./mailer";
+import { mailer, type MailMessage } from "./mailer";
 import { buildScheduleInviteMail } from "./schedule-invite-mail";
 import {
   formatScheduleInviteCode,
-  generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  generateScheduleInviteOpaqueToken,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
+import {
+  getScheduleInviteHashPolicy,
+  type ScheduleInviteHashPolicy,
+  type ScheduleInviteOutboxKey,
+} from "./schedule-invite-code-policy";
+import {
+  alignScheduleInviteAttemptExpiry,
+  isScheduleInviteAttemptLive,
+  planScheduleInviteRecovery,
+  type ScheduleInviteDeliveryState,
+} from "./schedule-invite-delivery-state";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import {
@@ -56,6 +80,47 @@ type InviteDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select" | "insert" | "update"
 >;
+type ScheduleInviteDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+type ScheduleInviteWriteDb = Parameters<
+  typeof assertManagerScopeAccessForUpdate
+>[0];
+
+const SCHEDULE_INVITE_ISSUANCE_LEASE_MS = 60_000;
+
+type InviteIssuanceScope = {
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  userId: number;
+};
+
+function logInviteIssuanceFailure(
+  event: string,
+  scope: InviteIssuanceScope,
+  generation?: number,
+): void {
+  // Allowlist deliberada: somente ids internos de escopo e geração. Nunca
+  // passe destinatário, código, hashes, nonce, idempotency-key ou payload.
+  console.error(
+    `[schedule-invites] ${JSON.stringify({
+      event,
+      institutionId: scope.institutionId,
+      hospitalId: scope.hospitalId,
+      sectorId: scope.sectorId,
+      invitedUserId: scope.userId,
+      ...(generation === undefined ? {} : { generation }),
+    })}`,
+  );
+}
+
+/**
+ * Gancho exclusivamente adversarial. Permite provar que uma alteração feita
+ * depois do lock da fence, mas ainda dentro da transação de ativação, é lida
+ * pelas locking reads correntes. O runtime de produção nunca o executa.
+ */
+export const __scheduleInviteTestHooks: {
+  afterActivationFenceLocked?: () => Promise<void>;
+} = {};
 
 function updateAffectedRows(result: unknown): number {
   if (result && typeof result === "object" && "affectedRows" in result) {
@@ -69,13 +134,27 @@ function updateAffectedRows(result: unknown): number {
   return 0;
 }
 
+function scheduleInviteCodeLookupWhere(
+  normalized: string,
+  policy: ScheduleInviteHashPolicy,
+) {
+  return or(
+    ...policy.lookup(normalized).map((candidate) =>
+      and(
+        eq(scheduleInvites.codeHashVersion, candidate.version),
+        eq(scheduleInvites.codeHash, candidate.hash),
+      ),
+    ),
+  );
+}
+
 export async function peekScheduleInviteInstitution(
   db: InviteDb,
   code: string,
   now = new Date(),
 ): Promise<{ institutionId: number }> {
-  const codeHash = hashScheduleInviteCode(code);
-  const [invite] = await db
+  const hashPolicy = getScheduleInviteHashPolicy();
+  const inviteRows = await db
     .select({
       institutionId: scheduleInvites.institutionId,
       expiresAt: scheduleInvites.expiresAt,
@@ -85,8 +164,9 @@ export async function peekScheduleInviteInstitution(
       maxRedemptions: scheduleInvites.maxRedemptions,
     })
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
-    .limit(1);
+    .where(scheduleInviteCodeLookupWhere(code, hashPolicy))
+    .limit(2);
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (
     !invite ||
     invite.revokedAt ||
@@ -149,13 +229,26 @@ export async function redeemScheduleInviteInTransaction(
   invitedUserId: number;
 }> {
   const now = input.now ?? new Date();
-  const codeHash = hashScheduleInviteCode(input.code);
-  const [invite] = await tx
-    .select()
-    .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
+  const hashPolicy = getScheduleInviteHashPolicy();
+  // Ordem global de locks dos fluxos de convite: users → identidade → invite.
+  // A emissão também começa pelo usuário, evitando ciclo entre um resgate que
+  // segura o convite e uma nova emissão que precisa revalidar o destinatário.
+  const [lockedUser] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, input.userId))
     .limit(1)
     .for("update");
+  if (!lockedUser) {
+    throw new ScheduleInviteError(409, "Profissional não encontrado");
+  }
+  const inviteRows = await tx
+    .select()
+    .from(scheduleInvites)
+    .where(scheduleInviteCodeLookupWhere(input.code, hashPolicy))
+    .limit(2)
+    .for("update");
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (
     !invite ||
     invite.revokedAt ||
@@ -219,15 +312,42 @@ export async function redeemScheduleInviteInTransaction(
     );
   }
 
+  const professionalRows = await tx
+    .select({ id: professionals.id })
+    .from(professionals)
+    .where(eq(professionals.userId, input.userId))
+    .limit(2)
+    .for("update");
+  if (
+    professionalRows.length !== 1 ||
+    professionalRows[0]!.id !== input.professionalId
+  ) {
+    throw new ScheduleInviteError(
+      409,
+      "Identidade profissional inconsistente. Procure o suporte.",
+    );
+  }
+
   const memberships = await tx
     .select({
       id: professionalInstitutions.id,
+      professionalId: professionalInstitutions.professionalId,
       institutionId: professionalInstitutions.institutionId,
       active: professionalInstitutions.active,
     })
     .from(professionalInstitutions)
     .where(eq(professionalInstitutions.userId, input.userId))
     .for("update");
+  if (
+    memberships.some(
+      (row) => row.professionalId !== input.professionalId,
+    )
+  ) {
+    throw new ScheduleInviteError(
+      409,
+      "Identidade profissional inconsistente. Procure o suporte.",
+    );
+  }
   const membership = memberships.find(
     (row) => row.institutionId === invite.institutionId,
   );
@@ -357,13 +477,14 @@ export async function declineScheduleInviteInTransaction(
   invitedUserId: number;
 }> {
   const now = input.now ?? new Date();
-  const codeHash = hashScheduleInviteCode(input.code);
-  const [invite] = await tx
+  const hashPolicy = getScheduleInviteHashPolicy();
+  const inviteRows = await tx
     .select()
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
-    .limit(1)
+    .where(scheduleInviteCodeLookupWhere(input.code, hashPolicy))
+    .limit(2)
     .for("update");
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (!invite) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
@@ -487,6 +608,7 @@ type CandidateDb = Pick<
 
 type InvitableCandidate = {
   userId: number;
+  professionalId: number;
   name: string | null;
   email: string | null;
   specialtyLabel: string | null;
@@ -510,52 +632,39 @@ async function selectInvitableCandidates(
   institutionId: number,
   hospitalId: number,
   sectorId: number,
+  onlyUserIds?: number[],
 ): Promise<InvitableCandidate[]> {
-  const candidateColumns = {
-    userId: users.id,
-    name: users.name,
-    email: users.email,
-    specialtyLabel: professionals.specialty,
-  };
-
-  const houseMembers = await db
-    .select(candidateColumns)
-    .from(users)
-    .innerJoin(professionals, eq(professionals.userId, users.id))
-    .innerJoin(
-      professionalInstitutions,
-      and(
-        eq(professionalInstitutions.userId, users.id),
-        eq(professionalInstitutions.institutionId, institutionId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
-
-  const waitingRoom = await db
-    .select(candidateColumns)
+  const identityRows = await db
+    .select({
+      userId: users.id,
+      professionalId: professionals.id,
+      name: users.name,
+      email: users.email,
+      specialtyLabel: professionals.specialty,
+    })
     .from(users)
     .innerJoin(professionals, eq(professionals.userId, users.id))
     .where(
       and(
         eq(users.approvalStatus, "APPROVED"),
         isNull(users.deletedAt),
-        notExists(
-          db
-            .select({ id: professionalInstitutions.id })
-            .from(professionalInstitutions)
-            .where(
-              and(
-                eq(professionalInstitutions.userId, users.id),
-                eq(professionalInstitutions.active, true),
-              ),
-            ),
-        ),
+        onlyUserIds?.length ? inArray(users.id, onlyUserIds) : undefined,
       ),
     );
 
+  const professionalIdsByUser = new Map<number, Set<number>>();
+  for (const row of identityRows) {
+    const ids = professionalIdsByUser.get(row.userId) ?? new Set<number>();
+    ids.add(row.professionalId);
+    professionalIdsByUser.set(row.userId, ids);
+  }
+
   const byId = new Map<number, InvitableCandidate>();
-  for (const row of [...houseMembers, ...waitingRoom]) {
+  for (const row of identityRows) {
+    // Cadastro profissional 1:1 ainda não é uma constraint física. Não
+    // escolha uma linha arbitrária: convite emitido para identidade ambígua
+    // seria recusado pelo redeem e criaria um fluxo impossível.
+    if (professionalIdsByUser.get(row.userId)?.size !== 1) continue;
     byId.set(row.userId, row);
   }
   const candidates = [...byId.values()];
@@ -615,30 +724,43 @@ async function selectInvitableCandidates(
   const memberships = await db
     .select({
       userId: professionalInstitutions.userId,
+      professionalId: professionalInstitutions.professionalId,
       institutionId: professionalInstitutions.institutionId,
+      active: professionalInstitutions.active,
     })
     .from(professionalInstitutions)
     .where(
-      and(
-        eq(professionalInstitutions.active, true),
-        inArray(professionalInstitutions.userId, candidateIds),
-      ),
+      inArray(professionalInstitutions.userId, candidateIds),
     );
+  const canonicalProfessionalByUser = new Map(
+    candidates.map((row) => [row.userId, row.professionalId] as const),
+  );
+  const crossedIdentity = new Set(
+    memberships
+      .filter(
+        (row) =>
+          canonicalProfessionalByUser.get(row.userId) !== row.professionalId,
+      )
+      .map((row) => row.userId),
+  );
   const inThisHouse = new Set(
     memberships
-      .filter((row) => row.institutionId === institutionId)
+      .filter((row) => row.active && row.institutionId === institutionId)
       .map((row) => row.userId),
   );
   const lockedToOtherHouse = new Set(
     memberships
       .filter(
         (row) =>
-          row.institutionId !== institutionId && !inThisHouse.has(row.userId),
+          row.active &&
+          row.institutionId !== institutionId &&
+          !inThisHouse.has(row.userId),
       )
       .map((row) => row.userId),
   );
 
   return candidates.filter((row) => {
+    if (crossedIdentity.has(row.userId)) return false;
     if (alreadyInScale.has(row.userId)) return false;
     if (
       linkedOnlyElsewhere.has(row.userId) &&
@@ -647,6 +769,850 @@ async function selectInvitableCandidates(
       return false;
     }
     if (lockedToOtherHouse.has(row.userId)) return false;
+    return true;
+  });
+}
+
+type InviteContextSnapshot = {
+  id: number;
+  institutionId: number;
+  hospitalId: number;
+  hospitalName: string;
+  sectorId: number;
+  sectorName: string;
+};
+
+type InviteIssuanceSnapshot = {
+  context: InviteContextSnapshot;
+  invitee: InvitableCandidate;
+};
+
+async function selectCurrentInviteContextForShare(
+  tx: ScheduleInviteWriteDb,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+  },
+): Promise<InviteContextSnapshot[]> {
+  // Esta consulta é deliberadamente autocontida e locking. Não chama o
+  // enriquecimento de leitura comum (que faria consistent reads adicionais
+  // em REPEATABLE READ) dentro da transação que ativa o convite.
+  return tx
+    .select({
+      id: scheduleContexts.id,
+      institutionId: scheduleContexts.institutionId,
+      hospitalId: scheduleContexts.hospitalId,
+      hospitalName: hospitals.name,
+      sectorId: scheduleContexts.sectorId,
+      sectorName: sectors.name,
+    })
+    .from(scheduleContexts)
+    .innerJoin(
+      institutions,
+      and(
+        eq(institutions.id, scheduleContexts.institutionId),
+        eq(institutions.isActive, true),
+      ),
+    )
+    .innerJoin(
+      hospitals,
+      and(
+        eq(hospitals.id, scheduleContexts.hospitalId),
+        eq(hospitals.institutionId, scheduleContexts.institutionId),
+      ),
+    )
+    .innerJoin(
+      sectors,
+      and(
+        eq(sectors.id, scheduleContexts.sectorId),
+        eq(sectors.institutionId, scheduleContexts.institutionId),
+        eq(sectors.hospitalId, scheduleContexts.hospitalId),
+      ),
+    )
+    .where(
+      and(
+        eq(scheduleContexts.institutionId, input.institutionId),
+        eq(scheduleContexts.hospitalId, input.hospitalId),
+        eq(scheduleContexts.sectorId, input.sectorId),
+        eq(scheduleContexts.active, true),
+        or(
+          and(
+            eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
+            isNotNull(scheduleContexts.medicalSpecialtyId),
+            isNull(scheduleContexts.operationalProfileCode),
+          ),
+          and(
+            eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
+            isNull(scheduleContexts.medicalSpecialtyId),
+            isNotNull(scheduleContexts.operationalProfileCode),
+          ),
+          and(
+            or(
+              eq(scheduleContexts.admissionPolicy, "ALL_CFM_SPECIALTIES"),
+              eq(
+                scheduleContexts.admissionPolicy,
+                "ALL_CFM_EXCEPT_GENERALIST",
+              ),
+              eq(scheduleContexts.admissionPolicy, "QUALIFICATION_ALLOWLIST"),
+            ),
+            isNull(scheduleContexts.medicalSpecialtyId),
+            isNull(scheduleContexts.operationalProfileCode),
+          ),
+        ),
+      ),
+    )
+    .for("share");
+}
+
+async function selectInvitableCandidateForUpdate(
+  tx: ScheduleInviteWriteDb,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+  },
+): Promise<InvitableCandidate | null> {
+  const [currentUser] = await tx
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+    })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, input.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!currentUser) return null;
+
+  const professionalRows = await tx
+    .select({ id: professionals.id, specialty: professionals.specialty })
+    .from(professionals)
+    .where(eq(professionals.userId, input.userId))
+    .limit(2)
+    .for("update");
+  if (professionalRows.length !== 1) return null;
+  const professional = professionalRows[0]!;
+
+  const memberships = await tx
+    .select({
+      professionalId: professionalInstitutions.professionalId,
+      institutionId: professionalInstitutions.institutionId,
+      active: professionalInstitutions.active,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, input.userId))
+    .for("update");
+  if (
+    memberships.some((row) => row.professionalId !== professional.id)
+  ) {
+    return null;
+  }
+  const inThisHouse = memberships.some(
+    (row) => row.active && row.institutionId === input.institutionId,
+  );
+  if (
+    !inThisHouse &&
+    memberships.some(
+      (row) => row.active && row.institutionId !== input.institutionId,
+    )
+  ) {
+    return null;
+  }
+
+  const accessRows = await tx
+    .select({
+      hospitalId: professionalAccess.hospitalId,
+      sectorId: professionalAccess.sectorId,
+      canAccess: professionalAccess.canAccess,
+    })
+    .from(professionalAccess)
+    .where(
+      and(
+        eq(professionalAccess.professionalId, professional.id),
+        eq(professionalAccess.institutionId, input.institutionId),
+      ),
+    )
+    .for("update");
+  const enabledAccess = accessRows.filter((row) => row.canAccess);
+  if (
+    enabledAccess.some(
+      (row) =>
+        row.hospitalId === input.hospitalId && row.sectorId === input.sectorId,
+    )
+  ) {
+    return null;
+  }
+  const linkedToRequestedHospital = enabledAccess.some(
+    (row) => row.hospitalId === input.hospitalId,
+  );
+  const linkedOnlyElsewhere = enabledAccess.some(
+    (row) => row.hospitalId !== input.hospitalId,
+  );
+  if (linkedOnlyElsewhere && !linkedToRequestedHospital) return null;
+
+  return {
+    userId: currentUser.id,
+    professionalId: professional.id,
+    name: currentUser.name,
+    email: currentUser.email,
+    specialtyLabel: professional.specialty,
+  };
+}
+
+async function revalidateInviteIssuanceForUpdate(
+  tx: ScheduleInviteWriteDb,
+  input: {
+    actor: TenantActor;
+    expectedActorSessionVersion: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+  },
+): Promise<InviteIssuanceSnapshot | null> {
+  await assertManagerScopeAccessForUpdate(
+    tx,
+    input.actor,
+    input.expectedActorSessionVersion,
+    input.hospitalId,
+    input.sectorId,
+  );
+  const contexts = await selectCurrentInviteContextForShare(tx, {
+    institutionId: input.actor.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+  });
+  if (contexts.length !== 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        contexts.length === 0
+          ? "Esta escala ainda não está aberta"
+          : "Este setor possui mais de uma escala ativa; regularize a topologia.",
+    });
+  }
+  const invitee = await selectInvitableCandidateForUpdate(tx, {
+    institutionId: input.actor.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    userId: input.userId,
+  });
+  return invitee ? { context: contexts[0]!, invitee } : null;
+}
+
+type InviteIssuanceDb = Pick<
+  ScheduleInviteDb,
+  "select" | "insert" | "update"
+>;
+
+function fenceScopeWhere(scope: InviteIssuanceScope) {
+  return and(
+    eq(scheduleInviteIssuanceFences.institutionId, scope.institutionId),
+    eq(scheduleInviteIssuanceFences.hospitalId, scope.hospitalId),
+    eq(scheduleInviteIssuanceFences.sectorId, scope.sectorId),
+    eq(scheduleInviteIssuanceFences.invitedUserId, scope.userId),
+  );
+}
+
+async function activeNamedInvitesForUpdate(
+  tx: InviteIssuanceDb,
+  scope: InviteIssuanceScope,
+  now: Date,
+) {
+  return tx
+    .select({ id: scheduleInvites.id })
+    .from(scheduleInvites)
+    .where(
+      and(
+        eq(scheduleInvites.institutionId, scope.institutionId),
+        eq(scheduleInvites.hospitalId, scope.hospitalId),
+        eq(scheduleInvites.sectorId, scope.sectorId),
+        eq(scheduleInvites.invitedUserId, scope.userId),
+        isNull(scheduleInvites.revokedAt),
+        isNull(scheduleInvites.declinedAt),
+        gt(scheduleInvites.expiresAt, now),
+        sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+      ),
+    )
+    .limit(2)
+    .for("update");
+}
+
+type InviteIssuanceMaterial = {
+  generation: number;
+  leaseToken: string;
+  attemptExpiresAt: Date;
+  codeNonce: string;
+  codePepperKeyId: string;
+  recipientBindingHash: string;
+  providerIdempotencyKey: string;
+  providerRequestFingerprint: string;
+  providerAcceptedAt: Date | null;
+};
+
+type InviteIssuanceClaim =
+  | {
+      kind: "DELIVER";
+      material: InviteIssuanceMaterial;
+      snapshot: InviteIssuanceSnapshot;
+      mail: MailMessage;
+    }
+  | {
+      kind: "ACTIVATE";
+      material: InviteIssuanceMaterial;
+      snapshot: InviteIssuanceSnapshot;
+    }
+  | { kind: "INELIGIBLE" }
+  | { kind: "ALREADY_ACTIVE" }
+  | { kind: "IN_PROGRESS" }
+  | { kind: "KEY_UNAVAILABLE" }
+  | { kind: "DELIVERY_REQUEST_UNAVAILABLE" }
+  | { kind: "DELIVERY_REQUEST_MISMATCH" };
+
+type InviteIssuanceJournalEvent =
+  | "CLAIMED"
+  | "ATTEMPT_SUPERSEDED"
+  | "DELIVERY_RECLAIMED"
+  | "PROVIDER_ACCEPTED"
+  | "PROVIDER_REJECTED"
+  | "PROVIDER_UNKNOWN"
+  | "ACTIVATION_RESUMED"
+  | "ACTIVATED"
+  | "ACTIVATION_FAILED";
+
+async function appendInviteIssuanceJournal(
+  tx: InviteIssuanceDb,
+  input: {
+    scope: InviteIssuanceScope;
+    generation: number;
+    event: InviteIssuanceJournalEvent;
+    reasonCode?: string;
+    providerCorrelationId?: string;
+    scheduleInviteId?: number;
+  },
+): Promise<void> {
+  await tx.insert(scheduleInviteIssuanceJournal).values({
+    institutionId: input.scope.institutionId,
+    hospitalId: input.scope.hospitalId,
+    sectorId: input.scope.sectorId,
+    invitedUserId: input.scope.userId,
+    generation: input.generation,
+    event: input.event,
+    reasonCode: input.reasonCode,
+    providerCorrelationId: input.providerCorrelationId,
+    scheduleInviteId: input.scheduleInviteId,
+  });
+}
+
+function materialFromFence(fence: {
+  generation: number;
+  leaseToken: string | null;
+  attemptExpiresAt: Date | null;
+  codeNonce: string | null;
+  codePepperKeyId: string | null;
+  recipientBindingHash: string | null;
+  providerIdempotencyKey: string | null;
+  providerRequestFingerprint: string | null;
+  providerAcceptedAt: Date | null;
+}): InviteIssuanceMaterial | null {
+  if (
+    fence.generation <= 0 ||
+    !fence.leaseToken ||
+    !fence.attemptExpiresAt ||
+    !fence.codeNonce ||
+    !fence.codePepperKeyId ||
+    !fence.recipientBindingHash ||
+    !fence.providerIdempotencyKey ||
+    !/^[a-f0-9]{64}$/.test(fence.providerRequestFingerprint ?? "")
+  ) {
+    return null;
+  }
+  return {
+    generation: fence.generation,
+    leaseToken: fence.leaseToken,
+    attemptExpiresAt: fence.attemptExpiresAt,
+    codeNonce: fence.codeNonce,
+    codePepperKeyId: fence.codePepperKeyId,
+    recipientBindingHash: fence.recipientBindingHash,
+    providerIdempotencyKey: fence.providerIdempotencyKey,
+    providerRequestFingerprint: fence.providerRequestFingerprint!,
+    providerAcceptedAt: fence.providerAcceptedAt,
+  };
+}
+
+function buildInviteProviderMail(input: {
+  scope: InviteIssuanceScope;
+  snapshot: InviteIssuanceSnapshot;
+  generation: number;
+  codeNonce: string;
+  attemptExpiresAt: Date;
+  outboxKey: ScheduleInviteOutboxKey;
+}): MailMessage | null {
+  const formatted = input.outboxKey.deriveCode({
+    institutionId: input.scope.institutionId,
+    hospitalId: input.scope.hospitalId,
+    sectorId: input.scope.sectorId,
+    invitedUserId: input.scope.userId,
+    generation: input.generation,
+    nonce: input.codeNonce,
+  });
+  return buildScheduleInviteMail({
+    to: input.snapshot.invitee.email!,
+    hospitalName: input.snapshot.context.hospitalName,
+    sectorName: input.snapshot.context.sectorName,
+    code: formatScheduleInviteCode(normalizeScheduleInviteCode(formatted)),
+    expiresAt: input.attemptExpiresAt,
+  });
+}
+
+async function lockInviteParticipantsForUpdate(
+  tx: InviteIssuanceDb,
+  actorUserId: number,
+  invitedUserId: number,
+): Promise<void> {
+  // Duas emissões cruzadas (gestor A convida B; gestor B convida A) não
+  // podem bloquear actor→recipient em ordens opostas. A cerca por
+  // destinatário é distinta nesse caso; esta ordena os dois gates de usuário.
+  await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(inArray(users.id, [...new Set([actorUserId, invitedUserId])]))
+    .orderBy(asc(users.id))
+    .for("update");
+}
+
+/**
+ * Reserva uma geração em uma transação curta. A UNIQUE física da fence
+ * faz a serialização entre processos/instâncias. O request é montado apenas
+ * para persistir seu fingerprint na mesma transação; o commit sempre acontece
+ * antes do egress, portanto nenhuma conexão acompanha a latência do provedor.
+ */
+async function claimInviteIssuance(
+  db: ScheduleInviteDb,
+  input: {
+    scope: InviteIssuanceScope;
+    actor: TenantActor;
+    expectedActorSessionVersion: number;
+    hashPolicy: ScheduleInviteHashPolicy;
+  },
+): Promise<InviteIssuanceClaim> {
+  return db.transaction(async (tx) => {
+    // Precisa ser o primeiro lock: o INSERT da fence valida FKs e já adquire
+    // lock compartilhado no destinatário. Em emissões cruzadas A→B/B→A isso
+    // deadlockaria antes mesmo do nosso lock explícito se viesse depois.
+    await lockInviteParticipantsForUpdate(
+      tx,
+      input.actor.userId,
+      input.scope.userId,
+    );
+    await tx
+      .insert(scheduleInviteIssuanceFences)
+      .values({
+        institutionId: input.scope.institutionId,
+        hospitalId: input.scope.hospitalId,
+        sectorId: input.scope.sectorId,
+        invitedUserId: input.scope.userId,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          generation: sql`${scheduleInviteIssuanceFences.generation}`,
+        },
+      });
+    const [fence] = await tx
+      .select({
+        id: scheduleInviteIssuanceFences.id,
+        generation: scheduleInviteIssuanceFences.generation,
+        state: scheduleInviteIssuanceFences.state,
+        leaseToken: scheduleInviteIssuanceFences.leaseToken,
+        leaseExpiresAt: scheduleInviteIssuanceFences.leaseExpiresAt,
+        attemptExpiresAt: scheduleInviteIssuanceFences.attemptExpiresAt,
+        codeNonce: scheduleInviteIssuanceFences.codeNonce,
+        codePepperKeyId: scheduleInviteIssuanceFences.codePepperKeyId,
+        recipientBindingHash:
+          scheduleInviteIssuanceFences.recipientBindingHash,
+        providerIdempotencyKey:
+          scheduleInviteIssuanceFences.providerIdempotencyKey,
+        providerRequestFingerprint:
+          scheduleInviteIssuanceFences.providerRequestFingerprint,
+        providerAcceptedAt: scheduleInviteIssuanceFences.providerAcceptedAt,
+      })
+      .from(scheduleInviteIssuanceFences)
+      .where(fenceScopeWhere(input.scope))
+      .limit(1)
+      .for("update");
+    if (!fence) throw new Error("SCHEDULE_INVITE_FENCE_NOT_CREATED");
+
+    const now = new Date();
+
+    // Toda autoridade e identidade é revalidada depois que esta requisição
+    // possui a seção serializada. Nenhum snapshot anterior autoriza a escrita
+    // nem mesmo uma resposta ALREADY_ACTIVE/IN_PROGRESS.
+    const snapshot = await revalidateInviteIssuanceForUpdate(tx, {
+      actor: input.actor,
+      expectedActorSessionVersion: input.expectedActorSessionVersion,
+      hospitalId: input.scope.hospitalId,
+      sectorId: input.scope.sectorId,
+      userId: input.scope.userId,
+    });
+    if (!snapshot?.invitee.email) return { kind: "INELIGIBLE" };
+
+    // Todas as identidades já estão bloqueadas antes do convite, a mesma
+    // ordem usada pelo redeem. Assim não há ciclo user/professional ↔ invite.
+    const activeInvites = await activeNamedInvitesForUpdate(
+      tx,
+      input.scope,
+      now,
+    );
+
+    // Cooldown forte: um convite ainda resgatável nunca é substituído por
+    // um reenvio implícito. Isso mantém correspondência entre a confirmação
+    // anterior e o código que continua ativo.
+    if (activeInvites.length > 0) return { kind: "ALREADY_ACTIVE" };
+
+    const existingKey = fence.codePepperKeyId
+      ? input.hashPolicy.outbox.resolve(fence.codePepperKeyId)
+      : null;
+    const attemptIsLive = Boolean(
+      fence.attemptExpiresAt &&
+      isScheduleInviteAttemptLive(fence.attemptExpiresAt, now),
+    );
+    // Sem a chave da geração existente não é possível sequer decidir se o
+    // destinatário permaneceu o mesmo. Falhar aqui impede que UNKNOWN seja
+    // convertido acidentalmente em recipient mismatch / nova geração.
+    if (fence.generation > 0 && attemptIsLive && !existingKey) {
+      return { kind: "KEY_UNAVAILABLE" };
+    }
+    const recipientMatches = existingKey
+      ? Boolean(
+          fence.recipientBindingHash &&
+          existingKey.bindRecipient(snapshot.invitee.email) ===
+            fence.recipientBindingHash,
+        )
+      : null;
+    const recovery = planScheduleInviteRecovery({
+      state: fence.state as ScheduleInviteDeliveryState,
+      now,
+      leaseExpiresAt: fence.leaseExpiresAt,
+      attemptExpiresAt: fence.attemptExpiresAt,
+      recipientMatches,
+      pepperKeyAvailable: Boolean(existingKey),
+    });
+    if (recovery.kind === "WAIT") return { kind: "IN_PROGRESS" };
+    if (recovery.kind === "FAIL_CLOSED") {
+      return { kind: "KEY_UNAVAILABLE" };
+    }
+
+    if (recovery.kind === "REPLAY_DELIVERY") {
+      const persistedMaterial = materialFromFence(fence);
+      if (!persistedMaterial || !existingKey) {
+        return { kind: "DELIVERY_REQUEST_MISMATCH" };
+      }
+      const mail = buildInviteProviderMail({
+        scope: input.scope,
+        snapshot,
+        generation: persistedMaterial.generation,
+        codeNonce: persistedMaterial.codeNonce,
+        attemptExpiresAt: persistedMaterial.attemptExpiresAt,
+        outboxKey: existingKey,
+      });
+      if (
+        !mail ||
+        existingKey.fingerprintProviderRequest(mail) !==
+          persistedMaterial.providerRequestFingerprint
+      ) {
+        // Nome, destinatário, APP_PUBLIC_URL, MAIL_FROM ou template mudou.
+        // A chave antiga não pode sair com um request reconstruído diferente.
+        return { kind: "DELIVERY_REQUEST_MISMATCH" };
+      }
+      const leaseToken = generateScheduleInviteOpaqueToken();
+      const leaseExpiresAt = new Date(
+        now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
+      );
+      await tx
+        .update(scheduleInviteIssuanceFences)
+        .set({
+          state: "PREPARING",
+          leaseToken,
+          leaseExpiresAt,
+          failureCode: null,
+        })
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.id, fence.id),
+            eq(scheduleInviteIssuanceFences.generation, fence.generation),
+          ),
+        );
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "DELIVERY_RECLAIMED",
+      });
+      return {
+        kind: "DELIVER",
+        material: { ...persistedMaterial, leaseToken },
+        snapshot,
+        mail,
+      };
+    }
+
+    if (recovery.kind === "RESUME_ACTIVATION") {
+      const leaseToken = generateScheduleInviteOpaqueToken();
+      const leaseExpiresAt = new Date(
+        now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
+      );
+      await tx
+        .update(scheduleInviteIssuanceFences)
+        .set({
+          state: "PROVIDER_ACCEPTED",
+          leaseToken,
+          leaseExpiresAt,
+          failureCode: null,
+        })
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.id, fence.id),
+            eq(scheduleInviteIssuanceFences.generation, fence.generation),
+          ),
+        );
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "ACTIVATION_RESUMED",
+      });
+      const material = materialFromFence({ ...fence, leaseToken });
+      if (!material) throw new Error("SCHEDULE_INVITE_MATERIAL_INVALID");
+      return { kind: "ACTIVATE", material, snapshot };
+    }
+
+    const supersededReasonCode =
+      recovery.supersedesUncertainGeneration && fence.generation > 0
+        ? recipientMatches === false
+          ? "RECIPIENT_CHANGED"
+          : fence.attemptExpiresAt &&
+              !isScheduleInviteAttemptLive(fence.attemptExpiresAt, now)
+            ? "ATTEMPT_EXPIRED"
+            : "PROVIDER_OUTCOME_UNCERTAIN"
+        : null;
+
+    const generation = fence.generation + 1;
+    const leaseToken = generateScheduleInviteOpaqueToken();
+    const codeNonce = generateScheduleInviteOpaqueToken();
+    const providerIdempotencyKey = generateScheduleInviteOpaqueToken();
+    const currentKey = input.hashPolicy.outbox.current;
+    const attemptExpiresAt = alignScheduleInviteAttemptExpiry(
+      new Date(now.getTime() + NAMED_TTL_MS),
+    );
+    const recipientBindingHash = currentKey.bindRecipient(
+      snapshot.invitee.email,
+    );
+    const mail = buildInviteProviderMail({
+      scope: input.scope,
+      snapshot,
+      generation,
+      codeNonce,
+      attemptExpiresAt,
+      outboxKey: currentKey,
+    });
+    if (!mail) return { kind: "DELIVERY_REQUEST_UNAVAILABLE" };
+    const providerRequestFingerprint =
+      currentKey.fingerprintProviderRequest(mail);
+    await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        generation,
+        state: "PREPARING",
+        leaseToken,
+        leaseExpiresAt: new Date(
+          now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
+        ),
+        attemptExpiresAt,
+        codeNonce,
+        codePepperKeyId: currentKey.keyId,
+        recipientBindingHash,
+        providerIdempotencyKey,
+        providerRequestFingerprint,
+        providerCorrelationId: null,
+        providerAcceptedAt: null,
+        scheduleInviteId: null,
+        failureCode: null,
+      })
+      .where(
+        and(
+          eq(scheduleInviteIssuanceFences.id, fence.id),
+          eq(scheduleInviteIssuanceFences.generation, fence.generation),
+        ),
+      );
+    if (supersededReasonCode) {
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "ATTEMPT_SUPERSEDED",
+        reasonCode: supersededReasonCode,
+      });
+    }
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation,
+      event: "CLAIMED",
+    });
+    return {
+      kind: "DELIVER",
+      material: {
+        generation,
+        leaseToken,
+        attemptExpiresAt,
+        codeNonce,
+        codePepperKeyId: currentKey.keyId,
+        recipientBindingHash,
+        providerIdempotencyKey,
+        providerRequestFingerprint,
+        providerAcceptedAt: null,
+      },
+      snapshot,
+      mail,
+    };
+  });
+}
+
+async function markInviteProviderAccepted(
+  db: ScheduleInviteDb,
+  input: {
+    scope: InviteIssuanceScope;
+    material: InviteIssuanceMaterial;
+    acceptedAt: Date;
+    providerCorrelationId?: string;
+  },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: "PROVIDER_ACCEPTED",
+        providerAcceptedAt: input.acceptedAt,
+        providerCorrelationId: input.providerCorrelationId,
+        failureCode: null,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
+          eq(scheduleInviteIssuanceFences.state, "PREPARING"),
+        ),
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: "PROVIDER_ACCEPTED",
+      providerCorrelationId: input.providerCorrelationId,
+    });
+    return true;
+  });
+}
+
+async function markInviteProviderOutcome(
+  db: ScheduleInviteDb,
+  input: {
+    scope: InviteIssuanceScope;
+    material: InviteIssuanceMaterial;
+    outcome: "REJECTED" | "UNKNOWN";
+    reasonCode: string;
+  },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const isUnknown = input.outcome === "UNKNOWN";
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: isUnknown ? "PROVIDER_UNKNOWN" : "PROVIDER_REJECTED",
+        leaseToken: isUnknown ? input.material.leaseToken : null,
+        leaseExpiresAt: isUnknown
+          ? new Date(Date.now() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS)
+          : null,
+        providerAcceptedAt: null,
+        providerCorrelationId: null,
+        failureCode: input.reasonCode,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
+          eq(scheduleInviteIssuanceFences.state, "PREPARING"),
+        ),
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: isUnknown ? "PROVIDER_UNKNOWN" : "PROVIDER_REJECTED",
+      reasonCode: input.reasonCode,
+    });
+    return true;
+  });
+}
+
+async function markAcceptedActivationFailure(
+  db: ScheduleInviteDb,
+  input: {
+    scope: InviteIssuanceScope;
+    material: InviteIssuanceMaterial;
+    acceptedAt: Date;
+    failureCode:
+      "ACTIVATION_REJECTED" | "ACTIVATION_EXCEPTION" | "ACTIVATION_EXPIRED";
+  },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+        leaseToken: null,
+        leaseExpiresAt: null,
+        providerAcceptedAt: input.acceptedAt,
+        failureCode: input.failureCode,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
+          eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED"),
+        ),
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: "ACTIVATION_FAILED",
+      reasonCode: input.failureCode,
+    });
     return true;
   });
 }
@@ -814,6 +1780,9 @@ export const scheduleInvitesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const actor = await getTenantActorFromContext(ctx);
       await assertCanManageSector(actor, input.hospitalId, input.sectorId);
+      // Carregado antes de qualquer claim ou efeito externo. Ausência,
+      // reutilização ou fraqueza do pepper bloqueia só esta operação.
+      const hashPolicy = getScheduleInviteHashPolicy();
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -834,12 +1803,12 @@ export const scheduleInvitesRouter = router({
               : "Este setor possui mais de uma escala ativa; regularize a topologia.",
         });
       }
-      const context = contexts[0]!;
 
       // Mesma fonte de elegibilidade da busca (`listCandidates`): quem a busca
       // esconde — plantel de hospital irmão da MESMA instituição sem ACL no
       // hospital pedido, ou travado em outra instituição — NÃO pode ser
       // convidado direto por id. Fail-closed, resposta neutra por médico.
+      const uniqueUserIds = [...new Set(input.userIds)];
       const eligibleById = new Map(
         (
           await selectInvitableCandidates(
@@ -847,136 +1816,464 @@ export const scheduleInvitesRouter = router({
             actor.institutionId,
             input.hospitalId,
             input.sectorId,
+            uniqueUserIds,
           )
         ).map((row) => [row.userId, row] as const),
       );
 
-      const uniqueUserIds = [...new Set(input.userIds)];
-      const sent: { userId: number; name: string | null }[] = [];
+      const accepted: { userId: number; name: string | null }[] = [];
       const failed: { userId: number; error: string }[] = [];
+      const responseContext: {
+        hospitalName: string;
+        sectorName: string;
+      } = {
+        hospitalName: contexts[0]!.hospitalName,
+        sectorName: contexts[0]!.sectorName,
+      };
       // Ids pedidos que a busca esconde (hospital irmão, outra instituição,
       // já na escala, conta inválida): recusados por elegibilidade, não por
       // e-mail. Rastreados à parte para observar tentativa de convite-por-id.
       const ineligibleUserIds: number[] = [];
+      let preparationUnavailable = false;
 
       for (const userId of uniqueUserIds) {
-        const invitee = eligibleById.get(userId);
-        if (!invitee || !invitee.email) {
+        const initialInvitee = eligibleById.get(userId);
+        if (!initialInvitee || !initialInvitee.email) {
           ineligibleUserIds.push(userId);
           failed.push({ userId, error: "Médico não encontrado" });
           continue;
         }
+        if (preparationUnavailable) {
+          failed.push({
+            userId,
+            error:
+              "O convite não pôde ser preparado com segurança. Tente novamente.",
+          });
+          continue;
+        }
 
-        const plaintext = generateScheduleInviteCode();
-        const normalized = normalizeScheduleInviteCode(plaintext);
-        const codeHash = hashScheduleInviteCode(normalized);
-        const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
-        const formatted = formatScheduleInviteCode(normalized);
-
-        const [inserted] = await db
-          .insert(scheduleInvites)
-          .values({
-            institutionId: actor.institutionId,
-            hospitalId: input.hospitalId,
-            sectorId: input.sectorId,
-            codeHash,
-            createdByUserId: actor.userId,
-            invitedUserId: invitee.userId,
-            invitedEmail: invitee.email,
-            maxRedemptions: NAMED_MAX_REDEMPTIONS,
-            expiresAt,
-          })
-          .$returningId();
-
-        await db
-          .update(scheduleInvites)
-          .set({ revokedAt: new Date() })
-          .where(
-            and(
-              eq(scheduleInvites.institutionId, actor.institutionId),
-              eq(scheduleInvites.hospitalId, input.hospitalId),
-              eq(scheduleInvites.sectorId, input.sectorId),
-              eq(scheduleInvites.invitedUserId, invitee.userId),
-              isNull(scheduleInvites.revokedAt),
-              isNull(scheduleInvites.declinedAt),
-              sql`${scheduleInvites.id} <> ${inserted.id}`,
-              sql`${scheduleInvites.redeemedCount} = 0`,
-            ),
-          );
-
-        const mail = buildScheduleInviteMail({
-          to: invitee.email,
-          hospitalName: context.hospitalName,
-          sectorName: context.sectorName,
-          code: formatted,
-          expiresAt,
-        });
-        if (!mail) {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+        const scope: InviteIssuanceScope = {
+          institutionId: actor.institutionId,
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+          userId,
+        };
+        let claim: InviteIssuanceClaim;
+        try {
+          claim = await claimInviteIssuance(db, {
+            scope,
+            actor,
+            expectedActorSessionVersion: ctx.user.sessionVersion,
+            hashPolicy,
+          });
+        } catch {
+          // Um lote pode já ter ativado destinatários anteriores. Falha de
+          // revalidação/DB deste item não apaga esse resultado parcial nem
+          // transforma o lote inteiro em um sucesso sem granularidade.
+          logInviteIssuanceFailure("INVITE_CLAIM_FAILED", scope);
+          preparationUnavailable = true;
+          failed.push({
+            userId,
+            error:
+              "O convite não pôde ser preparado com segurança. Tente novamente.",
+          });
+          continue;
+        }
+        if (claim.kind === "INELIGIBLE") {
+          ineligibleUserIds.push(userId);
+          failed.push({ userId, error: "Médico não encontrado" });
+          continue;
+        }
+        if (claim.kind === "ALREADY_ACTIVE") {
+          failed.push({
+            userId,
+            error:
+              "Já existe um convite ativo para este médico. Encerre-o antes de emitir outro.",
+          });
+          continue;
+        }
+        if (claim.kind === "IN_PROGRESS") {
+          failed.push({
+            userId,
+            error: "Uma emissão deste convite já está em andamento. Aguarde.",
+          });
+          continue;
+        }
+        if (claim.kind === "KEY_UNAVAILABLE") {
+          failed.push({
+            userId,
+            error:
+              "A chave desta emissão ainda não está disponível. Preserve o pepper anterior e tente novamente.",
+          });
+          continue;
+        }
+        if (claim.kind === "DELIVERY_REQUEST_UNAVAILABLE") {
           failed.push({
             userId,
             error: "Não foi possível montar o e-mail de convite",
           });
           continue;
         }
-
-        const delivery = await mailer.sendMail(mail, {
-          idempotencyKey: codeHash,
-        });
-        // ACCEPTED confirma somente que o provedor aceitou a solicitação;
-        // entrega na caixa postal não é comprovada nesta integração.
-        if (delivery.kind === "REJECTED") {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
-          failed.push({
-            userId,
-            error: "O provedor não aceitou o pedido de envio. Tente novamente.",
-          });
-          continue;
-        }
-        if (delivery.kind === "UNKNOWN") {
-          // O provedor pode ter aceitado antes do timeout. Sem outbox durável
-          // nesta frente de convite, revoga-se preventivamente o código para
-          // que uma mensagem tardia não carregue autoridade utilizável.
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+        if (claim.kind === "DELIVERY_REQUEST_MISMATCH") {
           failed.push({
             userId,
             error:
-              "O resultado do pedido de envio foi inconclusivo; o convite foi revogado. Tente novamente.",
+              "O conteúdo desta emissão mudou desde a primeira tentativa. Restaure a configuração anterior ou encerre a tentativa com segurança.",
           });
           continue;
         }
 
-        await recordAudit(
-          {
-            institutionId: actor.institutionId,
-            action: "USER_UPDATED",
-            entityType: "USER",
-            entityId: invitee.userId,
-            actorUserId: actor.userId,
-            actorRole: actor.roleInInstitution,
-            description: `Pedido de convite nominal aceito pelo provedor para a escala ${context.hospitalName} / ${context.sectorName}`,
-            metadata: {
-              scheduleInviteId: inserted.id,
-              invitedUserId: invitee.userId,
+        const outboxKey = hashPolicy.outbox.resolve(
+          claim.material.codePepperKeyId,
+        );
+        if (!outboxKey) {
+          failed.push({
+            userId,
+            error:
+              "A chave desta emissão ainda não está disponível. Preserve o pepper anterior e tente novamente.",
+          });
+          continue;
+        }
+        const formatted = outboxKey.deriveCode({
+          institutionId: scope.institutionId,
+          hospitalId: scope.hospitalId,
+          sectorId: scope.sectorId,
+          invitedUserId: scope.userId,
+          generation: claim.material.generation,
+          nonce: claim.material.codeNonce,
+        });
+        const normalized = normalizeScheduleInviteCode(formatted);
+        const expiresAt = claim.material.attemptExpiresAt;
+        let acceptedAt = claim.material.providerAcceptedAt;
+
+        if (claim.kind === "DELIVER") {
+          let providerResult: Awaited<ReturnType<typeof mailer.sendMail>>;
+          try {
+            // Última barreira local antes do efeito externo: além do TTL, o
+            // request completo deve continuar igual ao fingerprint persistido
+            // antes do claim. Isso inclui MAIL_FROM; URL, nomes e destinatário
+            // já estão congelados no próprio objeto retornado pela transação.
+            if (!isScheduleInviteAttemptLive(expiresAt, new Date())) {
+              try {
+                await markInviteProviderOutcome(db, {
+                  scope,
+                  material: claim.material,
+                  outcome: "REJECTED",
+                  reasonCode: "ATTEMPT_EXPIRED_BEFORE_EGRESS",
+                });
+              } catch {
+                logInviteIssuanceFailure(
+                  "INVITE_OUTCOME_WRITE_FAILED",
+                  scope,
+                  claim.material.generation,
+                );
+              }
+              failed.push({
+                userId,
+                error: "O convite expirou antes do envio. Tente novamente.",
+              });
+              continue;
+            }
+            if (
+              outboxKey.fingerprintProviderRequest(claim.mail) !==
+              claim.material.providerRequestFingerprint
+            ) {
+              try {
+                await markInviteProviderOutcome(db, {
+                  scope,
+                  material: claim.material,
+                  outcome: "REJECTED",
+                  reasonCode: "PROVIDER_REQUEST_CHANGED_BEFORE_EGRESS",
+                });
+              } catch {
+                logInviteIssuanceFailure(
+                  "INVITE_OUTCOME_WRITE_FAILED",
+                  scope,
+                  claim.material.generation,
+                );
+              }
+              failed.push({
+                userId,
+                error:
+                  "A configuração do e-mail mudou antes do envio. Tente novamente.",
+              });
+              continue;
+            }
+            providerResult = await mailer.sendMail(claim.mail, {
+              idempotencyKey: claim.material.providerIdempotencyKey,
+            });
+          } catch {
+            logInviteIssuanceFailure(
+              "INVITE_PROVIDER_TRANSPORT_UNKNOWN",
+              scope,
+              claim.material.generation,
+            );
+            try {
+              await markInviteProviderOutcome(db, {
+                scope,
+                material: claim.material,
+                outcome: "UNKNOWN",
+                reasonCode: "TRANSPORT_EXCEPTION",
+              });
+            } catch {
+              logInviteIssuanceFailure(
+                "INVITE_OUTCOME_WRITE_FAILED",
+                scope,
+                claim.material.generation,
+              );
+            }
+            failed.push({
+              userId,
+              error:
+                "O resultado do envio ainda é incerto. Aguarde um minuto antes de tentar novamente.",
+            });
+            continue;
+          }
+          if (providerResult.kind !== "ACCEPTED") {
+            try {
+              await markInviteProviderOutcome(db, {
+                scope,
+                material: claim.material,
+                outcome: providerResult.kind,
+                reasonCode: providerResult.reason,
+              });
+            } catch {
+              logInviteIssuanceFailure(
+                "INVITE_OUTCOME_WRITE_FAILED",
+                scope,
+                claim.material.generation,
+              );
+            }
+            failed.push({
+              userId,
+              error:
+                providerResult.kind === "UNKNOWN"
+                  ? "O resultado do envio ainda é incerto. Aguarde um minuto antes de tentar novamente."
+                  : "O provedor de e-mail rejeitou o convite. Tente novamente.",
+            });
+            continue;
+          }
+
+          acceptedAt = new Date();
+          let acceptanceRecorded = false;
+          try {
+            acceptanceRecorded = await markInviteProviderAccepted(db, {
+              scope,
+              material: claim.material,
+              acceptedAt,
+              providerCorrelationId:
+                providerResult.providerCorrelationId,
+            });
+          } catch {
+            logInviteIssuanceFailure(
+              "PROVIDER_ACCEPTED_STATE_WRITE_UNKNOWN",
+              scope,
+              claim.material.generation,
+            );
+          }
+          if (!acceptanceRecorded) {
+            failed.push({
+              userId,
+              error:
+                "O provedor aceitou a mensagem, mas o registro local ficou incerto. Aguarde um minuto antes de tentar novamente.",
+            });
+            continue;
+          }
+        }
+
+        if (!acceptedAt) {
+          logInviteIssuanceFailure(
+            "ACCEPTED_GENERATION_WITHOUT_TIMESTAMP",
+            scope,
+            claim.material.generation,
+          );
+          failed.push({
+            userId,
+            error: "A emissão não pôde ser retomada com segurança.",
+          });
+          continue;
+        }
+
+        let activated: InviteIssuanceSnapshot | null = null;
+        let activationFailureCode:
+          | "ACTIVATION_REJECTED"
+          | "ACTIVATION_EXCEPTION"
+          | "ACTIVATION_EXPIRED" = "ACTIVATION_REJECTED";
+        try {
+          activated = await db.transaction(async (tx) => {
+            // A claim concorrente também usa users → fence. Manter a mesma
+            // ordem impede retry e ativação de formarem user ↔ fence.
+            await lockInviteParticipantsForUpdate(
+              tx,
+              actor.userId,
+              userId,
+            );
+            const [fence] = await tx
+              .select({
+                id: scheduleInviteIssuanceFences.id,
+                generation: scheduleInviteIssuanceFences.generation,
+                state: scheduleInviteIssuanceFences.state,
+                leaseToken: scheduleInviteIssuanceFences.leaseToken,
+              })
+              .from(scheduleInviteIssuanceFences)
+              .where(fenceScopeWhere(scope))
+              .limit(1)
+              .for("update");
+            if (
+              !fence ||
+              fence.generation !== claim.material.generation ||
+              fence.leaseToken !== claim.material.leaseToken ||
+              fence.state !== "PROVIDER_ACCEPTED"
+            ) {
+              return null;
+            }
+            if (
+              process.env.NODE_ENV === "test" &&
+              __scheduleInviteTestHooks.afterActivationFenceLocked
+            ) {
+              await __scheduleInviteTestHooks.afterActivationFenceLocked();
+            }
+
+            const current = await revalidateInviteIssuanceForUpdate(tx, {
+              actor,
+              expectedActorSessionVersion: ctx.user.sessionVersion,
               hospitalId: input.hospitalId,
               sectorId: input.sectorId,
-            },
-            hospitalId: input.hospitalId,
-            sectorId: input.sectorId,
-          },
-          { strict: true },
-        );
+              userId,
+            });
+            if (
+              !current?.invitee.email ||
+              current.invitee.professionalId !==
+                claim.snapshot.invitee.professionalId ||
+              current.invitee.email !== claim.snapshot.invitee.email
+            ) {
+              return null;
+            }
+            // O ator é um ponto comum a lotes paralelos. Revalidá-lo antes
+            // do gap lock por destinatário evita que dez ativações mantenham
+            // gaps distintos enquanto disputam a mesma linha do gestor.
+            const activeInvites = await activeNamedInvitesForUpdate(
+              tx,
+              scope,
+              new Date(),
+            );
+            if (activeInvites.length > 0) {
+              return null;
+            }
 
-        sent.push({ userId: invitee.userId, name: invitee.name });
+            // Revalidar dentro da transação, junto ao INSERT, impede que uma
+            // aceitação lenta do provedor ative material que já venceu.
+            if (!isScheduleInviteAttemptLive(expiresAt, new Date())) {
+              activationFailureCode = "ACTIVATION_EXPIRED";
+              return null;
+            }
+
+            const [inserted] = await tx
+              .insert(scheduleInvites)
+              .values({
+                institutionId: actor.institutionId,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                codeHash: outboxKey.hash(normalized),
+                codeHashVersion: hashPolicy.write.version,
+                createdByUserId: actor.userId,
+                invitedUserId: current.invitee.userId,
+                invitedEmail: current.invitee.email,
+                maxRedemptions: NAMED_MAX_REDEMPTIONS,
+                expiresAt,
+              })
+              .$returningId();
+
+            await recordAudit(
+              {
+                institutionId: actor.institutionId,
+                action: "USER_UPDATED",
+                entityType: "USER",
+                entityId: current.invitee.userId,
+                actorUserId: actor.userId,
+                actorRole: actor.roleInInstitution,
+                description: `Convite nominal aceito pelo provedor e ativado para a escala ${current.context.hospitalName} / ${current.context.sectorName}`,
+                metadata: {
+                  scheduleInviteId: inserted.id,
+                  invitedUserId: current.invitee.userId,
+                  hospitalId: input.hospitalId,
+                  sectorId: input.sectorId,
+                },
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+              },
+              { db: tx, strict: true },
+            );
+            const activatedFence = await tx
+              .update(scheduleInviteIssuanceFences)
+              .set({
+                state: "ACTIVE",
+                leaseToken: null,
+                leaseExpiresAt: null,
+                scheduleInviteId: inserted.id,
+                failureCode: null,
+              })
+              .where(
+                and(
+                  eq(scheduleInviteIssuanceFences.id, fence.id),
+                  eq(
+                    scheduleInviteIssuanceFences.generation,
+                    claim.material.generation,
+                  ),
+                  eq(
+                    scheduleInviteIssuanceFences.leaseToken,
+                    claim.material.leaseToken,
+                  ),
+                  eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED"),
+                ),
+              );
+            if (updateAffectedRows(activatedFence) !== 1) {
+              throw new Error("SCHEDULE_INVITE_ACTIVATION_CAS_LOST");
+            }
+            await appendInviteIssuanceJournal(tx, {
+              scope,
+              generation: claim.material.generation,
+              event: "ACTIVATED",
+              scheduleInviteId: inserted.id,
+            });
+
+            return current;
+          });
+        } catch {
+          activationFailureCode = "ACTIVATION_EXCEPTION";
+          logInviteIssuanceFailure(
+            "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+            scope,
+            claim.material.generation,
+          );
+        }
+        if (!activated) {
+          try {
+            await markAcceptedActivationFailure(db, {
+              scope,
+              material: claim.material,
+              acceptedAt,
+              failureCode: activationFailureCode,
+            });
+          } catch {
+            logInviteIssuanceFailure(
+              "ACCEPTED_FAILURE_STATE_WRITE_FAILED",
+              scope,
+              claim.material.generation,
+            );
+          }
+          failed.push({
+            userId,
+            error:
+              "O provedor aceitou a mensagem, mas o convite não foi ativado. Tente novamente em um minuto.",
+          });
+          continue;
+        }
+
+        accepted.push({
+          userId: activated.invitee.userId,
+          name: activated.invitee.name,
+        });
       }
 
       if (ineligibleUserIds.length > 0) {
@@ -993,20 +2290,11 @@ export const scheduleInvitesRouter = router({
         );
       }
 
-      if (sent.length === 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            failed[0]?.error ??
-            "Nenhum pedido de convite foi aceito pelo provedor. Verifique os médicos selecionados.",
-        });
-      }
-
       return {
-        sent,
+        accepted,
         failed,
-        hospitalName: context.hospitalName,
-        sectorName: context.sectorName,
+        hospitalName: responseContext.hospitalName,
+        sectorName: responseContext.sectorName,
       };
     }),
 

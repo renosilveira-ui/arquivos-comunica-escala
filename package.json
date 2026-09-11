@@ -26,6 +26,7 @@
     "test:professional-identity-migration": "vitest run --config vitest.migration.config.ts tests/professional-identity-migration-mysql.test.ts",
     "test:institution-feature-migration": "vitest run --config vitest.migration.config.ts tests/institution-feature-entitlements-migration-mysql.test.ts",
     "test:personal-calendar-migration": "vitest run --config vitest.migration.config.ts tests/personal-calendar-foundation-migration-mysql.test.ts",
+    "test:schedule-invite-migrations": "vitest run --config vitest.migration.config.ts tests/schedule-invite-issuance-fence-migration-mysql.test.ts tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
     "test:core-schema-repro-migration": "vitest run --config vitest.migration.config.ts tests/core-schema-reproducibility-migration-mysql.test.ts",
     "test:personal-calendar-domain": "vitest run --config vitest.pure.config.ts tests/personal-calendar-domain.test.ts",
     "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",

@@ -25,7 +25,9 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        # Patch fixo: o manifesto das migrations compara CHECK_CLAUSE com a
+        # serialização exata do catálogo, que varia entre patches do MySQL.
+        image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: escalas_test
@@ -48,6 +50,9 @@ jobs:
       PROFESSIONAL_IDENTITY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       INSTITUTION_FEATURE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       PERSONAL_CALENDAR_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_MIGRATION_TEST_MARKER: ci-schedule-invite-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
       CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       # A prova da provisão Unimed também recebe somente o servidor local da
       # CI e cria um schema efêmero prefixado. O comando de produto é
@@ -102,6 +107,12 @@ jobs:
 
       - name: Validate personal calendar foundation migration
         run: pnpm test:personal-calendar-migration
+
+      - name: Validate durable schedule invite migrations
+        # Os testes exigem as duas URLs loopback e o marker acima; ausência,
+        # serviço indisponível ou marker inválido falha a etapa, nunca skipa.
+        # Cada caso cria um schema filho único no MySQL efêmero e não o apaga.
+        run: pnpm test:schedule-invite-migrations
 
       - name: Validate prospective shift capacity migration
         env:
