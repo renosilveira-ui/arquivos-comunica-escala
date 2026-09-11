@@ -206,6 +206,7 @@ export default defineConfig({
       "tests/google-calendar-oauth.test.ts",
       "tests/google-calendar-scopes.test.ts",
       "tests/google-import-mapping.test.ts",
+      "tests/google-calendar-sync-policy.test.ts",
       "tests/personal-calendar-import-migration.test.ts",
       "tests/departure-planning.test.ts",
       "tests/departure-migration.test.ts",

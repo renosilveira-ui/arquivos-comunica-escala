@@ -165,6 +165,6 @@ describe("identidade da importação", () => {
   it("lê só o calendário principal e limita o lote", () => {
     expect(IMPORT_SOURCE_CALENDAR_ID).toBe("primary");
     expect(IMPORT_MAX_EVENTS_PER_RUN).toBeGreaterThan(50);
-    expect(IMPORT_MAX_EVENTS_PER_RUN).toBeLessThanOrEqual(500);
+    expect(IMPORT_MAX_EVENTS_PER_RUN).toBeLessThanOrEqual(1000);
   });
 });

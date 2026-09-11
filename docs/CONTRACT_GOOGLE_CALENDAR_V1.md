@@ -231,8 +231,10 @@ completa sem duplicar nada.
 conta e calendário. NULL = leitura completa da janela (§ SYNC_PAST_DAYS).
 Lote máximo de 200 eventos por execução.
 
-**Quando roda.** Junto com a exportação: no `syncNow` da tela Google Agenda
-e no reconcile periódico. O resultado do `syncNow` traz
+**Quando roda.** Junto com a exportação, em dois gatilhos: no `syncNow` da
+tela Google Agenda e, automaticamente, a cada 15 minutos por conta conectada
+(`server/cron/google-calendar-sync-dispatcher.ts`; detalhes em
+`docs/operations/google-calendar-sync.md`). Decisão do PO em 12/09/2026. O resultado do `syncNow` traz
 `importedCreated / importedUpdated / importedRemoved / importOk`.
 
 **Onde aparece.** Aba Agenda → vista **Compromissos**, em folha de mês (a

@@ -207,6 +207,9 @@ export async function recordGoogleOutcome(input: {
         ? 0
         : sql`${userExternalCredentials.consecutiveFailureCount} + 1`,
       ...(success ? { lastSyncedAt: now } : {}),
+      // Explícito, não `ON UPDATE`: a cadência do cron mede "última mudança
+      // do vínculo" a partir daqui, e precisa do mesmo relógio que o tick.
+      updatedAt: now,
       ...(next === EXTERNAL_LINK_STATES.disconnected
         ? { disconnectedAt: now, sealedRefreshToken: null, syncCursor: null }
         : {}),

@@ -59,7 +59,9 @@ export const IMPORT_SOURCE_CALENDAR_ID = "primary";
 const PROVIDER = EXTERNAL_PROVIDERS.googleCalendar;
 const IMPORT_TITLE_MAX = 160;
 /** Teto por ciclo: um calendário com anos de histórico não trava o worker. */
-export const IMPORT_MAX_EVENTS_PER_RUN = 200;
+export const IMPORT_MAX_EVENTS_PER_RUN = 1000;
+/** Páginas de 250 do Google seguidas numa execução (4 × 250 = o teto acima). */
+export const IMPORT_MAX_PAGES_PER_RUN = 4;
 
 export type ImportSummary = {
   created: number;
@@ -256,7 +258,33 @@ export async function runGoogleCalendarImport(input: {
       }
       if (!page.ok) throw new ImportUnavailableError(page.reason);
 
-      const events = page.value.events.slice(0, IMPORT_MAX_EVENTS_PER_RUN);
+      // O Google só entrega o sync token na ÚLTIMA página. Parar na primeira
+      // deixava o cursor vazio para sempre, e cada ciclo relia a janela
+      // inteira (foi o que o staging mostrou em 11/09: 11 compromissos, cursor
+      // nulo). Segue as páginas até o token, com teto. Acima do teto não
+      // guarda cursor: a próxima leitura recomeça do zero — correto, só mais
+      // caro — e importa os mais próximos no tempo (o Google ordena por início).
+      const collected: ExternalCalendarEvent[] = [...page.value.events];
+      let nextSyncToken = page.value.nextSyncToken;
+      let pageToken = page.value.nextPageToken;
+      let pages = 1;
+      while (pageToken && pages < IMPORT_MAX_PAGES_PER_RUN) {
+        const next = await input.provider.listChanges({
+          accessToken,
+          calendarId: IMPORT_SOURCE_CALENDAR_ID,
+          cursor,
+          pageToken,
+        });
+        if (!next.ok) throw new ImportUnavailableError(next.reason);
+        collected.push(...next.value.events);
+        nextSyncToken = next.value.nextSyncToken;
+        pageToken = next.value.nextPageToken;
+        pages += 1;
+      }
+      if (pageToken || collected.length > IMPORT_MAX_EVENTS_PER_RUN) {
+        nextSyncToken = null;
+      }
+      const events = collected.slice(0, IMPORT_MAX_EVENTS_PER_RUN);
       const eventIds = events.map((event) => event.externalEventId);
       const links = eventIds.length
         ? await input.db
@@ -391,7 +419,7 @@ export async function runGoogleCalendarImport(input: {
         if (created.replayed) summary.updated += 1;
       }
 
-      await saveCursor(input.db, input.userId, page.value.nextSyncToken, now);
+      await saveCursor(input.db, input.userId, nextSyncToken, now);
       return summary;
     },
   })
