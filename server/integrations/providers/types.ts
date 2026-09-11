@@ -135,3 +135,19 @@ export function coarsenGeoPoint(
     longitude: Math.round(point.longitude * factor) / factor,
   };
 }
+
+/**
+ * Distância aproximada entre dois pontos, em metros.
+ *
+ * Equirretangular, não Haversine: para as centenas de metros que este sistema
+ * compara — "o médico saiu do lugar?" — o erro é irrelevante, e a fórmula
+ * cabe em três linhas sem trigonometria inversa.
+ */
+export function metersBetween(a: GeoPoint, b: GeoPoint): number {
+  const METERS_PER_DEGREE = 111_320;
+  const meanLatitude = ((a.latitude + b.latitude) / 2) * (Math.PI / 180);
+  const dLat = (b.latitude - a.latitude) * METERS_PER_DEGREE;
+  const dLon =
+    (b.longitude - a.longitude) * METERS_PER_DEGREE * Math.cos(meanLatitude);
+  return Math.hypot(dLat, dLon);
+}

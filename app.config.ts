@@ -47,16 +47,25 @@ const config: ExpoConfig = {
       dark: "./assets/images/icon-dark.png",
       tinted: "./assets/images/icon-tinted.png",
     },
-    "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false,
-        // Permite consultar/abrir o app nativo do Comunica+ (Fase 3 do SSO).
-        "LSApplicationQueriesSchemes": ["comunicamais"],
-        // Exigido pela App Store Connect (erro 90683, build 8): expo-image
-        // (PhotoLibraryAssetLoader) e expo-file-system referenciam a API
-        // de fotos mesmo sem uso no app — a purpose string é obrigatória.
-        "NSPhotoLibraryUsageDescription":
-          "O Escala+ só acessa suas fotos se você optar por anexar uma imagem (por exemplo, foto de perfil).",
-      }
+    infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
+      // Permite consultar/abrir o app nativo do Comunica+ (Fase 3 do SSO).
+      LSApplicationQueriesSchemes: ["comunicamais"],
+      // Exigido pela App Store Connect (erro 90683, build 8): expo-image
+      // (PhotoLibraryAssetLoader) e expo-file-system referenciam a API
+      // de fotos mesmo sem uso no app — a purpose string é obrigatória.
+      NSPhotoLibraryUsageDescription:
+        "O Escala+ só acessa suas fotos se você optar por anexar uma imagem (por exemplo, foto de perfil).",
+      // Texto que o iPhone mostra na hora de pedir a permissão. É a única
+      // explicação que o médico lê antes de decidir, então fala do
+      // benefício e do limite, sem jargão.
+      NSLocationWhenInUseUsageDescription:
+        "O Escala+ usa sua localização para calcular quanto tempo você leva até o hospital e avisar a hora de sair para o plantão.",
+      NSLocationAlwaysAndWhenInUseUsageDescription:
+        "Para avisar a hora de sair mesmo com o app fechado, o Escala+ precisa saber de onde você vai sair. Guardamos apenas o seu ponto de partida mais recente, cifrado — nunca o seu histórico de deslocamento.",
+      NSLocationAlwaysUsageDescription:
+        "Para avisar a hora de sair mesmo com o app fechado, o Escala+ precisa saber de onde você vai sair. Guardamos apenas o seu ponto de partida mais recente, cifrado — nunca o seu histórico de deslocamento.",
+    },
   },
   android: {
     adaptiveIcon: {
@@ -68,7 +77,16 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    permissions: [
+      "POST_NOTIFICATIONS",
+      "ACCESS_COARSE_LOCATION",
+      "ACCESS_FINE_LOCATION",
+      // Sem esta, o Android para de informar a posição assim que o app sai da
+      // tela — e o aviso sai 1 h antes do plantão, com o app fechado.
+      "ACCESS_BACKGROUND_LOCATION",
+      "FOREGROUND_SERVICE",
+      "FOREGROUND_SERVICE_LOCATION",
+    ],
     intentFilters: [
       {
         action: "VIEW",
@@ -91,6 +109,24 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
+      "expo-location",
+      {
+        // Os mesmos textos do infoPlist: quem lê é o médico, na hora de
+        // decidir. O plugin também liga o modo de segundo plano no iOS e o
+        // serviço em primeiro plano no Android, sem os quais a posição
+        // congela quando o app sai da tela.
+        locationWhenInUsePermission:
+          "O Escala+ usa sua localização para calcular quanto tempo você leva até o hospital e avisar a hora de sair para o plantão.",
+        locationAlwaysAndWhenInUsePermission:
+          "Para avisar a hora de sair mesmo com o app fechado, o Escala+ precisa saber de onde você vai sair. Guardamos apenas o seu ponto de partida mais recente, cifrado — nunca o seu histórico de deslocamento.",
+        locationAlwaysPermission:
+          "Para avisar a hora de sair mesmo com o app fechado, o Escala+ precisa saber de onde você vai sair. Guardamos apenas o seu ponto de partida mais recente, cifrado — nunca o seu histórico de deslocamento.",
+        isIosBackgroundLocationEnabled: true,
+        isAndroidBackgroundLocationEnabled: true,
+        isAndroidForegroundServiceEnabled: true,
+      },
+    ],
+    [
       "expo-secure-store",
       {
         // Sem o plugin o Auto Backup do Android restaura EncryptedSharedPreferences
@@ -111,14 +147,17 @@ const config: ExpoConfig = {
     [
       "expo-speech-recognition",
       {
-        microphonePermission: "O Escala+ usa o microfone para comandos de voz (ex.: solicitar troca de plantão).",
-        speechRecognitionPermission: "O Escala+ usa o reconhecimento de fala para entender seus comandos de voz.",
+        microphonePermission:
+          "O Escala+ usa o microfone para comandos de voz (ex.: solicitar troca de plantão).",
+        speechRecognitionPermission:
+          "O Escala+ usa o reconhecimento de fala para entender seus comandos de voz.",
       },
     ],
     [
       "expo-audio",
       {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
+        microphonePermission:
+          "Allow $(PRODUCT_NAME) to access your microphone.",
       },
     ],
     [

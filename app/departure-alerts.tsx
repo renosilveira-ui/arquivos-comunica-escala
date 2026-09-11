@@ -9,6 +9,9 @@ import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { useLocationOrigin } from "@/hooks/use-location-origin";
+import { AUTOMATIC_ORIGIN_LABEL } from "@/lib/integration-providers";
+import { LOCATION_ACCESS } from "@/lib/location-origin";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 
@@ -137,6 +140,19 @@ export default function DepartureAlertsScreen() {
   });
 
   const status = statusQuery.data;
+
+  // Desligar a localização apaga a origem automática no servidor: não faz
+  // sentido guardar onde a pessoa estava depois que ela pediu para parar.
+  const location = useLocationOrigin({
+    onDisabled: async () => {
+      const automatic = statusQuery.data?.origins.find(
+        (origin) => origin.label === AUTOMATIC_ORIGIN_LABEL,
+      );
+      if (automatic) {
+        await deleteOrigin.mutateAsync({ originId: automatic.id });
+      }
+    },
+  });
   /**
    * Estado exibido do interruptor.
    *
@@ -261,196 +277,246 @@ export default function DepartureAlertsScreen() {
             }}
           />
 
+          {/* A origem é do APARELHO. O médico não digita endereço: liga a
+              localização uma vez e o app passa a saber de onde ele sai —
+              inclusive com o app fechado, que é quando o aviso precisa. O
+              endereço digitado continua existindo, mas só aparece como
+              plano B, quando a localização não está completa. */}
           <Section
-            title="De onde você costuma sair"
-            description="Opcional. Serve só para calcular o trânsito. Guardamos cifrado, nunca aparece em lista, e você pode apagar quando quiser."
+            title={location.guidance.title}
+            description={location.guidance.body}
           >
-            {status.origins.length > 0 ? (
-              <View style={{ gap: theme.space[2] }}>
-                {status.origins.map((origin) => (
-                  <View
-                    key={origin.id}
+            {location.access === LOCATION_ACCESS.always ? (
+              <AppButton
+                title={location.busy ? "Aguarde…" : "Desligar localização"}
+                onPress={() => {
+                  void location.disable();
+                }}
+                variant="ghost"
+                fullWidth
+                disabled={busy || location.busy}
+              />
+            ) : location.access === LOCATION_ACCESS.unknown ? (
+              <AppButton
+                title={
+                  location.busy
+                    ? "Aguarde…"
+                    : (location.guidance.action ?? "Usar minha localização")
+                }
+                onPress={() => {
+                  void location.enable();
+                }}
+                variant="primary"
+                fullWidth
+                disabled={busy || location.busy}
+              />
+            ) : location.guidance.action ? (
+              <AppButton
+                title={location.guidance.action}
+                onPress={() => {
+                  void location.openSettings();
+                }}
+                variant="secondary"
+                fullWidth
+                disabled={busy || location.busy}
+              />
+            ) : null}
+          </Section>
+
+          {location.access !== LOCATION_ACCESS.always ? (
+            <Section
+              title="Prefere informar um endereço?"
+              description="Plano B, para quem não quer liberar a localização. Serve só para calcular o trânsito. Guardamos protegido, nunca aparece em lista, e você pode apagar quando quiser."
+            >
+              {status.origins.length > 0 ? (
+                <View style={{ gap: theme.space[2] }}>
+                  {status.origins
+                    .filter((origin) => origin.label !== AUTOMATIC_ORIGIN_LABEL)
+                    .map((origin) => (
+                      <View
+                        key={origin.id}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: theme.space[3],
+                          minHeight: 44,
+                          paddingHorizontal: theme.space[3],
+                          borderRadius: theme.radius.md,
+                          borderWidth: 1,
+                          borderColor:
+                            status.travelOriginId === origin.id
+                              ? theme.colors.primary
+                              : theme.colors.border,
+                          backgroundColor: theme.colors.surface,
+                        }}
+                      >
+                        <MapPin size={18} color={theme.colors.textSecondary} />
+                        <TouchableOpacity
+                          style={{
+                            flex: 1,
+                            minHeight: 44,
+                            justifyContent: "center",
+                          }}
+                          onPress={() => chooseOrigin(origin.id)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Usar ${origin.label} para calcular o trânsito`}
+                        >
+                          <Text
+                            style={{
+                              fontSize: theme.text.body.fontSize,
+                              fontWeight: "600",
+                              color: theme.colors.textPrimary,
+                            }}
+                          >
+                            {origin.label}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => removeOrigin(origin.id, origin.label)}
+                          disabled={busy}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Apagar ${origin.label}`}
+                          style={{
+                            width: 44,
+                            height: 44,
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Trash2 size={18} color={theme.colors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                </View>
+              ) : null}
+
+              {status.mapsAvailable ? (
+                <View style={{ gap: theme.space[2] }}>
+                  <TextInput
+                    value={search}
+                    onChangeText={setSearch}
+                    placeholder="Buscar endereço…"
+                    placeholderTextColor={theme.colors.textDisabled}
+                    accessibilityLabel="Buscar endereço de origem"
                     style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: theme.space[3],
                       minHeight: 44,
                       paddingHorizontal: theme.space[3],
                       borderRadius: theme.radius.md,
                       borderWidth: 1,
-                      borderColor:
-                        status.travelOriginId === origin.id
-                          ? theme.colors.primary
-                          : theme.colors.border,
+                      borderColor: theme.colors.border,
                       backgroundColor: theme.colors.surface,
+                      color: theme.colors.textPrimary,
+                      fontSize: theme.text.body.fontSize,
                     }}
-                  >
-                    <MapPin size={18} color={theme.colors.textSecondary} />
+                  />
+                  {suggestionsQuery.isError ? (
+                    <QueryErrorState
+                      title="Não foi possível buscar endereços"
+                      error={suggestionsQuery.error}
+                      onRetry={() => {
+                        suggestionsQuery.refetch();
+                      }}
+                    />
+                  ) : null}
+                  {suggestions.map((suggestion) => (
                     <TouchableOpacity
+                      key={suggestion.placeId}
+                      onPress={() => setPendingPlaceId(suggestion.placeId)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Escolher ${suggestion.primaryText}`}
                       style={{
-                        flex: 1,
                         minHeight: 44,
                         justifyContent: "center",
+                        paddingHorizontal: theme.space[3],
+                        borderRadius: theme.radius.md,
+                        borderWidth: 1,
+                        borderColor:
+                          pendingPlaceId === suggestion.placeId
+                            ? theme.colors.primary
+                            : theme.colors.border,
+                        backgroundColor: theme.colors.surface,
                       }}
-                      onPress={() => chooseOrigin(origin.id)}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Usar ${origin.label} para calcular o trânsito`}
                     >
                       <Text
                         style={{
                           fontSize: theme.text.body.fontSize,
-                          fontWeight: "600",
                           color: theme.colors.textPrimary,
                         }}
                       >
-                        {origin.label}
+                        {suggestion.primaryText}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: theme.text.caption.fontSize,
+                          color: theme.colors.textMuted,
+                        }}
+                      >
+                        {suggestion.secondaryText}
                       </Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => removeOrigin(origin.id, origin.label)}
-                      disabled={busy}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Apagar ${origin.label}`}
-                      style={{
-                        width: 44,
-                        height: 44,
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <Trash2 size={18} color={theme.colors.danger} />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            ) : null}
+                  ))}
 
-            {status.mapsAvailable ? (
-              <View style={{ gap: theme.space[2] }}>
-                <TextInput
-                  value={search}
-                  onChangeText={setSearch}
-                  placeholder="Buscar endereço…"
-                  placeholderTextColor={theme.colors.textDisabled}
-                  accessibilityLabel="Buscar endereço de origem"
+                  {pendingPlaceId ? (
+                    <View style={{ gap: theme.space[2] }}>
+                      <TextInput
+                        value={originLabel}
+                        onChangeText={setOriginLabel}
+                        accessibilityLabel="Nome deste endereço"
+                        maxLength={60}
+                        style={{
+                          minHeight: 44,
+                          paddingHorizontal: theme.space[3],
+                          borderRadius: theme.radius.md,
+                          borderWidth: 1,
+                          borderColor: theme.colors.border,
+                          backgroundColor: theme.colors.surface,
+                          color: theme.colors.textPrimary,
+                          fontSize: theme.text.body.fontSize,
+                        }}
+                      />
+                      <Text
+                        style={{
+                          fontSize: theme.text.caption.fontSize,
+                          color: theme.colors.textSecondary,
+                        }}
+                      >
+                        Ao salvar, você autoriza o Escala+ a guardar este
+                        endereço cifrado e usá-lo apenas para calcular o tempo
+                        de trânsito até o hospital.
+                      </Text>
+                      <AppButton
+                        title={
+                          saveOrigin.isPending ? "Salvando…" : "Salvar endereço"
+                        }
+                        onPress={() =>
+                          saveOrigin.mutate({
+                            label: originLabel.trim() || "Casa",
+                            placeId: pendingPlaceId,
+                            consent: true,
+                            makeDefault: true,
+                          })
+                        }
+                        variant="primary"
+                        fullWidth
+                        disabled={busy}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              ) : (
+                <Text
                   style={{
-                    minHeight: 44,
-                    paddingHorizontal: theme.space[3],
-                    borderRadius: theme.radius.md,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
-                    backgroundColor: theme.colors.surface,
-                    color: theme.colors.textPrimary,
                     fontSize: theme.text.body.fontSize,
+                    color: theme.colors.textSecondary,
                   }}
-                />
-                {suggestionsQuery.isError ? (
-                  <QueryErrorState
-                    title="Não foi possível buscar endereços"
-                    error={suggestionsQuery.error}
-                    onRetry={() => {
-                      suggestionsQuery.refetch();
-                    }}
-                  />
-                ) : null}
-                {suggestions.map((suggestion) => (
-                  <TouchableOpacity
-                    key={suggestion.placeId}
-                    onPress={() => setPendingPlaceId(suggestion.placeId)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Escolher ${suggestion.primaryText}`}
-                    style={{
-                      minHeight: 44,
-                      justifyContent: "center",
-                      paddingHorizontal: theme.space[3],
-                      borderRadius: theme.radius.md,
-                      borderWidth: 1,
-                      borderColor:
-                        pendingPlaceId === suggestion.placeId
-                          ? theme.colors.primary
-                          : theme.colors.border,
-                      backgroundColor: theme.colors.surface,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: theme.text.body.fontSize,
-                        color: theme.colors.textPrimary,
-                      }}
-                    >
-                      {suggestion.primaryText}
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: theme.text.caption.fontSize,
-                        color: theme.colors.textMuted,
-                      }}
-                    >
-                      {suggestion.secondaryText}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-
-                {pendingPlaceId ? (
-                  <View style={{ gap: theme.space[2] }}>
-                    <TextInput
-                      value={originLabel}
-                      onChangeText={setOriginLabel}
-                      accessibilityLabel="Nome deste endereço"
-                      maxLength={60}
-                      style={{
-                        minHeight: 44,
-                        paddingHorizontal: theme.space[3],
-                        borderRadius: theme.radius.md,
-                        borderWidth: 1,
-                        borderColor: theme.colors.border,
-                        backgroundColor: theme.colors.surface,
-                        color: theme.colors.textPrimary,
-                        fontSize: theme.text.body.fontSize,
-                      }}
-                    />
-                    <Text
-                      style={{
-                        fontSize: theme.text.caption.fontSize,
-                        color: theme.colors.textSecondary,
-                      }}
-                    >
-                      Ao salvar, você autoriza o Escala+ a guardar este endereço
-                      cifrado e usá-lo apenas para calcular o tempo de trânsito
-                      até o hospital.
-                    </Text>
-                    <AppButton
-                      title={
-                        saveOrigin.isPending ? "Salvando…" : "Salvar endereço"
-                      }
-                      onPress={() =>
-                        saveOrigin.mutate({
-                          label: originLabel.trim() || "Casa",
-                          placeId: pendingPlaceId,
-                          consent: true,
-                          makeDefault: true,
-                        })
-                      }
-                      variant="primary"
-                      fullWidth
-                      disabled={busy}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            ) : (
-              <Text
-                style={{
-                  fontSize: theme.text.body.fontSize,
-                  color: theme.colors.textSecondary,
-                }}
-              >
-                A busca de endereços ainda não está disponível nesta instalação.
-                O aviso continua chegando uma hora antes de cada plantão, sem a
-                estimativa de trânsito.
-              </Text>
-            )}
-          </Section>
+                >
+                  A busca de endereços ainda não está disponível nesta
+                  instalação. O aviso continua chegando uma hora antes de cada
+                  plantão, sem a estimativa de trânsito.
+                </Text>
+              )}
+            </Section>
+          ) : null}
         </View>
       </ScreenContainer>
     </ScreenGradient>

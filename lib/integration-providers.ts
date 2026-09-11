@@ -220,3 +220,32 @@ export const WEATHER_CONDITIONS = {
 
 export type WeatherCondition =
   (typeof WEATHER_CONDITIONS)[keyof typeof WEATHER_CONDITIONS];
+
+/**
+ * Rótulo da origem capturada pelo próprio aparelho.
+ *
+ * Fixo de propósito: a chave única `(user_id, label)` faz com que cada envio
+ * SUBSTITUA o anterior. É assim que o sistema guarda o ponto de partida atual
+ * sem guardar por onde a pessoa andou — a garantia é do banco, não de uma
+ * rotina de limpeza que alguém pode esquecer de rodar.
+ */
+export const AUTOMATIC_ORIGIN_LABEL = "Minha localização";
+
+/**
+ * Quanto o médico precisa se deslocar para valer uma nova gravação.
+ *
+ * O aparelho reporta a cada poucas centenas de metros. Regravar o selo a cada
+ * quarteirão gastaria escrita sem mudar nenhuma estimativa: 300 m não movem o
+ * tempo de trajeto o bastante para alterar a hora de sair.
+ */
+export const MIN_MOVEMENT_METERS = 300;
+
+/**
+ * Incerteza máxima aceita para um ponto de partida.
+ *
+ * Acima disso o aparelho está dizendo "é por aqui, mais ou menos, num raio de
+ * quilômetros" — e uma estimativa de trânsito calculada sobre isso teria a
+ * mesma aparência de uma precisa. Melhor recusar o ponto e o aviso sair
+ * dizendo que não sabe o trânsito.
+ */
+export const MAX_ACCEPTED_ACCURACY_METERS = 2_000;
