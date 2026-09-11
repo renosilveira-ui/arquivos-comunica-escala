@@ -17,7 +17,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { sessionInstanceConstraintHttpStatus } from "./trpc";
 import { setStaticCacheHeaders } from "./static-cache";
-import { assertProductionSecrets } from "./env-validation";
+import { ProductionBootError, assertProductionSecrets } from "./env-validation";
 import { logger } from "./logger";
 import { safeErrorDiagnostic } from "./safe-error";
 import {
@@ -318,9 +318,28 @@ async function startServer() {
   });
 }
 
+/**
+ * Falha de boot precisa dizer QUAL configuração recusou.
+ *
+ * A sanitização de log existe para que credencial e query nunca vazem — e
+ * está certa. Mas ela transformava toda recusa de configuração em
+ * `errorCategory: "application"` e nada mais: o servidor morria, e quem
+ * estava de plantão às 2h da manhã não tinha como saber de quê. Foi assim
+ * que o staging ficou fora do ar por horas em 10/09 sem diagnóstico.
+ *
+ * As mensagens de `ProductionBootError` são construídas a partir de uma
+ * lista fixa de NOMES de variável e frases fixas — nenhum valor de env entra
+ * nelas (garantido por `tests/security-boot-validation.test.ts`). Logar essa
+ * lista é seguro e é a diferença entre um minuto e uma noite de investigação.
+ */
 startServer().catch((err) => {
   logger.fatal(
-    safeErrorDiagnostic(err, "application"),
+    err instanceof ProductionBootError
+      ? {
+          errorCategory: "configuration" as const,
+          configurationIssues: err.issues,
+        }
+      : safeErrorDiagnostic(err, "application"),
     "server failed to start",
   );
   process.exit(1);

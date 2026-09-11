@@ -201,6 +201,8 @@ export default defineConfig({
       "tests/integration-providers-state.test.ts",
       "tests/institution-time-zone.test.ts",
       "tests/external-integrations-migration.test.ts",
+      "tests/boot-configuration-diagnostics.test.ts",
+      "tests/personal-calendar-view.test.ts",
     ],
     env: {
       NODE_ENV: "test",

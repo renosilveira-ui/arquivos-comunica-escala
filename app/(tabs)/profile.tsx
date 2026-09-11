@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Bell,
   Building2,
+  CalendarHeart,
   History,
   Inbox,
   KeyRound,
@@ -598,6 +599,17 @@ export default function ProfileScreen() {
                 valueTone="action"
                 onPress={handleSwitchInstitution}
                 accessibilityLabel="Trocar instituição ativa"
+              />
+              {/* Agenda pessoal é da CONTA, não do tenant: fica junto do
+                  que acompanha o usuário entre instituições, e fora da aba
+                  de escala para não confundir compromisso privado com
+                  autoridade institucional. */}
+              <ListRow
+                title="Minha agenda"
+                subtitle="Compromissos, lembretes e aniversários — só seus"
+                Icon={CalendarHeart}
+                onPress={go("/personal-calendar")}
+                accessibilityLabel="Abrir minha agenda de compromissos"
               />
               <ListRow
                 title="Alterar senha"
