@@ -1,8 +1,9 @@
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull } from "drizzle-orm";
 
 import {
   hospitals,
   institutions,
+  professionalInstitutions,
   professionals,
   sectors,
   shiftAssignmentsV2,
@@ -44,6 +45,9 @@ import type { WeatherCondition } from "./integrations/providers/weather-provider
  * 2. **O hospital do próximo plantão dele**, em qualquer instituição. Quem
  *    não cadastrou endereço ainda tem escala, e o hospital é uma aproximação
  *    honesta de "a cidade onde isso importa".
+ * 3. **Qualquer hospital localizado das instituições dele.** Médico entre
+ *    escalas — de férias, recém-cadastrado, sem plantão marcado — continua
+ *    sendo de algum lugar.
  *
  * Sem nenhum dos dois, não há clima — e a saudação vai sozinha, que é o
  * comportamento correto, não um erro.
@@ -130,17 +134,63 @@ async function resolveUserLocation(
     .orderBy(asc(shiftInstances.startAt))
     .limit(1);
 
-  if (!next?.latitude || !next?.longitude) return null;
-  const point = {
-    latitude: Number(next.latitude),
-    longitude: Number(next.longitude),
+  if (next?.latitude && next?.longitude) {
+    const point = {
+      latitude: Number(next.latitude),
+      longitude: Number(next.longitude),
+    };
+    if (isValidGeoPoint(point)) {
+      return {
+        point,
+        timeZone: resolveScheduleTimeZone({
+          hospitalTimeZone: next.hospitalTimeZone,
+          institutionTimeZone: next.institutionTimeZone,
+        }),
+      };
+    }
+  }
+
+  // 3. Qualquer hospital localizado de uma instituição à qual o usuário está
+  //    vinculado.
+  //
+  //    Médico entre escalas — de férias, recém-cadastrado, ou simplesmente
+  //    sem plantão marcado — continua sendo de algum lugar. Sem este degrau,
+  //    a saudação ficaria sem clima exatamente para quem ainda não tem nada
+  //    no sistema, que é quem mais precisa achar que o app funciona.
+  const [anyHospital] = await db
+    .select({
+      latitude: hospitals.latitude,
+      longitude: hospitals.longitude,
+      hospitalTimeZone: hospitals.timeZone,
+      institutionTimeZone: institutions.timeZone,
+    })
+    .from(professionalInstitutions)
+    .innerJoin(
+      hospitals,
+      eq(hospitals.institutionId, professionalInstitutions.institutionId),
+    )
+    .innerJoin(institutions, eq(institutions.id, hospitals.institutionId))
+    .where(
+      and(
+        eq(professionalInstitutions.userId, userId),
+        isNotNull(hospitals.latitude),
+        isNotNull(hospitals.longitude),
+      ),
+    )
+    .orderBy(asc(hospitals.id))
+    .limit(1);
+
+  if (!anyHospital?.latitude || !anyHospital?.longitude) return null;
+  const fallbackPoint = {
+    latitude: Number(anyHospital.latitude),
+    longitude: Number(anyHospital.longitude),
   };
-  if (!isValidGeoPoint(point)) return null;
+  if (!isValidGeoPoint(fallbackPoint)) return null;
   return {
-    point,
+    point: fallbackPoint,
     timeZone: resolveScheduleTimeZone({
-      hospitalTimeZone: next.hospitalTimeZone,
-      institutionTimeZone: next.institutionTimeZone,
+      hospitalTimeZone: anyHospital.hospitalTimeZone,
+      institutionTimeZone: anyHospital.institutionTimeZone,
     }),
   };
 }
