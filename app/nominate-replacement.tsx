@@ -14,6 +14,7 @@ import * as Haptics from "expo-haptics";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
@@ -25,11 +26,16 @@ export default function NominateReplacementScreen() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  const { data: professionals, isLoading } =
-    trpc.confirmations.listReplacementCandidates.useQuery(
-      { confirmationToken: params.token },
-      { enabled: !!user && !!params.token },
-    );
+  const {
+    data: professionals,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = trpc.confirmations.listReplacementCandidates.useQuery(
+    { confirmationToken: params.token },
+    { enabled: !!user && !!params.token },
+  );
 
   const feedback = useActionFeedback();
   const nominateMutation = trpc.confirmations.nominateReplacement.useMutation({
@@ -121,6 +127,14 @@ export default function NominateReplacementScreen() {
           >
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
+        ) : isError ? (
+          <QueryErrorState
+            title="Não foi possível carregar os candidatos"
+            error={error}
+            onRetry={() => {
+              void refetch();
+            }}
+          />
         ) : (
           <FlatList
             data={filtered}
