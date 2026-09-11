@@ -1,0 +1,14 @@
+[
+  {
+    "pattern": "^only-in-target trg .* trg_rdf_[a-z0-9_]+$",
+    "reason": "triggers da cerca de prontidão V1: instalados pelo instalador dedicado, fora do schema Drizzle por desenho"
+  },
+  {
+    "pattern": "^only-in-target trg schedule_invite_issuance_journal trg_schedule_invite_issuance_journal_no_(update|delete)$",
+    "reason": "imutabilidade do journal de emissão de convites: triggers da migração manual 2026-09-10, o Drizzle não modela triggers"
+  },
+  {
+    "pattern": "^only-in-target fk whatsapp_inbound_messages continuation_pending_id->whatsapp_pending_intents\\.id$",
+    "reason": "FK criada pela migração manual 2026-09-06-whatsapp-continuation-link.sql; o Drizzle não a declara porque as duas tabelas se referenciam mutuamente (ciclo de tipos)"
+  }
+]
