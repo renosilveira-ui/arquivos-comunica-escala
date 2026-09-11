@@ -134,6 +134,8 @@ jobs:
 
       - name: Validate confirmation expiry and escalation policy migration
         run: pnpm test:confirmation-policy-migration
+      - name: Validate push token provenance v2 migration
+        run: pnpm test:push-token-v2-migration
       - name: Validate manual migration ledger
         run: pnpm test:manual-migration-ledger
       - name: Validate professional_institutions.user_role removal migration

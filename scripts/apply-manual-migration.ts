@@ -71,11 +71,26 @@ export function assertGenericManualMigrationAllowed(
   }
 }
 
+const SUPERSEDED_DIRECTIVE = /^\s*--\s*@superseded\s+(\S+)/m;
+
+/**
+ * Migração substituída por outra (mesma intenção, versão corrigida) fica no
+ * repositório como histórico, mas não pode ser aplicada por engano: o
+ * ledger registraria algo que a versão nova já cobre de outro jeito.
+ */
+export function assertNotSuperseded(sql: string): void {
+  const match = SUPERSEDED_DIRECTIVE.exec(sql);
+  if (match) {
+    throw new Error(`MANUAL_MIGRATION_SUPERSEDED_BY:${match[1]}`);
+  }
+}
+
 export async function applyManualMigration(sqlPath: string): Promise<void> {
   const absolutePath = resolve(sqlPath);
   const sql = readFileSync(absolutePath, "utf8");
   if (!sql.trim()) throw new Error(`Arquivo SQL vazio: ${absolutePath}`);
   assertGenericManualMigrationAllowed(absolutePath, sql);
+  assertNotSuperseded(sql);
 
   const connection = await mysql.createConnection(buildConnectionOptions());
   try {
