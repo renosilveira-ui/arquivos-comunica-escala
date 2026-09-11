@@ -21,18 +21,19 @@ import {
   hospitals,
   institutions,
   personalCalendarAlertRules,
+  personalCalendarExternalLinks,
   personalCalendarItems,
-  personalCalendarOccurrences,
   personalCalendarOccurrenceExceptions,
+  personalCalendarOccurrences,
   personalCalendarRecurrences,
   professionalInstitutions,
   professionals,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
-  users,
   type PersonalCalendarItem,
   type PersonalCalendarRecurrence as StoredPersonalCalendarRecurrence,
+  users,
 } from "../drizzle/schema";
 import type { getDb } from "./db";
 import {
@@ -624,7 +625,44 @@ export async function createPersonalCalendarItem(input: {
   }, PERSONAL_CALENDAR_TRANSACTION_CONFIG);
 }
 
+/**
+ * Recusa escrita do app em compromisso que veio do Google.
+ *
+ * O dono do dado é o Google enquanto a importação for só de ida. Editar aqui
+ * e ver o Google sobrescrever no ciclo seguinte seria pior do que não editar:
+ * a pessoa perde o que digitou e não entende por quê.
+ */
+async function assertNotExternallyOwned(
+  tx: ReadDb,
+  ownerUserId: number,
+  itemId: number,
+): Promise<void> {
+  const [link] = await tx
+    .select({ id: personalCalendarExternalLinks.id })
+    .from(personalCalendarExternalLinks)
+    .where(
+      and(
+        eq(personalCalendarExternalLinks.ownerUserId, ownerUserId),
+        eq(personalCalendarExternalLinks.itemId, itemId),
+        isNull(personalCalendarExternalLinks.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (link) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Este compromisso vem do seu Google Agenda. Edite ou apague lá; o Escala+ atualiza na próxima sincronização.",
+    });
+  }
+}
+
 export async function updatePersonalCalendarItem(input: {
+  /**
+   * Compromisso importado do Google é editado lá, não aqui. Só a própria
+   * importação pode escrever nele — e diz isso explicitamente.
+   */
+  allowExternal?: boolean;
   db: Db;
   ownerUserId: number;
   expectedSessionVersion: number;
@@ -657,6 +695,9 @@ export async function updatePersonalCalendarItem(input: {
       .for("update");
     if (!current) notFound();
     if (current.version !== input.expectedVersion) versionConflict();
+    if (!input.allowExternal) {
+      await assertNotExternallyOwned(tx, input.ownerUserId, input.itemId);
+    }
     await assertNoOccurrenceExceptions(tx, input.ownerUserId, input.itemId);
 
     const nextVersion = current.version + 1;
@@ -690,6 +731,7 @@ export async function updatePersonalCalendarItem(input: {
 }
 
 export async function deletePersonalCalendarItem(input: {
+  allowExternal?: boolean;
   db: Db;
   ownerUserId: number;
   expectedSessionVersion: number;
@@ -698,6 +740,9 @@ export async function deletePersonalCalendarItem(input: {
 }): Promise<{ id: number; version: number; deleted: true; replayed: boolean }> {
   return input.db.transaction(async (tx) => {
     await lockCurrentUser(tx, input.ownerUserId, input.expectedSessionVersion);
+    if (!input.allowExternal) {
+      await assertNotExternallyOwned(tx, input.ownerUserId, input.itemId);
+    }
     const [current] = await tx
       .select()
       .from(personalCalendarItems)
@@ -1185,9 +1230,36 @@ export async function listPersonalCalendarWindow(input: {
     input.ownerUserId,
     occurrences,
   );
+  // Quem veio do Google é somente leitura no app; a tela precisa saber
+  // antes de oferecer editar.
+  const externalItemIds = new Set(
+    bundles.length
+      ? (
+          await input.db
+            .select({ itemId: personalCalendarExternalLinks.itemId })
+            .from(personalCalendarExternalLinks)
+            .where(
+              and(
+                eq(
+                  personalCalendarExternalLinks.ownerUserId,
+                  input.ownerUserId,
+                ),
+                isNull(personalCalendarExternalLinks.deletedAt),
+                inArray(
+                  personalCalendarExternalLinks.itemId,
+                  bundles.map((bundle) => bundle.id),
+                ),
+              ),
+            )
+        ).map((row) => row.itemId)
+      : [],
+  );
   return {
     occurrences: occurrences.map((occurrence) => ({
       ...occurrence,
+      source: externalItemIds.has(occurrence.itemId)
+        ? ("GOOGLE" as const)
+        : ("LOCAL" as const),
       conflict:
         conflictByIdentity.get(occurrenceIdentity(occurrence)) ??
         emptyConflictResult(),

@@ -1,7 +1,9 @@
+import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import { router, sessionProcedure } from "./_core/trpc";
+import { personalCalendarExternalLinks } from "../drizzle/schema";
 import { getDb } from "./db";
 import {
   PersonalCalendarValidationError,
@@ -222,7 +224,22 @@ export const personalCalendarRouter = router({
             message: "Compromisso não encontrado.",
           });
         }
-        return item;
+        const [external] = await db
+          .select({
+            provider: personalCalendarExternalLinks.provider,
+            calendarId: personalCalendarExternalLinks.externalCalendarId,
+            eventId: personalCalendarExternalLinks.externalEventId,
+          })
+          .from(personalCalendarExternalLinks)
+          .where(
+            and(
+              eq(personalCalendarExternalLinks.ownerUserId, ctx.user.id),
+              eq(personalCalendarExternalLinks.itemId, input.itemId),
+              isNull(personalCalendarExternalLinks.deletedAt),
+            ),
+          )
+          .limit(1);
+        return { ...item, external: external ?? null };
       }),
     ),
 

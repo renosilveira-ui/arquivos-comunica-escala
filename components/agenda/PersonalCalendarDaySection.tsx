@@ -35,7 +35,7 @@ const KIND_ICON = {
   BIRTHDAY: Cake,
 } as const;
 
-function OccurrenceRow({
+export function OccurrenceRow({
   occurrence,
   timeZone,
   onPress,
@@ -99,6 +99,16 @@ function OccurrenceRow({
         >
           {occurrence.title}
         </Text>
+        {occurrence.source === "GOOGLE" ? (
+          <Text
+            style={{
+              fontSize: theme.text.caption.fontSize,
+              color: theme.colors.textMuted,
+            }}
+          >
+            Do seu Google Agenda · edite lá
+          </Text>
+        ) : null}
 
         <View
           style={{
