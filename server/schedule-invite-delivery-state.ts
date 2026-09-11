@@ -25,6 +25,21 @@ export function isScheduleInviteAttemptLive(
   return attemptExpiresAt.getTime() > now.getTime();
 }
 
+/**
+ * Alinha o prazo da tentativa à precisão da coluna `attempt_expires_at`.
+ *
+ * A coluna é `TIMESTAMP` sem casas fracionárias e o MySQL **arredonda** o
+ * milissegundo em vez de truncá-lo: um valor com .500 ou mais é persistido um
+ * segundo adiante. Esse prazo entra no corpo do e-mail ("Válido até …") e o
+ * corpo entra no fingerprint do request. Sem alinhar, o valor relido na
+ * retomada renderiza um segundo diferente do que foi assinado e um retry
+ * legítimo de tentativa incerta é recusado como conteúdo alterado — em cerca
+ * de metade das emissões, dependendo apenas de onde o relógio caiu.
+ */
+export function alignScheduleInviteAttemptExpiry(attemptExpiresAt: Date): Date {
+  return new Date(Math.floor(attemptExpiresAt.getTime() / 1000) * 1000);
+}
+
 export function planScheduleInviteRecovery(input: {
   state: ScheduleInviteDeliveryState;
   now: Date;

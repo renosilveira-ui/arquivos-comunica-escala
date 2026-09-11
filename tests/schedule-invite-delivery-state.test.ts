@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  alignScheduleInviteAttemptExpiry,
   isScheduleInviteAttemptLive,
   planScheduleInviteRecovery,
 } from "../server/schedule-invite-delivery-state";
@@ -111,5 +112,22 @@ describe("recuperação da outbox de convite", () => {
     expect(isScheduleInviteAttemptLive(future, now)).toBe(true);
     expect(isScheduleInviteAttemptLive(now, now)).toBe(false);
     expect(isScheduleInviteAttemptLive(past, now)).toBe(false);
+  });
+
+  it("desce o prazo da tentativa para o segundo inteiro, nunca sobe", () => {
+    // O MySQL arredonda o milissegundo ao gravar TIMESTAMP sem casas
+    // fracionárias. Truncar sempre para baixo é o único ajuste que mantém o
+    // valor em memória idêntico ao relido, dos dois lados do .500.
+    for (const [input, expected] of [
+      ["2026-09-11T12:00:00.000Z", "2026-09-11T12:00:00.000Z"],
+      ["2026-09-11T12:00:00.001Z", "2026-09-11T12:00:00.000Z"],
+      ["2026-09-11T12:00:00.499Z", "2026-09-11T12:00:00.000Z"],
+      ["2026-09-11T12:00:00.500Z", "2026-09-11T12:00:00.000Z"],
+      ["2026-09-11T12:00:00.999Z", "2026-09-11T12:00:00.000Z"],
+    ]) {
+      expect(
+        alignScheduleInviteAttemptExpiry(new Date(input!)).toISOString(),
+      ).toBe(expected);
+    }
   });
 });

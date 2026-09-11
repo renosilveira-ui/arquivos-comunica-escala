@@ -37,6 +37,7 @@ import {
   type ScheduleInviteOutboxKey,
 } from "./schedule-invite-code-policy";
 import {
+  alignScheduleInviteAttemptExpiry,
   isScheduleInviteAttemptLive,
   planScheduleInviteRecovery,
   type ScheduleInviteDeliveryState,
@@ -1405,7 +1406,9 @@ async function claimInviteIssuance(
     const codeNonce = generateScheduleInviteOpaqueToken();
     const providerIdempotencyKey = generateScheduleInviteOpaqueToken();
     const currentKey = input.hashPolicy.outbox.current;
-    const attemptExpiresAt = new Date(now.getTime() + NAMED_TTL_MS);
+    const attemptExpiresAt = alignScheduleInviteAttemptExpiry(
+      new Date(now.getTime() + NAMED_TTL_MS),
+    );
     const recipientBindingHash = currentKey.bindRecipient(
       snapshot.invitee.email,
     );
