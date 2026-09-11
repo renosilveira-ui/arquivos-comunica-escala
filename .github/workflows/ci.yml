@@ -28,6 +28,11 @@ jobs:
         # Patch fixo: o manifesto das migrations compara CHECK_CLAUSE com a
         # serialização exata do catálogo, que varia entre patches do MySQL.
         # Subir o patch exige reler o catálogo e reescrever os literais.
+        # Três provas de migração (auth-recovery, hash v2 e fence dos convites)
+        # exigem explicitamente a serialização de catálogo do 8.0.46; o banco
+        # real está em 8.0.45 e a DigitalOcean aplica patch obrigatório em
+        # 14/09/2026. Subir este pino JUNTO com essas provas quando o banco
+        # mudar de versão — nunca só um dos lados.
         image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: root
@@ -131,6 +136,8 @@ jobs:
       - name: Validate core schema reproducibility migration
         run: pnpm test:core-schema-repro-migration
 
+      - name: Validate manual migration ledger
+        run: pnpm test:manual-migration-ledger
       - name: Validate professional_institutions.user_role removal migration
         run: pnpm test:pi-drop-user-role-migration
       - name: Validate audit trail action enum migration
