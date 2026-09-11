@@ -25,7 +25,11 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        # Patch fixo: os manifestos das migrations manuais comparam
+        # CHECK_CLAUSE com a serialização exata que o catálogo devolve, e essa
+        # serialização varia entre patches do MySQL. Subir o patch exige reler
+        # o catálogo e reescrever os literais.
+        image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: escalas_test
@@ -48,6 +52,11 @@ jobs:
       PROFESSIONAL_IDENTITY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       INSTITUTION_FEATURE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       PERSONAL_CALENDAR_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      AUTH_RECOVERY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      # Marker opaco por execução: o alvo descartável só é aceito quando o
+      # recibo gravado no schema efêmero casa com este valor, o que impede a
+      # prova de rodar contra um banco que ela não criou.
+      AUTH_RECOVERY_MIGRATION_TEST_MARKER: ci-auth-recovery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
       # A prova da provisão Unimed também recebe somente o servidor local da
       # CI e cria um schema efêmero prefixado. O comando de produto é
       # read-only e a flag --apply é bloqueada.
@@ -101,6 +110,9 @@ jobs:
 
       - name: Validate personal calendar foundation migration
         run: pnpm test:personal-calendar-migration
+
+      - name: Validate auth recovery requests migration
+        run: pnpm test:auth-recovery-migration
 
       - name: Validate prospective shift capacity migration
         env:

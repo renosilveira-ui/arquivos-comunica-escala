@@ -8,6 +8,8 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const migrationConfig = readFileSync("vitest.migration.config.ts", "utf8");
+const ciWorkflow = readFileSync(".github/workflows/ci.yml", "utf8");
 
 describe("auth recovery migration: contrato estático", () => {
   it("recusa homônimo incompatível antes do primeiro DDL e recalcula postflight", () => {
@@ -82,5 +84,19 @@ describe("auth recovery migration: contrato estático", () => {
     expect(migration).toMatch(
       /expected_actor_session_version IS NULL\s+AND target_membership_id IS NULL/,
     );
+  });
+
+  it("exige prova MySQL local e fixa a representação de catálogo comprovada", () => {
+    expect(migration).toContain("MySQL 8.0.46 serializa CHECK_CLAUSE");
+    expect(migration).toContain("CHAR(92)");
+    expect(migration).toContain("REGEXP_LIKE");
+    expect(migrationConfig).toContain(
+      "tests/auth-recovery-migration-mysql.test.ts",
+    );
+    expect(ciWorkflow).toContain(
+      "AUTH_RECOVERY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql",
+    );
+    expect(ciWorkflow).toContain("AUTH_RECOVERY_MIGRATION_TEST_MARKER:");
+    expect(ciWorkflow).toContain("image: mysql:8.0.46");
   });
 });
