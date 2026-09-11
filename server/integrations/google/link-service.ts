@@ -346,6 +346,38 @@ export async function withGoogleAccessToken<T>(input: {
  * revogação falhar, ainda temos o token para tentar de novo. Apagar primeiro
  * deixaria a autorização viva na conta do usuário sem ninguém para revogá-la.
  */
+/**
+ * Abre o refresh token para revogação fora da transação que vai apagar a
+ * linha. Só leitura: a exclusão de conta apaga a credencial dentro da
+ * transação e chama o Google depois do commit — uma chamada de rede dentro
+ * da transação seguraria os locks do usuário pelo timeout HTTP inteiro.
+ */
+export async function readGoogleRefreshTokenForRevocation(
+  // Só `select`: o chamador está dentro de uma transação, que não carrega
+  // o `$client` do pool.
+  db: Pick<LinkDb, "select">,
+  userId: number,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ sealed: userExternalCredentials.sealedRefreshToken })
+    .from(userExternalCredentials)
+    .where(
+      and(
+        eq(userExternalCredentials.userId, userId),
+        eq(userExternalCredentials.provider, PROVIDER),
+      ),
+    )
+    .limit(1);
+  if (!row?.sealed) return null;
+  try {
+    return openExternalCredential(row.sealed, binding(userId));
+  } catch {
+    // Envelope ilegível: não há o que revogar, e a linha será apagada mesmo
+    // assim pelo chamador.
+    return null;
+  }
+}
+
 export async function disconnectGoogleLink(input: {
   db: LinkDb;
   userId: number;

@@ -32,7 +32,33 @@ import {
   pushTokens,
   auditTrail,
   authRecoveryRequests,
+  userExternalCredentials,
+  externalCalendarEventLinks,
+  userTravelOrigins,
+  userDeparturePreferences,
+  departurePlans,
+  whatsappInboundMessages,
+  whatsappPendingIntents,
 } from "../drizzle/schema";
+import {
+  EXTERNAL_PROVIDERS,
+  TRAVEL_ORIGIN_SEAL_SCOPE,
+} from "../lib/integration-providers";
+import { sealExternalCredential } from "../server/external-credentials-crypto";
+import { persistGoogleAuthorization } from "../server/integrations/google/link-service";
+import { revokeGoogleToken } from "../server/integrations/google/oauth";
+import { GOOGLE_CALENDAR_SCOPES } from "../server/integrations/providers/calendar-provider";
+
+// A exclusão de conta revoga o refresh token no Google depois do commit. O
+// teste prova a chamada sem tocar na rede.
+vi.mock("../server/integrations/google/oauth", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../server/integrations/google/oauth")>();
+  return {
+    ...actual,
+    revokeGoogleToken: vi.fn(async () => ({ ok: true as const, value: null })),
+  };
+});
 
 /**
  * Frente A3 — redefinir senha, "esqueci minha senha" e exclusão de conta.
@@ -313,6 +339,27 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
         ),
       );
     await db.delete(pushTokens).where(inArray(pushTokens.userId, ids));
+    await db
+      .delete(departurePlans)
+      .where(inArray(departurePlans.userId, ids));
+    await db
+      .delete(userDeparturePreferences)
+      .where(inArray(userDeparturePreferences.userId, ids));
+    await db
+      .delete(userTravelOrigins)
+      .where(inArray(userTravelOrigins.userId, ids));
+    await db
+      .delete(externalCalendarEventLinks)
+      .where(inArray(externalCalendarEventLinks.userId, ids));
+    await db
+      .delete(userExternalCredentials)
+      .where(inArray(userExternalCredentials.userId, ids));
+    await db
+      .delete(whatsappPendingIntents)
+      .where(inArray(whatsappPendingIntents.userId, ids));
+    await db
+      .delete(whatsappInboundMessages)
+      .where(inArray(whatsappInboundMessages.userId, ids));
     await db
       .delete(authRecoveryRequests)
       .where(inArray(authRecoveryRequests.targetUserId, ids));
@@ -1428,6 +1475,90 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       platform: "ios",
     });
 
+    // Dados de integração e deslocamento que o soft-delete não alcança por
+    // CASCADE: a exclusão precisa apagá-los e revogar o token no Google.
+    await persistGoogleAuthorization({
+      db,
+      userId: userIds.leaving,
+      grant: {
+        accessToken: "access-a3",
+        refreshToken: `refresh-a3-${STAMP}`,
+        expiresAtUtc: new Date(Date.now() + 3_600_000),
+        grantedScopes: [...GOOGLE_CALENDAR_SCOPES],
+      },
+      accountLabel: null,
+      externalCalendarId: `cal-a3-${STAMP}`,
+    });
+    await db.insert(externalCalendarEventLinks).values({
+      userId: userIds.leaving,
+      provider: EXTERNAL_PROVIDERS.googleCalendar,
+      externalCalendarId: `cal-a3-${STAMP}`,
+      externalEventId: `evt-a3-${STAMP}`,
+      sourceKind: "DUTY_ASSIGNMENT",
+      sourceId: 999_999,
+    });
+    const [origin] = await db.insert(userTravelOrigins).values({
+      userId: userIds.leaving,
+      label: `Casa ${STAMP}`,
+      sealedLocation: sealExternalCredential(
+        JSON.stringify({
+          placeId: "ChIJa3casa",
+          latitude: -3.74,
+          longitude: -38.53,
+          formattedAddress: "Rua Exemplo, 100",
+        }),
+        { userId: userIds.leaving, scope: TRAVEL_ORIGIN_SEAL_SCOPE },
+      ),
+      encryptionKid: "current",
+      consentGrantedAt: new Date(),
+      consentVersion: "origem-v1",
+      isDefault: true,
+    });
+    await db.insert(userDeparturePreferences).values({
+      userId: userIds.leaving,
+      enabled: true,
+      travelOriginId: origin.insertId,
+    });
+    await db.insert(departurePlans).values({
+      userId: userIds.leaving,
+      institutionId,
+      assignmentId: 999_999,
+      shiftInstanceId,
+      travelOriginId: origin.insertId,
+      status: "SCHEDULED",
+      noticeAt: new Date(Date.now() + 3_600_000),
+      dedupKey: `departure-a3-${STAMP}`,
+    });
+    const [inbound] = await db
+      .insert(whatsappInboundMessages)
+      .values({
+        provider: "TWILIO",
+        providerMessageId: `SMa3${STAMP}`,
+        userId: userIds.leaving,
+        contentKind: "TEXT",
+        forwarded: false,
+        processingStatus: "READY_FOR_NL",
+        operationalText: "troca de plantão",
+        receivedAt: new Date(),
+        processedAt: new Date(),
+      })
+      .$returningId();
+    await db.insert(whatsappPendingIntents).values({
+      userId: userIds.leaving,
+      sourceInboundMessageId: inbound.id,
+      institutionId: null,
+      status: "OPEN",
+      stage: "PARSE",
+      intentKind: null,
+      parsedPayload: { slot: "pendente" },
+      resolvedPayload: null,
+      clarificationPayload: null,
+      expiresAt: new Date(Date.now() + 3_600_000),
+      consumedAt: null,
+      payloadClearedAt: null,
+    });
+    vi.mocked(revokeGoogleToken).mockClear();
+
     const del = await request(app)
       .delete("/api/auth/me")
       .set("Cookie", cookie)
@@ -1436,6 +1567,27 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ password: PASSWORD });
     expect(del.status).toBe(200);
     expect(del.body).toEqual({ ok: true, sessionFenceRotated: true });
+
+    // Integrações e deslocamento eliminados; token revogado no Google.
+    for (const [table, column] of [
+      [userExternalCredentials, userExternalCredentials.userId],
+      [externalCalendarEventLinks, externalCalendarEventLinks.userId],
+      [userTravelOrigins, userTravelOrigins.userId],
+      [userDeparturePreferences, userDeparturePreferences.userId],
+      [departurePlans, departurePlans.userId],
+      [whatsappPendingIntents, whatsappPendingIntents.userId],
+    ] as const) {
+      await expect(
+        db
+          .select({ id: table.id })
+          .from(table)
+          .where(eq(column, userIds.leaving)),
+      ).resolves.toHaveLength(0);
+    }
+    expect(revokeGoogleToken).toHaveBeenCalledTimes(1);
+    expect(revokeGoogleToken).toHaveBeenCalledWith({
+      refreshToken: `refresh-a3-${STAMP}`,
+    });
     const terminalHeaders = setCookieHeaders(del);
     expect(
       terminalHeaders.filter(
@@ -1502,7 +1654,18 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
           ),
         ),
       );
-    expect(deleteAudit?.metadata).toMatchObject({ revokedPushTokenCount: 1 });
+    expect(deleteAudit?.metadata).toMatchObject({
+      revokedPushTokenCount: 1,
+      googleTokenPendingRevocation: true,
+      externalDataPurged: {
+        externalCredentials: 1,
+        calendarEventLinks: 1,
+        travelOrigins: 1,
+        departurePreferences: 1,
+        departurePlans: 1,
+        whatsappPendingIntents: 1,
+      },
+    });
 
     // Login pelo e-mail original e pelo anonimizado falham como credencial inválida.
     expect((await login(EMAILS.leaving, PASSWORD)).status).toBe(401);

@@ -14,12 +14,23 @@ import {
   medicalSpecialties,
   passwordResets,
   personalCalendarItems,
+  personalCalendarExternalLinks,
+  personalCalendarImportCursors,
   shiftAssignmentsV2,
   shiftInstances,
   userContactChannels,
   authRecoveryRequests,
+  userExternalCredentials,
+  externalCalendarEventLinks,
+  googleOauthStates,
+  userTravelOrigins,
+  userDeparturePreferences,
+  departurePlans,
+  whatsappPendingIntents,
   type User,
 } from "../../drizzle/schema";
+import { readGoogleRefreshTokenForRevocation } from "../integrations/google/link-service";
+import { revokeGoogleToken } from "../integrations/google/oauth";
 import {
   AuthenticationInfrastructureError,
   sdk,
@@ -1503,6 +1514,11 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
   // transação abaixo revogou; falhas precommit restauram o valor observado.
   rotateBrowserSessionFence(req, res);
 
+  // Sai da transação para ser revogado no Google DEPOIS do commit: a chamada
+  // de rede não pode segurar os locks da exclusão, e um Google fora do ar não
+  // pode impedir a conta de ser excluída.
+  let googleRefreshTokenToRevoke: string | null = null;
+
   try {
     await withPushAccountMutex(
       db,
@@ -1872,6 +1888,68 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
             await tx
               .delete(personalCalendarItems)
               .where(eq(personalCalendarItems.ownerUserId, lockedUser.id));
+
+            // Integrações externas e deslocamento seguem a mesma regra: o
+            // soft-delete do usuário não dispara o CASCADE dessas tabelas, e
+            // sem esta limpeza o refresh token do Google continuaria válido,
+            // o worker de sincronização continuaria usando a conta excluída
+            // e a coordenada residencial ficaria guardada (LGPD: finalidade
+            // encerrada = dado eliminado).
+            googleRefreshTokenToRevoke =
+              await readGoogleRefreshTokenForRevocation(tx, lockedUser.id);
+            const externalDataPurged = {
+              externalCredentials: affectedRows(
+                await tx
+                  .delete(userExternalCredentials)
+                  .where(eq(userExternalCredentials.userId, lockedUser.id)),
+              ),
+              calendarEventLinks: affectedRows(
+                await tx
+                  .delete(externalCalendarEventLinks)
+                  .where(eq(externalCalendarEventLinks.userId, lockedUser.id)),
+              ),
+              importedCalendarLinks: affectedRows(
+                await tx
+                  .delete(personalCalendarExternalLinks)
+                  .where(
+                    eq(personalCalendarExternalLinks.ownerUserId, lockedUser.id),
+                  ),
+              ),
+              importCursors: affectedRows(
+                await tx
+                  .delete(personalCalendarImportCursors)
+                  .where(
+                    eq(personalCalendarImportCursors.ownerUserId, lockedUser.id),
+                  ),
+              ),
+              oauthStates: affectedRows(
+                await tx
+                  .delete(googleOauthStates)
+                  .where(eq(googleOauthStates.userId, lockedUser.id)),
+              ),
+              // Planos antes das origens: a FK do plano para a origem é
+              // SET NULL, mas apagar na ordem natural dispensa depender dela.
+              departurePlans: affectedRows(
+                await tx
+                  .delete(departurePlans)
+                  .where(eq(departurePlans.userId, lockedUser.id)),
+              ),
+              departurePreferences: affectedRows(
+                await tx
+                  .delete(userDeparturePreferences)
+                  .where(eq(userDeparturePreferences.userId, lockedUser.id)),
+              ),
+              travelOrigins: affectedRows(
+                await tx
+                  .delete(userTravelOrigins)
+                  .where(eq(userTravelOrigins.userId, lockedUser.id)),
+              ),
+              whatsappPendingIntents: affectedRows(
+                await tx
+                  .delete(whatsappPendingIntents)
+                  .where(eq(whatsappPendingIntents.userId, lockedUser.id)),
+              ),
+            };
             const nextSessionVersion = lockedUser.sessionVersion + 1;
             const updateResult = await tx
               .update(users)
@@ -1936,6 +2014,9 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
                   sessionVersionBefore: lockedUser.sessionVersion,
                   sessionVersionAfter: nextSessionVersion,
                   revokedPushTokenCount,
+                  externalDataPurged,
+                  googleTokenPendingRevocation:
+                    googleRefreshTokenToRevoke !== null,
                 },
                 institutionId: auditInstitutionId,
               },
@@ -1957,6 +2038,27 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     );
     res.status(500).json({ error: "Falha ao excluir conta" });
     return;
+  }
+
+  // A credencial já saiu do banco no commit. A revogação no Google é o
+  // melhor esforço que fecha a autorização do lado dele; se falhar, o token
+  // não existe mais aqui e o usuário ainda pode revogar na conta Google.
+  if (googleRefreshTokenToRevoke) {
+    try {
+      const revocation = await revokeGoogleToken({
+        refreshToken: googleRefreshTokenToRevoke,
+      });
+      if (!revocation.ok) {
+        console.warn(
+          `[delete-account] Revogação no Google não confirmada userId=${authUser.id} reason=${revocation.reason}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "[delete-account] Revogação no Google falhou",
+        safeErrorDiagnostic(error, "network"),
+      );
+    }
   }
 
   // O commit já tornou toda sessão antiga inválida por sessionVersion. A
