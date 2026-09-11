@@ -9,7 +9,7 @@ import {
   greetingLine,
   temperatureLabel,
 } from "../lib/weather-greeting";
-import { WEATHER_CONDITIONS } from "../server/integrations/providers/weather-provider";
+import { WEATHER_CONDITIONS } from "../lib/integration-providers";
 
 describe("saudação", () => {
   /**

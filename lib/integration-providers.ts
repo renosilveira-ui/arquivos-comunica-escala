@@ -198,3 +198,25 @@ export const EXTERNAL_PROVIDER_LABELS: Record<ExternalProvider, string> = {
   GOOGLE_ROUTES: "Google Rotas",
   WEATHERKIT: "Apple WeatherKit",
 };
+
+/**
+ * Vocabulário de condição do tempo.
+ *
+ * Mora aqui, e não no contrato do provedor no servidor, porque a TELA precisa
+ * dele para escrever "chuva forte" em português. Código do app não pode
+ * importar código do servidor: o bundler do Expo não resolve, e mesmo que
+ * resolvesse arrastaria o servidor para dentro do aplicativo.
+ */
+export const WEATHER_CONDITIONS = {
+  clear: "CLEAR",
+  cloudy: "CLOUDY",
+  rain: "RAIN",
+  heavyRain: "HEAVY_RAIN",
+  storm: "STORM",
+  snow: "SNOW",
+  fog: "FOG",
+  unknown: "UNKNOWN",
+} as const;
+
+export type WeatherCondition =
+  (typeof WEATHER_CONDITIONS)[keyof typeof WEATHER_CONDITIONS];

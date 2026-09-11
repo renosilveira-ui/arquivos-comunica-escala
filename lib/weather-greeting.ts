@@ -1,7 +1,7 @@
 import {
   WEATHER_CONDITIONS,
   type WeatherCondition,
-} from "../server/integrations/providers/weather-provider";
+} from "./integration-providers";
 
 /**
  * Saudação com o clima de onde o médico está.

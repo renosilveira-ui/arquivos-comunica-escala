@@ -14,19 +14,15 @@ import type { GeoPoint, ProviderCallResult } from "./types";
  * vê credencial da Apple.
  */
 
-export const WEATHER_CONDITIONS = {
-  clear: "CLEAR",
-  cloudy: "CLOUDY",
-  rain: "RAIN",
-  heavyRain: "HEAVY_RAIN",
-  storm: "STORM",
-  snow: "SNOW",
-  fog: "FOG",
-  unknown: "UNKNOWN",
-} as const;
+// O vocabulário vive em lib/ porque a tela também precisa dele, e código do
+// app não pode importar código do servidor. Aqui fica só a reexportação, para
+// que o contrato do provedor continue sendo lido num arquivo só.
+import type { WeatherCondition } from "../../../lib/integration-providers";
 
-export type WeatherCondition =
-  (typeof WEATHER_CONDITIONS)[keyof typeof WEATHER_CONDITIONS];
+export {
+  WEATHER_CONDITIONS,
+  type WeatherCondition,
+} from "../../../lib/integration-providers";
 
 export type WeatherSnapshot = {
   /** Instante a que a previsão se refere, não o instante da consulta. */
