@@ -13,7 +13,11 @@ import {
 } from "../integrations/apple/weatherkit-client";
 import { googleMapsConfiguration } from "../integrations/providers/configuration";
 import { PROVIDER_CONFIGURATION_STATES } from "../../lib/integration-providers";
-import { enqueueTrackedPushNotification } from "../push-delivery";
+import {
+  TrackedIntentCollisionError,
+  enqueueTrackedPushNotification,
+} from "../push-delivery";
+import { SchemaDormancy, isMissingSchema } from "./schema-dormancy";
 
 /**
  * Worker do aviso de "hora de sair".
@@ -46,26 +50,12 @@ let reconcileCursor = 0;
 let lastReconcileAtMs = 0;
 let activeTick: Promise<void> | null = null;
 let acceptingTicks = false;
-let dormantForMissingSchema = false;
-
-/**
- * A migração manual é aplicada FORA do deploy (o deploy não roda migração).
- * Entre o merge e a aplicação, este worker consultaria tabelas que ainda não
- * existem — a cada 60 segundos, para sempre, enchendo o log de ruído que
- * esconde erro de verdade.
- *
- * Ao ver `ER_NO_SUCH_TABLE` ele registra UMA vez e adormece. O próximo boot,
- * já com a migração aplicada, volta a trabalhar normalmente.
- */
-function isMissingSchema(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code = (error as { code?: unknown }).code;
-  return code === "ER_NO_SUCH_TABLE";
-}
+/** Tabelas ausentes (migração manual ainda não aplicada): pausa e re-tenta. */
+const schemaDormancy = new SchemaDormancy();
 
 /** Somente para teste: reabilita o worker adormecido. */
 export function resetDepartureDormancy(): void {
-  dormantForMissingSchema = false;
+  schemaDormancy.reset();
   reconcileCursor = 0;
   lastReconcileAtMs = 0;
 }
@@ -93,31 +83,73 @@ function weatherProvider() {
  * herda de graça: idempotência por `dedupKey`, retry, receipts e a limpeza de
  * token inválido. Um caminho paralelo de push seria uma segunda chance de
  * errar tudo isso.
+ *
+ * A mensagem depende do relógio ("saia até 10:00" vira "saia agora"). Numa
+ * retentativa, a intenção com a mesma `dedupKey` pode já estar gravada com o
+ * texto anterior: isso não é falha, é a prova de que o primeiro
+ * enfileiramento chegou ao outbox. Sem este tratamento a retentativa
+ * colidiria para sempre e o aviso se perderia em silêncio.
  */
-const sendDeparture: DepartureSender = async (input) => {
-  await enqueueTrackedPushNotification({
-    institutionId: input.institutionId,
-    userId: input.userId,
-    shiftInstanceId: input.shiftInstanceId,
-    dedupKey: input.dedupKey,
-    deepLink: input.deepLink,
-    payload: {
-      title: input.title,
-      body: input.body,
-      data: {
-        type: "departure_alert",
-        shiftInstanceId: input.shiftInstanceId,
-        deepLink: input.deepLink,
+export const sendDeparture: DepartureSender = async (input) => {
+  try {
+    await enqueueTrackedPushNotification({
+      institutionId: input.institutionId,
+      userId: input.userId,
+      shiftInstanceId: input.shiftInstanceId,
+      dedupKey: input.dedupKey,
+      deepLink: input.deepLink,
+      payload: {
+        title: input.title,
+        body: input.body,
+        data: {
+          type: "departure_alert",
+          shiftInstanceId: input.shiftInstanceId,
+          deepLink: input.deepLink,
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    if (error instanceof TrackedIntentCollisionError) return;
+    throw error;
+  }
 };
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : "unknown";
+}
+
+/**
+ * Falha de uma etapa do tick. Tabela ausente pausa o worker inteiro; o resto
+ * é registrado e a etapa devolve `null`, para as outras seguirem — uma falha
+ * de rede no cálculo não pode impedir o envio de um plano que já tinha
+ * horário.
+ */
+function stepFailure(
+  error: unknown,
+  now: Date,
+  step: { event: string; level: "warn" | "error"; message: string },
+): null {
+  if (isMissingSchema(error)) {
+    logger.warn(
+      {
+        event: "departure_schema_missing",
+        retryInSeconds: schemaDormancy.markMissing(now),
+      },
+      "departure tables absent; worker pauses and retries after the manual migration runs",
+    );
+    return null;
+  }
+  logger[step.level](
+    { event: step.event, errorName: errorName(error) },
+    step.message,
+  );
+  return null;
+}
 
 export async function tickDeparture(now = new Date()): Promise<void> {
   if (!acceptingTicks) return;
   if (activeTick) return activeTick;
-
-  if (dormantForMissingSchema) return;
+  if (schemaDormancy.isDormant(now)) return;
 
   let tick!: Promise<void>;
   tick = (async () => {
@@ -135,73 +167,43 @@ export async function tickDeparture(now = new Date()): Promise<void> {
           db,
           now,
           afterUserId: reconcileCursor,
-        }).catch((error) => {
-          if (isMissingSchema(error)) {
-            dormantForMissingSchema = true;
-            logger.warn(
-              { event: "departure_schema_missing" },
-              "departure tables absent; worker dormant until the manual migration runs",
-            );
-            return null;
-          }
-          logger.warn(
-            {
-              event: "departure_reconcile_failed",
-              errorName: errorName(error),
-            },
-            "departure reconcile tick failed",
-          );
-          return null;
-        });
-        if (dormantForMissingSchema) return;
+        }).catch((error) =>
+          stepFailure(error, now, {
+            event: "departure_reconcile_failed",
+            level: "warn",
+            message: "departure reconcile tick failed",
+          }),
+        );
+        if (schemaDormancy.isDormant(now)) return;
         if (reconciled) reconcileCursor = reconciled.nextCursor;
       }
 
-      // Recalcular e despachar são independentes de propósito: uma falha de
-      // rede no cálculo não pode impedir o envio de um plano que já tinha
-      // horário.
+      // Recalcular e despachar são independentes de propósito.
       const recomputed = await recomputeDuePlans({
         db,
         locationProvider: locationProvider(),
         weatherProvider: weatherProvider(),
         now,
-      }).catch((error) => {
-        if (isMissingSchema(error)) {
-          dormantForMissingSchema = true;
-          logger.warn(
-            { event: "departure_schema_missing" },
-            "departure tables absent; worker dormant until the manual migration runs",
-          );
-          return null;
-        }
-        logger.warn(
-          { event: "departure_recompute_failed", errorName: errorName(error) },
-          "departure recompute tick failed",
-        );
-        return null;
-      });
-
-      if (dormantForMissingSchema) return;
+      }).catch((error) =>
+        stepFailure(error, now, {
+          event: "departure_recompute_failed",
+          level: "warn",
+          message: "departure recompute tick failed",
+        }),
+      );
+      if (schemaDormancy.isDormant(now)) return;
 
       const dispatched = await dispatchDueDepartures({
         db,
         send: sendDeparture,
         now,
-      }).catch((error) => {
-        if (isMissingSchema(error)) {
-          dormantForMissingSchema = true;
-          logger.warn(
-            { event: "departure_schema_missing" },
-            "departure tables absent; worker dormant until the manual migration runs",
-          );
-          return null;
-        }
-        logger.error(
-          { event: "departure_dispatch_failed", errorName: errorName(error) },
-          "departure dispatch tick failed",
-        );
-        return null;
-      });
+      }).catch((error) =>
+        stepFailure(error, now, {
+          event: "departure_dispatch_failed",
+          level: "error",
+          message: "departure dispatch tick failed",
+        }),
+      );
 
       const reconciledChanges = reconciled
         ? reconciled.created + reconciled.refreshed + reconciled.cancelled
@@ -213,7 +215,12 @@ export async function tickDeparture(now = new Date()): Promise<void> {
             recomputed.withoutTraffic +
             recomputed.expired >
             0) ||
-        (dispatched && dispatched.sent + dispatched.expired > 0)
+        (dispatched &&
+          dispatched.sent +
+            dispatched.expired +
+            dispatched.failed +
+            dispatched.cancelled >
+            0)
       ) {
         logger.info(
           {
@@ -221,9 +228,11 @@ export async function tickDeparture(now = new Date()): Promise<void> {
             planned: reconciled?.created ?? 0,
             refreshed: reconciled?.refreshed ?? 0,
             cancelled: reconciled?.cancelled ?? 0,
+            cancelledDeletedAccount: dispatched?.cancelled ?? 0,
             withTraffic: recomputed?.withTraffic ?? 0,
             withoutTraffic: recomputed?.withoutTraffic ?? 0,
             sent: dispatched?.sent ?? 0,
+            failed: dispatched?.failed ?? 0,
             expired: (recomputed?.expired ?? 0) + (dispatched?.expired ?? 0),
           },
           "departure tick",
@@ -235,10 +244,6 @@ export async function tickDeparture(now = new Date()): Promise<void> {
   })();
   activeTick = tick;
   await tick;
-}
-
-function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : "unknown";
 }
 
 export function startDepartureCron(): void {
