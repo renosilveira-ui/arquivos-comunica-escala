@@ -53,3 +53,26 @@ export function buildShiftTimestamps(
   if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1);
   return [startAt, endAt];
 }
+
+/** "YYYY-MM-DD" no relógio do hospital. */
+export function toHospitalISODate(date: Date | string): string {
+  const w = asWallClock(toDate(date));
+  const month = String(w.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(w.getUTCDate()).padStart(2, "0");
+  return `${w.getUTCFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Combina "YYYY-MM-DD" com "HH:mm" no fuso do hospital.
+ *
+ * Diferente de `buildShiftTimestamps`, aceita datas de início e fim
+ * independentes e não deduz virada de dia — o formulário de edição tem as
+ * duas datas explícitas e valida a ordem por conta própria.
+ */
+export function hospitalDateTime(date: string, time: string): Date {
+  const [hour = "00", minute = "00"] = time.split(":");
+  return new Date(
+    `${date}T${hour.padStart(2, "0")}:${minute.padStart(2, "0")}` +
+      `:00${HOSPITAL_TIME_ZONE_OFFSET}`,
+  );
+}
