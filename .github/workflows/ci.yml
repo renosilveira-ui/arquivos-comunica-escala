@@ -25,10 +25,9 @@ jobs:
 
     services:
       mysql:
-        # Patch fixo: os manifestos das migrations manuais comparam
-        # CHECK_CLAUSE com a serialização exata que o catálogo devolve, e essa
-        # serialização varia entre patches do MySQL. Subir o patch exige reler
-        # o catálogo e reescrever os literais.
+        # Patch fixo: o manifesto das migrations compara CHECK_CLAUSE com a
+        # serialização exata do catálogo, que varia entre patches do MySQL.
+        # Subir o patch exige reler o catálogo e reescrever os literais.
         image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: root
@@ -52,6 +51,9 @@ jobs:
       PROFESSIONAL_IDENTITY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       INSTITUTION_FEATURE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       PERSONAL_CALENDAR_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_MIGRATION_TEST_MARKER: ci-schedule-invite-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
       AUTH_RECOVERY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       # Marker opaco por execução: o alvo descartável só é aceito quando o
       # recibo gravado no schema efêmero casa com este valor, o que impede a
@@ -110,6 +112,12 @@ jobs:
 
       - name: Validate personal calendar foundation migration
         run: pnpm test:personal-calendar-migration
+
+      - name: Validate durable schedule invite migrations
+        # Os testes exigem as duas URLs loopback e o marker acima; ausência,
+        # serviço indisponível ou marker inválido falha a etapa, nunca skipa.
+        # Cada caso cria um schema filho único no MySQL efêmero e não o apaga.
+        run: pnpm test:schedule-invite-migrations
 
       - name: Validate auth recovery requests migration
         run: pnpm test:auth-recovery-migration
