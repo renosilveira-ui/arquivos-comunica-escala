@@ -368,11 +368,6 @@ export default function VacanciesScreen() {
     vacancyDetails: string,
   ) => {
     if (assumeVacancyLockRef.current) return;
-    console.log("[Vacancies] handleAssumeVacancy called", {
-      vacancyId,
-      vacancyDetails,
-    });
-
     if (!professional?.id) {
       feedback.error(
         "Seu cadastro de profissional não foi encontrado. Fale com o gestor.",
@@ -392,10 +387,7 @@ export default function VacanciesScreen() {
     const confirmed = await confirmAction(
       `Assumir vaga: ${vacancyDetails}?\n\nAguardará aprovação do gestor.`,
     );
-    console.log("[Vacancies] confirmAction result:", confirmed);
-
     if (!confirmed) {
-      console.log("[Vacancies] User cancelled");
       return;
     }
 
@@ -406,7 +398,6 @@ export default function VacanciesScreen() {
     assumeVacancyLockRef.current = true;
     setAssumeVacancyBusy(true);
     setAssumeVacancyId(vacancyId);
-    console.log("[Vacancies] Calling assumeVacancyMutation.mutate");
     try {
       await assumeVacancyMutation.mutateAsync({
         shiftInstanceId: vacancyId,
