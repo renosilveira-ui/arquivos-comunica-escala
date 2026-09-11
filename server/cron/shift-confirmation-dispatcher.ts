@@ -79,6 +79,12 @@ function isDuplicateEntry(error: unknown): boolean {
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
 
 let running = false;
+/**
+ * O tick em andamento, para o shutdown esperar. Sem isto, o SIGTERM do
+ * deploy cortava a escalação entre o CAS do recheck e o outbox — o timer
+ * sumia e ninguém era avisado.
+ */
+let activeTick: Promise<void> | null = null;
 
 /**
  * Falhas consecutivas por etapa, para a espera crescente.
@@ -151,53 +157,68 @@ async function runStep(
   }
 }
 
-export async function tick(now: Date = new Date()) {
+/**
+ * Devolve a MESMA promise do trabalho em andamento (não um wrapper): é o que
+ * `stopConfirmationCron` entrega ao shutdown, e um tick concorrente recebe
+ * a mesma, em vez de disparar um segundo processamento.
+ */
+export function tick(now: Date = new Date()): Promise<void> {
   // Ticks concorrentes (tick longo + setInterval) processavam a mesma
   // confirmação duas vezes.
-  if (running) return;
+  if (running) return activeTick ?? Promise.resolve();
   running = true;
-  try {
-    // 1. Discovery due-based: catch-up de assignment tardio, swap,
-    // publicação tardia e restart. Idempotente (unique assignment_id).
-    await runStep("dispatchConfirmations", now, () =>
-      dispatchConfirmations(now),
-    );
+  let work!: Promise<void>;
+  work = (async () => {
+    try {
+      await runTickSteps(now);
+    } finally {
+      running = false;
+      if (activeTick === work) activeTick = null;
+    }
+  })();
+  activeTick = work;
+  return work;
+}
 
-    // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
-    // depois: se o CAS perder para uma decisão humana, a autoridade de status
-    // do outbox suprime o alerta obsoleto antes da rede.
-    await runStep("processRechecks", now, () => processRechecks(now));
+async function runTickSteps(now: Date): Promise<void> {
+  // 1. Discovery due-based: catch-up de assignment tardio, swap,
+  // publicação tardia e restart. Idempotente (unique assignment_id).
+  await runStep("dispatchConfirmations", now, () =>
+    dispatchConfirmations(now),
+  );
 
-    // 2b. Terminal: o plantão terminou e ninguém respondeu. Encerra sem
-    // aviso — decisão do PO (12/09/2026). É também o caminho que descarta as
-    // pendências antigas na primeira rodada após o deploy.
-    await runStep("expireStaleConfirmations", now, () =>
-      expireStaleConfirmations(now),
-    );
+  // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
+  // depois: se o CAS perder para uma decisão humana, a autoridade de status
+  // do outbox suprime o alerta obsoleto antes da rede.
+  await runStep("processRechecks", now, () => processRechecks(now));
 
-    // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
-    // lease/CAS próprio; indisponibilidade externa não pode atrasar a
-    // escalação local de confirmações. Isolados entre si: um provedor fora do
-    // ar não pode levar os outros dois junto.
-    await Promise.all([
-      runStep("processPendingPushDeliveries", now, () =>
-        processPendingPushDeliveries(now),
-      ),
-      runStep("processPendingDutySyncs", now, () =>
-        processPendingDutySyncs(now),
-      ),
-      runStep("processPendingComunicaPlusOutbox", now, () =>
-        processPendingComunicaPlusOutbox(now),
-      ),
-    ]);
+  // 2b. Terminal: o plantão terminou e ninguém respondeu. Encerra sem
+  // aviso — decisão do PO (12/09/2026). É também o caminho que descarta as
+  // pendências antigas na primeira rodada após o deploy.
+  await runStep("expireStaleConfirmations", now, () =>
+    expireStaleConfirmations(now),
+  );
 
-    // 4. Push de início de plantão (confirmados cujo plantão começou agora)
-    await runStep("processShiftStartPushes", now, () =>
-      processShiftStartPushes(now),
-    );
-  } finally {
-    running = false;
-  }
+  // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
+  // lease/CAS próprio; indisponibilidade externa não pode atrasar a
+  // escalação local de confirmações. Isolados entre si: um provedor fora do
+  // ar não pode levar os outros dois junto.
+  await Promise.all([
+    runStep("processPendingPushDeliveries", now, () =>
+      processPendingPushDeliveries(now),
+    ),
+    runStep("processPendingDutySyncs", now, () =>
+      processPendingDutySyncs(now),
+    ),
+    runStep("processPendingComunicaPlusOutbox", now, () =>
+      processPendingComunicaPlusOutbox(now),
+    ),
+  ]);
+
+  // 4. Push de início de plantão (confirmados cujo plantão começou agora)
+  await runStep("processShiftStartPushes", now, () =>
+    processShiftStartPushes(now),
+  );
 }
 
 // ── Push de início de plantão ───────────────────────────────────────────────
@@ -859,12 +880,32 @@ export async function processRechecks(now: Date) {
       );
       continue;
     }
-    if (
-      escalation.managerCount === 0 ||
-      escalation.intentCount !== escalation.managerCount
-    ) {
-      console.error(
-        `[ConfirmationCron] Confirmação ${conf.id} mantém recheck: ${escalation.intentCount}/${escalation.managerCount} alertas persistidos`,
+    if (escalation.managerCount === 0) {
+      // Ninguém para avisar: nem gestor de escopo, nem GESTOR_PLUS da
+      // instituição, nem admin global. O recheck fica de pé (o próximo tick
+      // tenta de novo), e o evento estruturado é o que um alerta de
+      // observabilidade consegue capturar — texto solto no console não.
+      logger.error(
+        {
+          event: "confirmation_escalation_no_manager",
+          confirmationId: conf.id,
+          institutionId: conf.institutionId,
+          shiftInstanceId: conf.shiftInstanceId,
+        },
+        "[ConfirmationCron] no eligible manager for escalation; recheck kept",
+      );
+      continue;
+    }
+    if (escalation.intentCount !== escalation.managerCount) {
+      logger.error(
+        {
+          event: "confirmation_escalation_partial",
+          confirmationId: conf.id,
+          institutionId: conf.institutionId,
+          intentCount: escalation.intentCount,
+          managerCount: escalation.managerCount,
+        },
+        "[ConfirmationCron] escalation intents not fully persisted; recheck kept",
       );
       continue;
     }
@@ -1153,10 +1194,12 @@ export function startConfirmationCron() {
   }, 60_000);
 }
 
-export function stopConfirmationCron() {
+/** Para o timer e devolve o tick em andamento, para o shutdown drenar. */
+export function stopConfirmationCron(): Promise<void> {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
     console.log("[ConfirmationCron] Stopped");
   }
+  return activeTick ?? Promise.resolve();
 }

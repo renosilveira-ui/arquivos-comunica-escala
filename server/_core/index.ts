@@ -311,8 +311,11 @@ async function startServer() {
     server,
     logger,
     onBeforeExit: async () => {
+      // O tick de confirmação pode estar no meio de uma escalação: drenar
+      // evita cortar a etapa entre o CAS do recheck e o outbox.
+      let confirmationDrain = Promise.resolve();
       try {
-        stopConfirmationCron();
+        confirmationDrain = stopConfirmationCron();
       } catch (err) {
         logger.error(
           safeErrorDiagnostic(err, "application"),
@@ -374,6 +377,14 @@ async function startServer() {
         logger.error(
           safeErrorDiagnostic(err, "application"),
           "stopWhatsAppNlDriver failed",
+        );
+      }
+      try {
+        await confirmationDrain;
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopConfirmationCron drain failed",
         );
       }
       try {
