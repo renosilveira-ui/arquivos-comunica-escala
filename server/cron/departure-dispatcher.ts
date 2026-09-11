@@ -22,11 +22,11 @@ import { enqueueTrackedPushNotification } from "../push-delivery";
  * recálculo venceu e planos cuja hora de saída chegou. Um médico sem
  * preferência ligada não gera trabalho nenhum.
  *
- * **Limite operacional conhecido**: no plano free do Render o processo dorme
- * após 15 minutos sem tráfego, e com ele some este `setInterval`. A fila em
- * `departure_plans` sobrevive — nada se perde — mas o aviso pode atrasar até
- * o próximo acesso acordar a instância. Cobertura 24/7 exige instância
- * sempre-on ou Cron do Render, que são decisões de custo do PO. Ver
+ * **Plano do Render**: desde 10/09/2026 o staging está em instância sempre
+ * ligada (`1c-2g`), e este `setInterval` roda contínuo. Num plano que dorme
+ * (free), o processo pararia após 15 minutos sem tráfego e o timer com ele;
+ * a fila em `departure_plans` sobreviveria — nada se perde — mas o aviso
+ * atrasaria até o próximo acesso acordar a instância. Ver
  * docs/operations/departure-alerts.md.
  */
 

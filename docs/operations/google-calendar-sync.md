@@ -58,10 +58,11 @@ compromisso duas vezes na própria conta.
 
 ## Limites conhecidos
 
-- **Render free**: o processo dorme após 15 min sem tráfego, e com ele o
-  `setInterval`. Nada se perde; o próximo acesso acorda a instância e a
-  varredura retoma pelos mais atrasados. Cobertura contínua exige instância
-  sempre-on (decisão de custo do PO — ver `docs/operations/scaling.md`).
+- **Plano do Render**: o `escalas-staging` está no plano `1c-2g` (1 CPU,
+  2 GB), instância sempre ligada, desde 10/09/2026 — o worker roda contínuo.
+  Num plano que dorme (free), o processo pararia após 15 min sem tráfego e o
+  `setInterval` com ele; nada se perderia, e o próximo acesso retomaria a
+  varredura pelos mais atrasados.
 - Fuso para datas civis: o da primeira instituição da pessoa; sem vínculo,
   o padrão do sistema. O botão usa o fuso do aparelho.
 

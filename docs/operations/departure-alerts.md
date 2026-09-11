@@ -52,9 +52,10 @@ virar promessa na tela do médico.
 
 ## 3. Por que fila persistida, e não `setTimeout`
 
-No plano free do Render o processo dorme após 15 minutos sem tráfego, e com
-ele morre qualquer timer. Um `setTimeout` de 8 horas simplesmente não existe
-depois disso.
+Um processo pode reiniciar a qualquer momento (deploy, falha, troca de
+instância) e, no plano free do Render, dormia após 15 minutos sem tráfego —
+com ele morre qualquer timer. Um `setTimeout` de 8 horas simplesmente não
+existe depois disso. A fila persistida vale para qualquer plano.
 
 `departure_plans` é a fila. Cada fase é idempotente e separada:
 
@@ -157,7 +158,13 @@ hospital localizado e outra sem.
   configuração.
 - O fuso de cada plantão vem do hospital, com a instituição como padrão.
 
-## 8. Limite operacional — precisa de decisão do PO
+## 8. Limite operacional — decidido em 10/09/2026
+
+**Atualização (12/09/2026):** o PO tirou o `escalas-staging` do plano free em
+10/09. O serviço está no plano `1c-2g` (1 CPU, 2 GB), instância sempre
+ligada: o `setInterval` do worker roda contínuo e o cenário abaixo deixou de
+se aplicar ao staging. Fica registrado porque vale para qualquer ambiente
+que volte a um plano que dorme.
 
 **No plano free do Render, o processo dorme após 15 minutos sem tráfego e o
 `setInterval` do worker some com ele.**
