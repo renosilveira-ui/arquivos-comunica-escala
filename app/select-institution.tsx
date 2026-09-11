@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Building2, Check } from "lucide-react-native";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { trpc } from "@/lib/trpc";
 import { useTenantState } from "@/lib/tenant-state";
@@ -13,7 +14,13 @@ export default function SelectInstitutionScreen() {
   const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
   const [isSubmitting, setIsSubmitting] = useState<number | null>(null);
 
-  const { data: institutions, isLoading } = trpc.professionals.listMyInstitutions.useQuery();
+  const {
+    data: institutions,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = trpc.professionals.listMyInstitutions.useQuery();
 
   const orderedInstitutions = useMemo(() => {
     return [...(institutions ?? [])].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
@@ -91,7 +98,17 @@ export default function SelectInstitutionScreen() {
               );
             })}
 
-            {(orderedInstitutions?.length ?? 0) === 0 && (
+            {isError && (
+              <QueryErrorState
+                title="Não foi possível carregar suas instituições"
+                error={error}
+                onRetry={() => {
+                  void refetch();
+                }}
+              />
+            )}
+
+            {!isError && (orderedInstitutions?.length ?? 0) === 0 && (
               <View className="rounded-xl border border-slate-200 bg-white p-4">
                 <Text style={{ color: theme.palette.neutral[700], fontWeight: "600" }}>Nenhuma instituição ativa</Text>
                 <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
