@@ -16,7 +16,13 @@ CREATE TEMPORARY TABLE _personal_calendar_contract_expected (
   table_name VARCHAR(64) NOT NULL,
   contract_hash CHAR(64) NOT NULL,
   PRIMARY KEY (table_name)
-) ENGINE=MEMORY;
+)
+-- InnoDB, não MEMORY: MySQL gerenciado (DigitalOcean, entre outros) desabilita
+-- o engine MEMORY, e a migração inteira abortava em
+-- "Storage engine MEMORY is disabled" antes de criar qualquer tabela. É só
+-- rascunho de sessão com cinco linhas — o engine é irrelevante para o que ela
+-- faz, e relevante para ela poder rodar onde precisa rodar.
+ENGINE=InnoDB;
 
 INSERT INTO _personal_calendar_contract_expected (table_name, contract_hash) VALUES
   ('personal_calendar_alert_rules', '44d17140775069cad145849f6888e21ef158b981e41e3386f2769f14623eafb8'),
