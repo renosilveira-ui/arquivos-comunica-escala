@@ -1,10 +1,6 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
-import {
-  professionalInstitutions,
-  userExternalCredentials,
-  users,
-} from "../../drizzle/schema";
+import { userExternalCredentials, users } from "../../drizzle/schema";
 import {
   EXTERNAL_LINK_STATES,
   EXTERNAL_PROVIDERS,
@@ -25,10 +21,7 @@ import {
   isDueForSync,
 } from "../integrations/google/sync-policy";
 import type { ExternalCalendarProvider } from "../integrations/providers/calendar-provider";
-import {
-  readInstitutionTimeZone,
-  resolveScheduleTimeZone,
-} from "../institution-time-zone";
+import { resolveUserTimeZone } from "../institution-time-zone";
 
 /**
  * Sincronização automática com o Google Agenda.
@@ -69,7 +62,14 @@ const GOOGLE_SYNC_BATCH = 10;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let activeTick: Promise<void> | null = null;
 let acceptingTicks = false;
-let dormantForMissingSchema = false;
+/**
+ * Sem as tabelas (migração manual ainda não aplicada), o worker pausa e
+ * volta a tentar sozinho. A migração é aplicada fora do deploy; exigir um
+ * restart para reativar o worker deixava a sincronização parada sem que
+ * ninguém percebesse.
+ */
+const SCHEMA_REPROBE_INTERVAL_MS = 10 * 60_000;
+let schemaDormantUntilMs = 0;
 let warnedNotConfigured = false;
 const lastAttemptAtMs = new Map<number, number>();
 
@@ -84,7 +84,7 @@ function errorName(error: unknown): string {
 
 /** Somente para teste: esquece tentativas e reabilita o worker. */
 export function resetGoogleCalendarSyncState(): void {
-  dormantForMissingSchema = false;
+  schemaDormantUntilMs = 0;
   warnedNotConfigured = false;
   lastAttemptAtMs.clear();
 }
@@ -100,6 +100,10 @@ type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 /**
  * Candidatas do tick: as mais atrasadas primeiro. O filtro fino (backoff e
  * tentativa recente) é aplicado em memória, por `isDueForSync`.
+ *
+ * Conta excluída (soft-delete) fica de fora mesmo que a credencial ainda
+ * exista: a finalidade acabou, e usar o token dela seria tratar como viva
+ * uma conta que o usuário encerrou.
  */
 export async function selectGoogleSyncCandidates(
   db: Db,
@@ -122,6 +126,7 @@ export async function selectGoogleSyncCandidates(
       consecutiveFailureCount: userExternalCredentials.consecutiveFailureCount,
     })
     .from(userExternalCredentials)
+    .innerJoin(users, eq(users.id, userExternalCredentials.userId))
     .where(
       and(
         eq(userExternalCredentials.provider, EXTERNAL_PROVIDERS.googleCalendar),
@@ -133,34 +138,11 @@ export async function selectGoogleSyncCandidates(
           isNull(userExternalCredentials.lastSyncedAt),
           lte(userExternalCredentials.lastSyncedAt, staleBefore),
         ),
+        isNull(users.deletedAt),
       ),
     )
     .orderBy(asc(userExternalCredentials.lastSyncedAt))
     .limit(limit);
-}
-
-/**
- * Fuso da conta para datas civis dos compromissos: o da instituição
- * principal da pessoa (ou a primeira ativa); sem vínculo, o padrão do
- * sistema. O botão usa o fuso do aparelho; aqui não há aparelho.
- */
-async function resolveUserTimeZone(db: Db, userId: number): Promise<string> {
-  const [row] = await db
-    .select({ institutionId: professionalInstitutions.institutionId })
-    .from(professionalInstitutions)
-    .where(
-      and(
-        eq(professionalInstitutions.userId, userId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .orderBy(
-      desc(professionalInstitutions.isPrimary),
-      asc(professionalInstitutions.id),
-    )
-    .limit(1);
-  if (!row) return resolveScheduleTimeZone({});
-  return readInstitutionTimeZone(db, row.institutionId);
 }
 
 export async function tickGoogleCalendarSync(
@@ -168,7 +150,7 @@ export async function tickGoogleCalendarSync(
   deps: GoogleCalendarSyncDeps = {},
 ): Promise<void> {
   if (activeTick) return activeTick;
-  if (dormantForMissingSchema) return;
+  if (now.getTime() < schemaDormantUntilMs) return;
 
   let tick!: Promise<void>;
   tick = (async () => {
@@ -220,7 +202,9 @@ export async function tickGoogleCalendarSync(
           const [user] = await db
             .select({ sessionVersion: users.sessionVersion })
             .from(users)
-            .where(eq(users.id, candidate.userId))
+            .where(
+              and(eq(users.id, candidate.userId), isNull(users.deletedAt)),
+            )
             .limit(1);
           if (!user) {
             skipped += 1;
@@ -273,10 +257,13 @@ export async function tickGoogleCalendarSync(
       }
     } catch (error) {
       if (isMissingSchema(error)) {
-        dormantForMissingSchema = true;
+        schemaDormantUntilMs = now.getTime() + SCHEMA_REPROBE_INTERVAL_MS;
         logger.warn(
-          { event: "google_sync_schema_missing" },
-          "google sync tables absent; worker dormant until the manual migration runs",
+          {
+            event: "google_sync_schema_missing",
+            retryInSeconds: SCHEMA_REPROBE_INTERVAL_MS / 1000,
+          },
+          "google sync tables absent; worker pauses and retries after the manual migration runs",
         );
         return;
       }

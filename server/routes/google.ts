@@ -9,8 +9,11 @@ import {
   consumeGoogleAuthorizationState,
   exchangeGoogleAuthorizationCode,
   readGoogleOAuthConfig,
+  revokeGoogleToken,
   type GoogleOAuthReturnTarget,
 } from "../integrations/google/oauth";
+import { canCreateDedicatedCalendar } from "../integrations/providers/calendar-provider";
+import { resolveUserTimeZone } from "../institution-time-zone";
 
 /**
  * Callback do OAuth do Google.
@@ -149,14 +152,47 @@ googleRouter.get(CALLBACK_PATH, async (req: Request, res: Response) => {
     return;
   }
 
+  // Sem o escopo de criação de calendário não existe "conectado": o vínculo
+  // nasceria sem calendário e o primeiro sync o degradaria. Recusar agora,
+  // devolvendo a autorização ao Google, deixa claro que é preciso
+  // autorizar de novo com a agenda marcada.
+  if (!canCreateDedicatedCalendar(grant.value.grantedScopes)) {
+    logger.warn(
+      { event: "google_oauth_scope_missing", userId: consumed.userId },
+      "google authorization lacks the calendar scope; link refused",
+    );
+    if (grant.value.refreshToken) {
+      try {
+        await revokeGoogleToken({ refreshToken: grant.value.refreshToken });
+      } catch {
+        // Melhor esforço: o token nunca foi gravado aqui.
+      }
+    }
+    finish(res, target, "denied");
+    return;
+  }
+
   try {
     // Cria o calendário dedicado já no vínculo: o primeiro sync encontra
     // tudo pronto, e o usuário vê "Escala+" na conta dele imediatamente.
     const provider = createGoogleCalendarProvider(config);
+    const timeZone = await resolveUserTimeZone(db, consumed.userId);
     const calendar = await provider.ensureDedicatedCalendar({
       accessToken: grant.value.accessToken,
-      timeZone: "America/Sao_Paulo",
+      timeZone,
     });
+    if (!calendar.ok) {
+      // Escopo presente, Google indisponível: o vínculo vale, e o primeiro
+      // sync cria o calendário (`ensureCalendar`, em sync.ts).
+      logger.warn(
+        {
+          event: "google_oauth_calendar_deferred",
+          userId: consumed.userId,
+          reason: calendar.reason,
+        },
+        "dedicated calendar not created at link time; first sync retries",
+      );
+    }
 
     await persistGoogleAuthorization({
       db,
