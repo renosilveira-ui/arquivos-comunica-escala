@@ -346,6 +346,50 @@ export async function withGoogleAccessToken<T>(input: {
  * revogação falhar, ainda temos o token para tentar de novo. Apagar primeiro
  * deixaria a autorização viva na conta do usuário sem ninguém para revogá-la.
  */
+export type GoogleRefreshTokenForRevocation = {
+  token: string | null;
+  /**
+   * `none`: não há vínculo ou não há token guardado. `ready`: token aberto,
+   * pronto para revogar. `unreadable`: há envelope, mas não abre (rotação de
+   * chave incompleta, adulteração) — a linha vai ser apagada sem revogar, e
+   * isso precisa ficar visível na auditoria em vez de parecer "sem vínculo".
+   */
+  state: "none" | "ready" | "unreadable";
+};
+
+/**
+ * Abre o refresh token guardado. Só leitura, sem rede — serve tanto para
+ * desconectar quanto para a exclusão de conta, que apaga a linha dentro da
+ * transação e só chama o Google depois do commit (uma chamada de rede dentro
+ * da transação seguraria os locks do usuário pelo timeout HTTP inteiro).
+ */
+export async function readGoogleRefreshTokenForRevocation(
+  // Só `select`: o chamador pode estar dentro de uma transação, que não
+  // carrega o `$client` do pool.
+  db: Pick<LinkDb, "select">,
+  userId: number,
+): Promise<GoogleRefreshTokenForRevocation> {
+  const [row] = await db
+    .select({ sealed: userExternalCredentials.sealedRefreshToken })
+    .from(userExternalCredentials)
+    .where(
+      and(
+        eq(userExternalCredentials.userId, userId),
+        eq(userExternalCredentials.provider, PROVIDER),
+      ),
+    )
+    .limit(1);
+  if (!row?.sealed) return { token: null, state: "none" };
+  try {
+    return {
+      token: openExternalCredential(row.sealed, binding(userId)),
+      state: "ready",
+    };
+  } catch {
+    return { token: null, state: "unreadable" };
+  }
+}
+
 export async function disconnectGoogleLink(input: {
   db: LinkDb;
   userId: number;
@@ -353,32 +397,23 @@ export async function disconnectGoogleLink(input: {
   now?: Date;
 }): Promise<{ revoked: boolean }> {
   const now = input.now ?? new Date();
-  const [row] = await input.db
-    .select({ sealed: userExternalCredentials.sealedRefreshToken })
-    .from(userExternalCredentials)
-    .where(
-      and(
-        eq(userExternalCredentials.userId, input.userId),
-        eq(userExternalCredentials.provider, PROVIDER),
-      ),
-    )
-    .limit(1);
+  const credential = await readGoogleRefreshTokenForRevocation(
+    input.db,
+    input.userId,
+  );
 
   let revoked = false;
-  if (row?.sealed) {
+  if (credential.token) {
     try {
-      const refreshToken = openExternalCredential(
-        row.sealed,
-        binding(input.userId),
-      );
-      const result = await input.revoke(refreshToken);
+      const result = await input.revoke(credential.token);
       revoked = result.ok;
     } catch {
-      // Sem token legível não há o que revogar; seguimos para a limpeza —
-      // deixar a linha de pé seria pior.
+      // Revogação falhou; seguimos para a limpeza — deixar a linha de pé
+      // seria pior.
       revoked = false;
     }
   }
+  // Sem token legível não há o que revogar; a limpeza abaixo vale igual.
 
   await input.db
     .update(userExternalCredentials)
