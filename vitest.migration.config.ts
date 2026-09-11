@@ -20,6 +20,7 @@ export default defineConfig({
       "tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
       "tests/auth-recovery-migration-mysql.test.ts",
       "tests/core-schema-reproducibility-migration-mysql.test.ts",
+      "tests/push-token-provenance-v2-migration-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,
