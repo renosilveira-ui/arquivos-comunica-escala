@@ -14,7 +14,10 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { ChevronLeft, Shield } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTimeRange,
+} from "@/lib/hospital-time";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,7 +123,12 @@ export default function ApproveSwapsScreen() {
 
   const formatDate = (iso: string) => {
     const d = new Date(iso);
-    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+    return formatHospitalDateLong(d, {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   const formatShiftTime = (startIso: string, endIso: string) =>

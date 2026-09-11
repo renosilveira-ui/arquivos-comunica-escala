@@ -2,6 +2,7 @@ import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView, TextInput 
 import { useState, useMemo } from "react";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { formatHospitalDateLong } from "@/lib/hospital-time";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
@@ -70,11 +71,11 @@ function formatRelative(date: Date): string {
   if (diffHr < 24) return `há ${diffHr}h`;
   const diffDay = Math.round(diffHr / 24);
   if (diffDay < 7) return `há ${diffDay}d`;
-  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+  return formatHospitalDateLong(date, { day: "2-digit", month: "short" });
 }
 
 function formatAbsolute(date: Date): string {
-  return date.toLocaleString("pt-BR", {
+  return formatHospitalDateLong(date, {
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -297,7 +298,10 @@ function AuditCard({ row }: { row: any }) {
   const toName = row.to?.name as string | undefined;
   const shiftLabel = row.shift?.label as string | undefined;
   const shiftStart = row.shift?.startAt
-    ? new Date(row.shift.startAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
+    ? formatHospitalDateLong(row.shift.startAt, {
+        day: "2-digit",
+        month: "short",
+      })
     : null;
   const hospitalName = row.location?.hospitalName as string | undefined;
   const sectorName = row.location?.sectorName as string | undefined;

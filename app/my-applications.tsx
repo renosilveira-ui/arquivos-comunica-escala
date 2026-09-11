@@ -7,7 +7,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle, CalendarClock } from "lucide-react-native";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTimeRange,
+} from "@/lib/hospital-time";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
   canDisplayOperationalListCount,
@@ -64,7 +67,11 @@ const VACANCY_STATUS_LABEL: Record<VacancyRequestStatus, string> = {
 };
 
 function formatDate(d: Date): string {
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" });
+  return formatHospitalDateLong(d, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function formatTimeRange(start: Date, end: Date): string {

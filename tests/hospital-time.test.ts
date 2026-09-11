@@ -22,6 +22,30 @@ const HOSPITAL_TIME_UI = [
 ] as const;
 
 /**
+ * Telas que mostram data/hora vinda do SERVIDOR mas não necessariamente
+ * formatam hora de plantão: aqui a guarda só proíbe os padrões que leem o
+ * relógio do aparelho, sem exigir `formatHospitalTime`.
+ *
+ * Quatro arquivos ficam de fora DE PROPÓSITO, porque misturam instante do
+ * servidor com data de calendário LOCAL — e a local está certa:
+ *   app/(tabs)/pending.tsx        chips de dia (quickDates + toLocalISODateString)
+ *   app/create-shift.tsx          rótulo do mês do calendário
+ *   components/shift-filters.tsx  data escolhida no date picker
+ *   app/google-calendar.tsx       "última sincronização", que não é plantão
+ * Os instantes de plantão DESSES arquivos foram corrigidos mesmo assim; o que
+ * não dá é blindar o arquivo inteiro por regex sem proibir a data local junto.
+ */
+const HOSPITAL_DATE_UI = [
+  "app/my-offers.tsx",
+  "app/my-applications.tsx",
+  "app/approve-swaps.tsx",
+  "app/request-swap.tsx",
+  "app/schedule-invites.tsx",
+  "app/audit-log.tsx",
+  "components/swaps/AvailableSwapsList.tsx",
+] as const;
+
+/**
  * Dívida NOMEADA, não furo desconhecido: a Agenda ainda deriva "hoje" e "esta
  * semana" do relógio do aparelho (`startOfWeekMon`). As outras 6 chamadas da
  * função recebem datas de grade já locais por construção e estão corretas, então
@@ -100,6 +124,10 @@ describe("hospital-time", () => {
     for (const file of HOSPITAL_TIME_UI) {
       const source = readFileSync(file, "utf8");
       expect(source, file).toMatch(/formatHospitalTime(Range)?/);
+    }
+
+    for (const file of [...HOSPITAL_TIME_UI, ...HOSPITAL_DATE_UI]) {
+      const source = readFileSync(file, "utf8");
       expect(source, file).not.toContain("toLocaleTimeString");
       expect(source, file).not.toMatch(/\.getHours\s*\(/);
       // Sem `timeZone`, estas lêem o fuso do aparelho: perto da meia-noite a

@@ -10,6 +10,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { AppButton } from "@/components/ui/AppButton";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { formatHospitalDateLong } from "@/lib/hospital-time";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
@@ -347,7 +348,13 @@ export default function ScheduleInvitesScreen() {
             >
               {invite.redeemedCount >= invite.maxRedemptions
                 ? "Já utilizado"
-                : `Válido até ${new Date(invite.expiresAt).toLocaleString("pt-BR")}`}
+                : `Válido até ${formatHospitalDateLong(invite.expiresAt, {
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`}
             </Text>
             {invite.redeemedCount < invite.maxRedemptions ? (
               <AppButton
