@@ -16,7 +16,7 @@
 | Stores públicas | `production` | Não faz parte deste procedimento | Exige decisão e revisão próprias |
 
 O perfil `preview` usa `distribution: "internal"`, Android APK e
-`EXPO_PUBLIC_API_URL=https://escalas-staging.onrender.com`. No iOS ele é uma
+`EXPO_PUBLIC_API_URL=https://app.comunicamais-escala.com.br`. No iOS ele é uma
 distribuição ad hoc: o UDID do aparelho precisa estar no provisioning profile.
 Ele **não** é elegível a TestFlight, Transporter nem `eas submit`.
 

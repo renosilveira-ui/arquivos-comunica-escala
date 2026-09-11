@@ -26,7 +26,13 @@ services:
     # Cron cobrado). Não criar type: cron aqui sem aprovação de custo —
     # ver docs/operations/confirmation-coverage.md.
     plan: free
-    region: oregon
+    # Virginia desde 12/09/2026: o banco (DigitalOcean) fica em Nova York e a
+    # latência servidor→banco caiu de 78 ms para 8 ms. Endereço público:
+    # app.comunicamais-escala.com.br (CNAME para o subdomínio onrender do
+    # serviço). Mudar região no Render = criar serviço novo; o antigo em
+    # Oregon (escalas-staging.onrender.com) fica ligado até a build do app
+    # apontar para o domínio novo.
+    region: virginia
     branch: main
     buildCommand: pnpm install --frozen-lockfile && pnpm build:all
     # Node direto, sem passar pelo pnpm: numa instância free (0,1 CPU) o
@@ -145,7 +151,7 @@ services:
       - key: MAIL_FROM
         value: "Escala+ <suportec@comunicamais-escala.com.br>"
       - key: APP_PUBLIC_URL
-        value: https://escalas-staging.onrender.com
+        value: https://app.comunicamais-escala.com.br
       # Chave AES-GCM dedicada. Rotação: mover a atual para PREVIOUS, criar
       # nova CURRENT/KID e só remover PREVIOUS após a retenção do runbook.
       - key: AUTH_RECOVERY_ENCRYPTION_CURRENT_KID

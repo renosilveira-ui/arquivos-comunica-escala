@@ -20,7 +20,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://app.comunicamais-escala.com.br"
       },
       "autoIncrement": true
     },
@@ -33,7 +33,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://app.comunicamais-escala.com.br"
       },
       "autoIncrement": true
     }
