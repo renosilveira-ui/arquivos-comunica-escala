@@ -54,6 +54,10 @@ import {
   stopDepartureCron,
 } from "../cron/departure-dispatcher";
 import {
+  startGoogleCalendarSyncCron,
+  stopGoogleCalendarSyncCron,
+} from "../cron/google-calendar-sync-dispatcher";
+import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
@@ -293,6 +297,7 @@ async function startServer() {
     startConfirmationCron();
     startAuthRecoveryCron();
     startDepartureCron();
+    startGoogleCalendarSyncCron();
     startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
@@ -338,6 +343,17 @@ async function startServer() {
           "stopDepartureCron failed",
         );
       }
+      // A sincronização com o Google pode estar no meio de uma conta:
+      // drenar evita registrar "sincronizado" sem ter terminado.
+      let googleSyncDrain = Promise.resolve();
+      try {
+        googleSyncDrain = stopGoogleCalendarSyncCron();
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopGoogleCalendarSyncCron failed",
+        );
+      }
       try {
         stopWhatsAppNlDriver();
       } catch (err) {
@@ -360,6 +376,14 @@ async function startServer() {
         logger.error(
           safeErrorDiagnostic(err, "application"),
           "stopDepartureCron failed",
+        );
+      }
+      try {
+        await googleSyncDrain;
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopGoogleCalendarSyncCron failed",
         );
       }
       try {

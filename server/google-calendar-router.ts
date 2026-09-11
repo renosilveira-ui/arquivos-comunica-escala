@@ -9,7 +9,6 @@ import {
 } from "../lib/integration-providers";
 import { router, sessionProcedure } from "./_core/trpc";
 import { canCreateDedicatedCalendar } from "./integrations/providers/calendar-provider";
-import { runGoogleCalendarImport } from "./integrations/google/import";
 import { getDb } from "./db";
 import { googleCalendarConfiguration } from "./integrations/providers/configuration";
 import { createGoogleCalendarProvider } from "./integrations/google/calendar-client";
@@ -24,9 +23,9 @@ import {
   startGoogleAuthorization,
 } from "./integrations/google/oauth";
 import {
-  pullGoogleCalendarChanges,
-  runGoogleCalendarExport,
-} from "./integrations/google/sync";
+  runGoogleFullSync,
+  summarizeGoogleFullSync,
+} from "./integrations/google/full-sync";
 
 /**
  * Vínculo da conta com o Google Agenda.
@@ -183,34 +182,7 @@ export const googleCalendarRouter = router({
       const db = await requireDb();
       const provider = createGoogleCalendarProvider(config);
 
-      const exported = await runGoogleCalendarExport({
-        db,
-        userId: ctx.user.id,
-        config,
-        provider,
-        timeZone: input.timeZone,
-      });
-      if (!exported.ok) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            exported.reason === "AUTH_REJECTED"
-              ? "O Google precisa autorizar o calendário Escala+. Toque em Reconectar."
-              : "O Google não respondeu agora. Tentaremos de novo em instantes.",
-        });
-      }
-
-      const pulled = await pullGoogleCalendarChanges({
-        db,
-        userId: ctx.user.id,
-        config,
-        provider,
-      });
-
-      // Google → Escala+: compromissos do calendário principal. Falha aqui
-      // não desfaz a exportação que já saiu; vira contagem zero e o vínculo
-      // registra o motivo.
-      const imported = await runGoogleCalendarImport({
+      const result = await runGoogleFullSync({
         db,
         userId: ctx.user.id,
         expectedSessionVersion: ctx.user.sessionVersion,
@@ -218,18 +190,15 @@ export const googleCalendarRouter = router({
         provider,
         timeZone: input.timeZone,
       });
-
-      return {
-        created: exported.value.created,
-        updated: exported.value.updated,
-        deleted: exported.value.deleted,
-        unchanged: exported.value.unchanged,
-        considered: exported.value.considered,
-        resynced: pulled.ok ? pulled.value.resynced : false,
-        importedCreated: imported.ok ? imported.value.created : 0,
-        importedUpdated: imported.ok ? imported.value.updated : 0,
-        importedRemoved: imported.ok ? imported.value.removed : 0,
-        importOk: imported.ok,
-      };
+      if (!result.exported.ok) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            result.exported.reason === "AUTH_REJECTED"
+              ? "O Google precisa autorizar o calendário Escala+. Toque em Reconectar."
+              : "O Google não respondeu agora. Tentaremos de novo em instantes.",
+        });
+      }
+      return summarizeGoogleFullSync(result);
     }),
 });
