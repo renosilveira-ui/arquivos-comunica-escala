@@ -10,6 +10,7 @@ import {
   shiftInstances,
 } from "../drizzle/schema";
 import { PROVIDER_CONFIGURATION_STATES } from "../lib/integration-providers";
+import { logger } from "./_core/logger";
 import { router, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { readDeparturePreferences, readTravelOrigin } from "./departure-engine";
@@ -221,7 +222,16 @@ export const weatherRouter = router({
 
       const now = new Date();
       const location = await resolveUserLocation(db, ctx.user.id, now);
-      if (!location) return unavailable;
+      if (!location) {
+        // Sem endereço cadastrado, sem plantão futuro e sem hospital
+        // localizado. É o caso mais provável num sistema recém-configurado, e
+        // sem esta linha ele é indistinguível de "a Apple recusou".
+        logger.info(
+          { event: "weather_greeting_no_location" },
+          "weather greeting has no location to ask about",
+        );
+        return unavailable;
+      }
 
       const coarse = coarsenGeoPoint(location.point);
       const key = cacheKey(coarse);
@@ -242,7 +252,19 @@ export const weatherRouter = router({
         atUtc: now,
         timeZone: location.timeZone,
       });
-      if (!forecast.ok) return unavailable;
+      if (!forecast.ok) {
+        // Motivo classificado pelo provedor — nunca corpo de resposta, nunca
+        // credencial. Sem isto, uma chave errada e um médico sem endereço
+        // produzem exatamente a mesma tela, e o diagnóstico vira adivinhação.
+        logger.warn(
+          {
+            event: "weather_greeting_provider_failed",
+            reason: forecast.reason,
+          },
+          "weather provider refused the greeting forecast",
+        );
+        return unavailable;
+      }
 
       cache.set(key, {
         at: now.getTime(),
@@ -251,6 +273,11 @@ export const weatherRouter = router({
         attribution: forecast.value.attribution,
       });
 
+      logger.info(
+        { event: "weather_greeting_served" },
+        "weather greeting served from provider",
+      );
+
       return {
         available: true as const,
         configured: true,
@@ -258,8 +285,16 @@ export const weatherRouter = router({
         temperatureCelsius: forecast.value.temperatureCelsius,
         attribution: forecast.value.attribution,
       };
-    } catch {
-      // Nenhuma falha de clima chega à tela como erro.
+    } catch (error) {
+      // Nenhuma falha de clima chega à tela como erro — mas some do log
+      // seria trocar um defeito visível por um invisível.
+      logger.warn(
+        {
+          event: "weather_greeting_failed",
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+        "weather greeting failed",
+      );
       return unavailable;
     }
   }),
