@@ -34,12 +34,16 @@ import {
   authRecoveryRequests,
   userExternalCredentials,
   externalCalendarEventLinks,
+  googleOauthStates,
+  personalCalendarExternalLinks,
+  personalCalendarImportCursors,
   userTravelOrigins,
   userDeparturePreferences,
   departurePlans,
   whatsappInboundMessages,
   whatsappPendingIntents,
 } from "../drizzle/schema";
+import { createHash } from "node:crypto";
 import {
   EXTERNAL_PROVIDERS,
   TRAVEL_ORIGIN_SEAL_SCOPE,
@@ -351,6 +355,15 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     await db
       .delete(externalCalendarEventLinks)
       .where(inArray(externalCalendarEventLinks.userId, ids));
+    await db
+      .delete(personalCalendarExternalLinks)
+      .where(inArray(personalCalendarExternalLinks.ownerUserId, ids));
+    await db
+      .delete(personalCalendarImportCursors)
+      .where(inArray(personalCalendarImportCursors.ownerUserId, ids));
+    await db
+      .delete(googleOauthStates)
+      .where(inArray(googleOauthStates.userId, ids));
     await db
       .delete(userExternalCredentials)
       .where(inArray(userExternalCredentials.userId, ids));
@@ -1529,6 +1542,36 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       noticeAt: new Date(Date.now() + 3_600_000),
       dedupKey: `departure-a3-${STAMP}`,
     });
+    // Agenda pessoal importada do Google: vínculo do item, cursor e state
+    // OAuth pendente. O vínculo é filho do item (CASCADE): a limpeza precisa
+    // contá-lo ANTES de apagar o item, senão a auditoria diz zero.
+    const [personalItem] = await db
+      .select({ id: personalCalendarItems.id })
+      .from(personalCalendarItems)
+      .where(eq(personalCalendarItems.ownerUserId, userIds.leaving))
+      .limit(1);
+    expect(personalItem).toBeDefined();
+    await db.insert(personalCalendarExternalLinks).values({
+      ownerUserId: userIds.leaving,
+      itemId: personalItem!.id,
+      provider: EXTERNAL_PROVIDERS.googleCalendar,
+      externalCalendarId: "primary",
+      externalEventId: `imp-a3-${STAMP}`,
+    });
+    await db.insert(personalCalendarImportCursors).values({
+      ownerUserId: userIds.leaving,
+      provider: EXTERNAL_PROVIDERS.googleCalendar,
+      externalCalendarId: "primary",
+      syncCursor: "sync-a3",
+    });
+    await db.insert(googleOauthStates).values({
+      userId: userIds.leaving,
+      stateHash: createHash("sha256").update(`state-a3-${STAMP}`).digest("hex"),
+      sealedCodeVerifier: "sealed-verifier",
+      encryptionKid: "current",
+      returnTarget: "WEB",
+      expiresAt: new Date(Date.now() + 600_000),
+    });
     const [inbound] = await db
       .insert(whatsappInboundMessages)
       .values({
@@ -1572,6 +1615,9 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     for (const [table, column] of [
       [userExternalCredentials, userExternalCredentials.userId],
       [externalCalendarEventLinks, externalCalendarEventLinks.userId],
+      [googleOauthStates, googleOauthStates.userId],
+      [personalCalendarExternalLinks, personalCalendarExternalLinks.ownerUserId],
+      [personalCalendarImportCursors, personalCalendarImportCursors.ownerUserId],
       [userTravelOrigins, userTravelOrigins.userId],
       [userDeparturePreferences, userDeparturePreferences.userId],
       [departurePlans, departurePlans.userId],
@@ -1584,6 +1630,18 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
           .where(eq(column, userIds.leaving)),
       ).resolves.toHaveLength(0);
     }
+    // Mensagem recebida fica como registro do canal, mas desvinculada e sem
+    // conteúdo — o que a FK SET NULL faria numa exclusão física.
+    const [inboundAfter] = await db
+      .select({
+        userId: whatsappInboundMessages.userId,
+        operationalText: whatsappInboundMessages.operationalText,
+        payloadClearedAt: whatsappInboundMessages.payloadClearedAt,
+      })
+      .from(whatsappInboundMessages)
+      .where(eq(whatsappInboundMessages.id, inbound.id));
+    expect(inboundAfter).toMatchObject({ userId: null, operationalText: null });
+    expect(inboundAfter?.payloadClearedAt).not.toBeNull();
     expect(revokeGoogleToken).toHaveBeenCalledTimes(1);
     expect(revokeGoogleToken).toHaveBeenCalledWith({
       refreshToken: `refresh-a3-${STAMP}`,
@@ -1656,14 +1714,21 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       );
     expect(deleteAudit?.metadata).toMatchObject({
       revokedPushTokenCount: 1,
-      googleTokenPendingRevocation: true,
+      googleCredential: "ready",
       externalDataPurged: {
         externalCredentials: 1,
         calendarEventLinks: 1,
+        oauthStates: 1,
+        importedCalendarLinks: 1,
+        importCursors: 1,
+        personalCalendarItems: 1,
         travelOrigins: 1,
         departurePreferences: 1,
         departurePlans: 1,
         whatsappPendingIntents: 1,
+        whatsappInboundMessagesUnlinked: 1,
+        operationalEmailTrust: 0,
+        operationalEmailVerificationTokens: 0,
       },
     });
 

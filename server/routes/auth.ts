@@ -13,23 +13,17 @@ import {
   professionalAccess,
   medicalSpecialties,
   passwordResets,
-  personalCalendarItems,
-  personalCalendarExternalLinks,
-  personalCalendarImportCursors,
   shiftAssignmentsV2,
   shiftInstances,
   userContactChannels,
   authRecoveryRequests,
-  userExternalCredentials,
-  externalCalendarEventLinks,
-  googleOauthStates,
-  userTravelOrigins,
-  userDeparturePreferences,
-  departurePlans,
-  whatsappPendingIntents,
   type User,
 } from "../../drizzle/schema";
-import { readGoogleRefreshTokenForRevocation } from "../integrations/google/link-service";
+import { purgeUserOwnedData } from "../account-data-purge";
+import {
+  readGoogleRefreshTokenForRevocation,
+  type GoogleRefreshTokenForRevocation,
+} from "../integrations/google/link-service";
 import { revokeGoogleToken } from "../integrations/google/oauth";
 import {
   AuthenticationInfrastructureError,
@@ -1517,7 +1511,10 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
   // Sai da transação para ser revogado no Google DEPOIS do commit: a chamada
   // de rede não pode segurar os locks da exclusão, e um Google fora do ar não
   // pode impedir a conta de ser excluída.
-  let googleRefreshTokenToRevoke: string | null = null;
+  let googleCredential: GoogleRefreshTokenForRevocation = {
+    token: null,
+    state: "none",
+  };
 
   try {
     await withPushAccountMutex(
@@ -1881,75 +1878,22 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
               }
             }
 
-            // Agenda pessoal é privada e account-wide. Como a exclusão da conta
-            // é um soft-delete do usuário, a FK não executaria CASCADE sozinha;
-            // remove o agregado inteiro dentro da mesma transação antes de
-            // anonimizar a identidade.
-            await tx
-              .delete(personalCalendarItems)
-              .where(eq(personalCalendarItems.ownerUserId, lockedUser.id));
-
-            // Integrações externas e deslocamento seguem a mesma regra: o
-            // soft-delete do usuário não dispara o CASCADE dessas tabelas, e
-            // sem esta limpeza o refresh token do Google continuaria válido,
-            // o worker de sincronização continuaria usando a conta excluída
-            // e a coordenada residencial ficaria guardada (LGPD: finalidade
-            // encerrada = dado eliminado).
-            googleRefreshTokenToRevoke =
-              await readGoogleRefreshTokenForRevocation(tx, lockedUser.id);
-            const externalDataPurged = {
-              externalCredentials: affectedRows(
-                await tx
-                  .delete(userExternalCredentials)
-                  .where(eq(userExternalCredentials.userId, lockedUser.id)),
-              ),
-              calendarEventLinks: affectedRows(
-                await tx
-                  .delete(externalCalendarEventLinks)
-                  .where(eq(externalCalendarEventLinks.userId, lockedUser.id)),
-              ),
-              importedCalendarLinks: affectedRows(
-                await tx
-                  .delete(personalCalendarExternalLinks)
-                  .where(
-                    eq(personalCalendarExternalLinks.ownerUserId, lockedUser.id),
-                  ),
-              ),
-              importCursors: affectedRows(
-                await tx
-                  .delete(personalCalendarImportCursors)
-                  .where(
-                    eq(personalCalendarImportCursors.ownerUserId, lockedUser.id),
-                  ),
-              ),
-              oauthStates: affectedRows(
-                await tx
-                  .delete(googleOauthStates)
-                  .where(eq(googleOauthStates.userId, lockedUser.id)),
-              ),
-              // Planos antes das origens: a FK do plano para a origem é
-              // SET NULL, mas apagar na ordem natural dispensa depender dela.
-              departurePlans: affectedRows(
-                await tx
-                  .delete(departurePlans)
-                  .where(eq(departurePlans.userId, lockedUser.id)),
-              ),
-              departurePreferences: affectedRows(
-                await tx
-                  .delete(userDeparturePreferences)
-                  .where(eq(userDeparturePreferences.userId, lockedUser.id)),
-              ),
-              travelOrigins: affectedRows(
-                await tx
-                  .delete(userTravelOrigins)
-                  .where(eq(userTravelOrigins.userId, lockedUser.id)),
-              ),
-              whatsappPendingIntents: affectedRows(
-                await tx
-                  .delete(whatsappPendingIntents)
-                  .where(eq(whatsappPendingIntents.userId, lockedUser.id)),
-              ),
-            };
+            // Dados que pertencem à pessoa e somem com a conta (agenda
+            // pessoal, Google, deslocamento, WhatsApp). O soft-delete do
+            // usuário não dispara CASCADE nenhum; a lista única está em
+            // server/account-data-purge.ts, e um teste garante que toda FK
+            // para `users` tem decisão lá (LGPD: finalidade encerrada = dado
+            // eliminado). O token do Google é lido antes de a linha sumir,
+            // para ser revogado depois do commit.
+            googleCredential = await readGoogleRefreshTokenForRevocation(
+              tx,
+              lockedUser.id,
+            );
+            const externalDataPurged = await purgeUserOwnedData(
+              tx,
+              lockedUser.id,
+              now,
+            );
             const nextSessionVersion = lockedUser.sessionVersion + 1;
             const updateResult = await tx
               .update(users)
@@ -2015,8 +1959,7 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
                   sessionVersionAfter: nextSessionVersion,
                   revokedPushTokenCount,
                   externalDataPurged,
-                  googleTokenPendingRevocation:
-                    googleRefreshTokenToRevoke !== null,
+                  googleCredential: googleCredential.state,
                 },
                 institutionId: auditInstitutionId,
               },
@@ -2040,25 +1983,31 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // A credencial já saiu do banco no commit. A revogação no Google é o
-  // melhor esforço que fecha a autorização do lado dele; se falhar, o token
+  // A credencial já saiu do banco no commit. A revogação no Google é melhor
+  // esforço e NÃO segura a resposta: a exclusão já está feita, e um Google
+  // lento não pode virar quinze segundos de espera no app. Se falhar, o token
   // não existe mais aqui e o usuário ainda pode revogar na conta Google.
-  if (googleRefreshTokenToRevoke) {
-    try {
-      const revocation = await revokeGoogleToken({
-        refreshToken: googleRefreshTokenToRevoke,
-      });
-      if (!revocation.ok) {
+  if (googleCredential.token) {
+    void revokeGoogleToken({ refreshToken: googleCredential.token })
+      .then((revocation) => {
+        if (!revocation.ok) {
+          console.warn(
+            "[delete-account] Revogação no Google não confirmada",
+            JSON.stringify({ userId: authUser.id, reason: revocation.reason }),
+          );
+        }
+      })
+      .catch((error) => {
         console.warn(
-          `[delete-account] Revogação no Google não confirmada userId=${authUser.id} reason=${revocation.reason}`,
+          "[delete-account] Revogação no Google falhou",
+          safeErrorDiagnostic(error, "network"),
         );
-      }
-    } catch (error) {
-      console.warn(
-        "[delete-account] Revogação no Google falhou",
-        safeErrorDiagnostic(error, "network"),
-      );
-    }
+      });
+  } else if (googleCredential.state === "unreadable") {
+    console.warn(
+      "[delete-account] Credencial Google ilegível: apagada sem revogar",
+      JSON.stringify({ userId: authUser.id }),
+    );
   }
 
   // O commit já tornou toda sessão antiga inválida por sessionVersion. A
