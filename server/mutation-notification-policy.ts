@@ -148,6 +148,42 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  /**
+   * Vincular, desvincular e sincronizar o Google Agenda são atos da PRÓPRIA
+   * conta sobre uma integração dela. Ninguém mais precisa saber, e notificar
+   * o gestor sobre o calendário pessoal do médico seria vazar hábito privado
+   * sob aparência de transparência operacional.
+   *
+   * O resultado já chega ao usuário de forma síncrona, na tela que ele está
+   * olhando — um push seria redundante com o que ele acabou de fazer.
+   */
+  "googleCalendar.disconnect": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário desvincula a conta do Google",
+        audience: [],
+      },
+    ],
+  },
+  "googleCalendar.startLink": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário inicia a autorização do Google",
+        audience: [],
+      },
+    ],
+  },
+  "googleCalendar.syncNow": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário pede sincronização manual",
+        audience: [],
+      },
+    ],
+  },
   "personalCalendar.createItem": {
     targets: [
       {

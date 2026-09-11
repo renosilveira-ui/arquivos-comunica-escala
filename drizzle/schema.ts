@@ -3563,6 +3563,150 @@ export const userTravelOrigins = mysqlTable(
   }),
 );
 
+/**
+ * Estado de uma autorização OAuth em andamento (Google Agenda).
+ *
+ * Existe porque o fluxo atravessa o navegador do usuário e volta: entre o
+ * "Conectar" e o callback, o servidor precisa lembrar quem pediu, com qual
+ * `code_verifier` do PKCE, e recusar qualquer callback que não corresponda.
+ *
+ * Três propriedades que o banco garante:
+ *
+ * - `state` é ÚNICO e de uso único. O hash entra em `UNIQUE`, e o consumo é
+ *   um UPDATE condicional: dois callbacks com o mesmo state, só o primeiro
+ *   vale. É o que impede replay e CSRF de autorização.
+ * - o `code_verifier` nunca é gravado em claro — sem ele, quem lesse a
+ *   tabela poderia completar a troca de código no lugar do usuário.
+ * - `expires_at` é curto. Um state esquecido não vira porta aberta.
+ *
+ * Account-wide: não existe `institution_id` aqui. Vincular o Google é ato da
+ * conta, não do tenant ativo.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-google-calendar-link.sql
+ */
+export const googleOauthStates = mysqlTable(
+  "google_oauth_states",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    stateHash: char("state_hash", { length: 64 }).notNull(),
+    sealedCodeVerifier: text("sealed_code_verifier").notNull(),
+    encryptionKid: varchar("encryption_kid", { length: 32 }).notNull(),
+    /** Destino pós-callback, sempre de uma allowlist. Nunca URL do cliente. */
+    returnTarget: varchar("return_target", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqGoogleOauthState: unique("uniq_google_oauth_state").on(table.stateHash),
+    idxGoogleOauthStateSweep: index("idx_google_oauth_state_sweep").on(
+      table.expiresAt,
+    ),
+    idxGoogleOauthStateUser: index("idx_google_oauth_state_user").on(
+      table.userId,
+      table.consumedAt,
+    ),
+    fkGoogleOauthStateUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_google_oauth_state_user",
+    }).onDelete("cascade"),
+    /**
+     * Espelha a migration. Sem declarar aqui, a CI (que monta o banco pelo
+     * schema) ficaria sem a trava que impede gravar uma URL arbitrária como
+     * destino de retorno — e o teste que passa na CI deixaria de provar o
+     * que roda em produção.
+     */
+    chkGoogleOauthStateTarget: check(
+      "chk_google_oauth_state_target",
+      sql`${table.returnTarget} IN ('WEB', 'MOBILE')`,
+    ),
+  }),
+);
+
+/**
+ * Espelho local de um evento que este sistema mantém no calendário externo.
+ *
+ * Sem ele não há como saber o que é NOSSO e o que é do usuário — e o
+ * consumidor de mudanças reescreveria a própria escala a cada eco do Google.
+ * Guarda também o `etag`, que é o que permite edição condicional: se o evento
+ * mudou no provedor, a escrita é recusada em vez de sobrescrever em silêncio.
+ *
+ * `source_kind` separa as duas autoridades:
+ * - `PERSONAL_ITEM`: espelho bidirecional de um compromisso da conta.
+ * - `DUTY_ASSIGNMENT`: exportação read-only de um plantão. Editar no Google
+ *   NUNCA volta para a escala.
+ *
+ * Migração: drizzle/migrations/manual/2026-09-11-google-calendar-link.sql
+ */
+export const externalCalendarEventLinks = mysqlTable(
+  "external_calendar_event_links",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    externalCalendarId: varchar("external_calendar_id", {
+      length: 255,
+    }).notNull(),
+    externalEventId: varchar("external_event_id", { length: 255 }).notNull(),
+    sourceKind: mysqlEnum("source_kind", [
+      "PERSONAL_ITEM",
+      "DUTY_ASSIGNMENT",
+    ]).notNull(),
+    /** `personal_calendar_items.id` ou `shift_assignments_v2.id`. */
+    sourceId: int("source_id").notNull(),
+    /** Chave da ocorrência, para série recorrente. */
+    occurrenceKey: varchar("occurrence_key", { length: 64 }),
+    /**
+     * Sentinela para a unicidade da origem.
+     *
+     * `UNIQUE` com NULL não restringe: o MySQL considera cada NULL distinto,
+     * e plantão tem `occurrence_key` NULL — dois ciclos concorrentes criariam
+     * DOIS eventos no Google para o mesmo plantão. Colapsar NULL em string
+     * vazia faz a chave valer de verdade.
+     */
+    occurrenceSlot: varchar("occurrence_slot", {
+      length: 64,
+    }).generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`COALESCE(\`occurrence_key\`, '')`,
+      { mode: "stored" },
+    ),
+    externalEtag: varchar("external_etag", { length: 255 }),
+    /** Assinatura do conteúdo enviado; evita reescrever o que não mudou. */
+    contentFingerprint: char("content_fingerprint", { length: 64 }),
+    lastPushedAt: timestamp("last_pushed_at"),
+    deletedAt: timestamp("deleted_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqExternalCalendarEvent: unique("uniq_external_calendar_event").on(
+      table.userId,
+      table.provider,
+      table.externalCalendarId,
+      table.externalEventId,
+    ),
+    uniqExternalCalendarSource: unique("uniq_external_calendar_source").on(
+      table.userId,
+      table.provider,
+      table.sourceKind,
+      table.sourceId,
+      table.occurrenceSlot,
+    ),
+    idxExternalCalendarUserSweep: index("idx_external_calendar_user_sweep").on(
+      table.userId,
+      table.provider,
+      table.deletedAt,
+    ),
+    fkExternalCalendarEventUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_external_calendar_event_user",
+    }).onDelete("cascade"),
+  }),
+);
+
 // ========================================
 // RELATIONS (Multi-Tenant Hierarchy)
 // ========================================

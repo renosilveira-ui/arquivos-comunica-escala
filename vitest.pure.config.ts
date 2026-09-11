@@ -203,6 +203,7 @@ export default defineConfig({
       "tests/external-integrations-migration.test.ts",
       "tests/boot-configuration-diagnostics.test.ts",
       "tests/personal-calendar-view.test.ts",
+      "tests/google-calendar-oauth.test.ts",
     ],
     env: {
       NODE_ENV: "test",

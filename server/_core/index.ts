@@ -12,6 +12,7 @@ import { twilioWhatsAppRouter } from "../routes/twilio-whatsapp";
 import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { privacyRouter } from "../routes/privacy";
+import { googleRouter } from "../routes/google";
 import { ssoRouter } from "../sso/router";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -174,6 +175,9 @@ async function startServer() {
     authRouter,
   );
   app.use("/api/admin", adminRouter);
+  // Callback do OAuth do Google. Público por natureza: a autoridade vem do
+  // `state` de uso único, não do cookie de sessão.
+  app.use(googleRouter);
   // Página pública da Política de Privacidade (App Store + LGPD)
   app.use(privacyRouter);
   app.use("/.well-known", ssoRouter);

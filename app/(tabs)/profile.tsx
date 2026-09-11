@@ -40,6 +40,7 @@ import {
   Bell,
   Building2,
   CalendarHeart,
+  CalendarSync,
   History,
   Inbox,
   KeyRound,
@@ -610,6 +611,13 @@ export default function ProfileScreen() {
                 Icon={CalendarHeart}
                 onPress={go("/personal-calendar")}
                 accessibilityLabel="Abrir minha agenda de compromissos"
+              />
+              <ListRow
+                title="Google Agenda"
+                subtitle="Seus plantões e compromissos no calendário do Google"
+                Icon={CalendarSync}
+                onPress={go("/google-calendar")}
+                accessibilityLabel="Vincular ou gerenciar o Google Agenda"
               />
               <ListRow
                 title="Alterar senha"
