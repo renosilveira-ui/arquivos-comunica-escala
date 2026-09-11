@@ -6,6 +6,7 @@ import {
   assertProductionSecrets,
   collectExternalIntegrationWarnings,
   collectProductionSecretIssues,
+  describeExternalIntegrations,
 } from "../server/_core/env-validation";
 
 const bootSource = readFileSync(
@@ -152,5 +153,76 @@ describe("diagnóstico de boot em produção", () => {
     expect(bootSource).toContain("configurationIssues");
     expect(bootSource).toContain('errorCategory: "configuration"');
     expect(bootSource).toContain("collectExternalIntegrationWarnings");
+  });
+});
+
+/**
+ * O aviso de integração só fala quando a configuração está pela METADE. Um
+ * provedor de chave única — Google Maps — nunca fica pela metade, então sua
+ * ausência era invisível de fora: descobrir se a chave estava lá exigia
+ * adivinhar. Adivinhar sobre configuração foi o que custou 3h16 de staging.
+ */
+describe("estado das integrações no boot", () => {
+  const KEYS = [
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "GOOGLE_MAPS_API_KEY",
+    "WEATHERKIT_TEAM_ID",
+    "WEATHERKIT_SERVICE_ID",
+    "WEATHERKIT_KEY_ID",
+    "WEATHERKIT_PRIVATE_KEY",
+  ] as const;
+
+  function envWithout(...omit: string[]): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { NODE_ENV: "production" };
+    for (const key of KEYS) {
+      if (omit.includes(key)) continue;
+      env[key] =
+        key === "WEATHERKIT_PRIVATE_KEY"
+          ? "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----"
+          : key === "GOOGLE_OAUTH_REDIRECT_URI"
+            ? "https://exemplo.test/api/integrations/google/callback"
+            : "valor";
+    }
+    return env;
+  }
+
+  it("relata um estado por provedor, e nenhum valor", () => {
+    const summary = describeExternalIntegrations(envWithout());
+    const providers = Object.keys(summary).sort();
+    expect(providers.length).toBeGreaterThanOrEqual(3);
+    for (const state of Object.values(summary)) {
+      expect(state).toMatch(/^(CONFIGURED|NOT_CONFIGURED|MISCONFIGURED)$/);
+    }
+    // Nenhum valor de variável pode vazar para o resumo.
+    expect(JSON.stringify(summary)).not.toContain("valor");
+    expect(JSON.stringify(summary)).not.toContain("BEGIN PRIVATE KEY");
+  });
+
+  /** O caso que motivou existir: chave única ausente, antes invisível. */
+  it("torna visível a ausência de um provedor de chave única", () => {
+    const comMaps = describeExternalIntegrations(envWithout());
+    const semMaps = describeExternalIntegrations(
+      envWithout("GOOGLE_MAPS_API_KEY"),
+    );
+    const provider = Object.keys(comMaps).find(
+      (k) => comMaps[k] !== semMaps[k],
+    );
+    expect(provider, "a diferença precisa aparecer").toBeTruthy();
+    expect(semMaps[provider!]).toBe("NOT_CONFIGURED");
+    expect(comMaps[provider!]).toBe("CONFIGURED");
+    // E o aviso de "pela metade" continua calado nesse caso — por isso o
+    // resumo precisa existir.
+    expect(
+      collectExternalIntegrationWarnings(
+        envWithout("GOOGLE_MAPS_API_KEY"),
+      ).join(" "),
+    ).not.toContain("GOOGLE_MAPS_API_KEY");
+  });
+
+  it("o boot registra o resumo", () => {
+    expect(bootSource).toContain("describeExternalIntegrations");
+    expect(bootSource).toContain("external_integrations");
   });
 });

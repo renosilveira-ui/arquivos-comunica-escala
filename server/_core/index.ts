@@ -22,6 +22,7 @@ import {
   ProductionBootError,
   assertProductionSecrets,
   collectExternalIntegrationWarnings,
+  describeExternalIntegrations,
 } from "./env-validation";
 import { logger } from "./logger";
 import { safeErrorDiagnostic } from "./safe-error";
@@ -81,6 +82,17 @@ async function startServer() {
   // provedor indisponível. Mas precisa aparecer no boot, nomeando a
   // variável: silêncio aqui é o que transforma uma configuração esquecida em
   // "por que o médico não recebe o aviso?" duas semanas depois.
+  // Estado de TODAS as integrações, sempre — não só das que estão pela
+  // metade. Provedor de chave única (Google Maps) nunca fica "pela metade",
+  // então sua ausência era invisível de fora, e descobrir exigia adivinhar.
+  logger.info(
+    {
+      event: "external_integrations",
+      providers: describeExternalIntegrations(),
+    },
+    "external integrations state",
+  );
+
   const integrationWarnings = collectExternalIntegrationWarnings();
   if (integrationWarnings.length > 0) {
     logger.warn(
