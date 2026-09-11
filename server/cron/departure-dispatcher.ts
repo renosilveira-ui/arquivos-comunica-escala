@@ -46,7 +46,7 @@ let reconcileCursor = 0;
 let lastReconcileAtMs = 0;
 let activeTick: Promise<void> | null = null;
 let acceptingTicks = false;
-let dormantForMissingSchema = false;
+let schemaDormantUntilMs = 0;
 
 /**
  * A migração manual é aplicada FORA do deploy (o deploy não roda migração).
@@ -54,9 +54,11 @@ let dormantForMissingSchema = false;
  * existem — a cada 60 segundos, para sempre, enchendo o log de ruído que
  * esconde erro de verdade.
  *
- * Ao ver `ER_NO_SUCH_TABLE` ele registra UMA vez e adormece. O próximo boot,
- * já com a migração aplicada, volta a trabalhar normalmente.
+ * Ao ver `ER_NO_SUCH_TABLE` ele registra e pausa por dez minutos; depois
+ * tenta de novo sozinho. Dormir até o próximo boot deixava o aviso parado
+ * depois da migração sem que ninguém percebesse.
  */
+const SCHEMA_REPROBE_INTERVAL_MS = 10 * 60_000;
 function isMissingSchema(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
@@ -65,7 +67,7 @@ function isMissingSchema(error: unknown): boolean {
 
 /** Somente para teste: reabilita o worker adormecido. */
 export function resetDepartureDormancy(): void {
-  dormantForMissingSchema = false;
+  schemaDormantUntilMs = 0;
   reconcileCursor = 0;
   lastReconcileAtMs = 0;
 }
@@ -117,7 +119,7 @@ export async function tickDeparture(now = new Date()): Promise<void> {
   if (!acceptingTicks) return;
   if (activeTick) return activeTick;
 
-  if (dormantForMissingSchema) return;
+  if (now.getTime() < schemaDormantUntilMs) return;
 
   let tick!: Promise<void>;
   tick = (async () => {
@@ -137,10 +139,13 @@ export async function tickDeparture(now = new Date()): Promise<void> {
           afterUserId: reconcileCursor,
         }).catch((error) => {
           if (isMissingSchema(error)) {
-            dormantForMissingSchema = true;
+            schemaDormantUntilMs = now.getTime() + SCHEMA_REPROBE_INTERVAL_MS;
             logger.warn(
-              { event: "departure_schema_missing" },
-              "departure tables absent; worker dormant until the manual migration runs",
+              {
+              event: "departure_schema_missing",
+              retryInSeconds: SCHEMA_REPROBE_INTERVAL_MS / 1000,
+            },
+              "departure tables absent; worker pauses and retries after the manual migration runs",
             );
             return null;
           }
@@ -153,7 +158,7 @@ export async function tickDeparture(now = new Date()): Promise<void> {
           );
           return null;
         });
-        if (dormantForMissingSchema) return;
+        if (now.getTime() < schemaDormantUntilMs) return;
         if (reconciled) reconcileCursor = reconciled.nextCursor;
       }
 
@@ -167,10 +172,13 @@ export async function tickDeparture(now = new Date()): Promise<void> {
         now,
       }).catch((error) => {
         if (isMissingSchema(error)) {
-          dormantForMissingSchema = true;
+          schemaDormantUntilMs = now.getTime() + SCHEMA_REPROBE_INTERVAL_MS;
           logger.warn(
-            { event: "departure_schema_missing" },
-            "departure tables absent; worker dormant until the manual migration runs",
+            {
+              event: "departure_schema_missing",
+              retryInSeconds: SCHEMA_REPROBE_INTERVAL_MS / 1000,
+            },
+            "departure tables absent; worker pauses and retries after the manual migration runs",
           );
           return null;
         }
@@ -181,7 +189,7 @@ export async function tickDeparture(now = new Date()): Promise<void> {
         return null;
       });
 
-      if (dormantForMissingSchema) return;
+      if (now.getTime() < schemaDormantUntilMs) return;
 
       const dispatched = await dispatchDueDepartures({
         db,
@@ -189,10 +197,13 @@ export async function tickDeparture(now = new Date()): Promise<void> {
         now,
       }).catch((error) => {
         if (isMissingSchema(error)) {
-          dormantForMissingSchema = true;
+          schemaDormantUntilMs = now.getTime() + SCHEMA_REPROBE_INTERVAL_MS;
           logger.warn(
-            { event: "departure_schema_missing" },
-            "departure tables absent; worker dormant until the manual migration runs",
+            {
+              event: "departure_schema_missing",
+              retryInSeconds: SCHEMA_REPROBE_INTERVAL_MS / 1000,
+            },
+            "departure tables absent; worker pauses and retries after the manual migration runs",
           );
           return null;
         }
@@ -213,17 +224,24 @@ export async function tickDeparture(now = new Date()): Promise<void> {
             recomputed.withoutTraffic +
             recomputed.expired >
             0) ||
-        (dispatched && dispatched.sent + dispatched.expired > 0)
+        (dispatched &&
+          dispatched.sent +
+            dispatched.expired +
+            dispatched.failed +
+            dispatched.cancelled >
+            0)
       ) {
         logger.info(
           {
             event: "departure_tick",
             planned: reconciled?.created ?? 0,
             refreshed: reconciled?.refreshed ?? 0,
-            cancelled: reconciled?.cancelled ?? 0,
+            cancelled:
+              (reconciled?.cancelled ?? 0) + (dispatched?.cancelled ?? 0),
             withTraffic: recomputed?.withTraffic ?? 0,
             withoutTraffic: recomputed?.withoutTraffic ?? 0,
             sent: dispatched?.sent ?? 0,
+            failed: dispatched?.failed ?? 0,
             expired: (recomputed?.expired ?? 0) + (dispatched?.expired ?? 0),
           },
           "departure tick",

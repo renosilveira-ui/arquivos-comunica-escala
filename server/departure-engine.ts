@@ -10,6 +10,7 @@ import {
   shiftInstances,
   userDeparturePreferences,
   userTravelOrigins,
+  users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import {
@@ -252,6 +253,10 @@ export async function listUpcomingAssignments(input: {
     .where(
       and(
         eq(professionals.userId, input.userId),
+        // Troca e remoção não apagam a alocação: marcam `is_active = 0`. Sem
+        // este filtro, o médico receberia "hora de sair" para um plantão que
+        // já não é dele — e o plano nunca seria cancelado.
+        eq(shiftAssignmentsV2.isActive, true),
         gt(shiftInstances.startAt, input.now),
         lte(shiftInstances.startAt, until),
       ),
@@ -437,10 +442,18 @@ export async function syncDeparturePlans(input: {
   const now = input.now ?? new Date();
   const summary: SyncPlansSummary = { created: 0, refreshed: 0, cancelled: 0 };
   const preferences = await readDeparturePreferences(input.db, input.userId);
+  // Conta excluída (soft-delete) vale como aviso desligado. A exclusão apaga
+  // estas linhas, mas um plano que sobreviveu a ela não pode virar aviso.
+  const [owner] = await input.db
+    .select({ deletedAt: users.deletedAt })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1);
+  const accountClosed = !owner || owner.deletedAt !== null;
 
   // Desligou o aviso: todo plano aberto some. Manter intenção que o usuário
   // revogou seria guardar o que ele pediu para esquecer.
-  if (!preferences.enabled) {
+  if (!preferences.enabled || accountClosed) {
     const open = await input.db
       .select({ id: departurePlans.id })
       .from(departurePlans)
@@ -930,9 +943,19 @@ export async function recomputeDuePlans(input: {
 export type DispatchSummary = {
   sent: number;
   expired: number;
-  /** Entregas que falharam no transporte; o outbox de push faz o retry. */
+  /** Enfileiramentos que falharam; o plano reabre até o teto de tentativas. */
   failed: number;
+  /** Planos de conta excluída, encerrados sem envio. */
+  cancelled: number;
 };
+
+/**
+ * Tentativas de enfileirar o aviso antes de desistir. O enfileiramento é
+ * idempotente por `dedupKey`, então reabrir o plano não duplica o push; o
+ * teto existe para uma falha permanente (conta sem token, banco recusando)
+ * não virar um aviso reaberto a cada minuto até o plantão começar.
+ */
+export const DEPARTURE_MAX_SEND_ATTEMPTS = 3;
 
 export type DepartureSender = (input: {
   institutionId: number;
@@ -947,9 +970,12 @@ export type DepartureSender = (input: {
 /**
  * Envia os avisos cuja hora chegou.
  *
- * O status vira `SENT` por CAS **antes** do envio: se o push falhar, o plano
- * não é reenviado num loop. Perder um aviso é ruim; mandar cinco é pior —
- * treina o médico a silenciar o app.
+ * O status vira `SENT` por CAS **antes** do envio: dois workers não mandam o
+ * mesmo aviso. Se o enfileiramento falhar, o plano reabre para o próximo
+ * tick — o outbox de push é idempotente por `dedupKey`, então não há
+ * duplicata — até `DEPARTURE_MAX_SEND_ATTEMPTS`; depois fica `SENT` com o
+ * motivo. Perder um aviso é ruim; mandar cinco é pior — treina o médico a
+ * silenciar o app.
  */
 export async function dispatchDueDepartures(input: {
   db: EngineDb;
@@ -958,7 +984,12 @@ export async function dispatchDueDepartures(input: {
   limit?: number;
 }): Promise<DispatchSummary> {
   const now = input.now ?? new Date();
-  const summary: DispatchSummary = { sent: 0, expired: 0, failed: 0 };
+  const summary: DispatchSummary = {
+    sent: 0,
+    expired: 0,
+    failed: 0,
+    cancelled: 0,
+  };
 
   const due = await input.db
     .select({
@@ -970,9 +1001,12 @@ export async function dispatchDueDepartures(input: {
       dedupKey: departurePlans.dedupKey,
       estimatedDurationSeconds: departurePlans.estimatedDurationSeconds,
       weatherSummary: departurePlans.weatherSummary,
+      attemptCount: departurePlans.attemptCount,
       version: departurePlans.version,
+      ownerDeletedAt: users.deletedAt,
     })
     .from(departurePlans)
+    .innerJoin(users, eq(users.id, departurePlans.userId))
     .where(
       and(
         eq(departurePlans.status, "SCHEDULED"),
@@ -983,6 +1017,26 @@ export async function dispatchDueDepartures(input: {
     .limit(input.limit ?? DISPATCH_BATCH_SIZE);
 
   for (const plan of due) {
+    if (plan.ownerDeletedAt) {
+      // Conta excluída: a exclusão apaga os planos, mas um que tenha
+      // sobrevivido não pode virar push para quem encerrou a conta.
+      await input.db
+        .update(departurePlans)
+        .set({
+          status: "CANCELLED",
+          lastFailureReason: "ACCOUNT_DELETED",
+          version: sql`${departurePlans.version} + 1`,
+        })
+        .where(
+          and(
+            eq(departurePlans.id, plan.id),
+            eq(departurePlans.version, plan.version),
+          ),
+        );
+      summary.cancelled += 1;
+      continue;
+    }
+
     if (isNoticeExpired({ noticeAtUtc: plan.noticeAt, now })) {
       // Entregue muito depois, o aviso atrapalha: o médico confere o relógio
       // e conclui que o app está errado.
@@ -1065,13 +1119,31 @@ export async function dispatchDueDepartures(input: {
       summary.sent += 1;
     } catch {
       // Uma entrega que falha não derruba o lote: os outros médicos do mesmo
-      // tick têm plantão hoje também. O plano continua SENT de propósito — o
-      // outbox de push tem retry próprio, e reverter aqui abriria a porta
-      // para o mesmo aviso sair duas vezes.
+      // tick têm plantão hoje também. O que falhou aqui foi o ENFILEIRAMENTO
+      // (nada chegou ao outbox), então reabrir o plano para o próximo tick
+      // não duplica nada — o outbox é idempotente por dedupKey. Esgotado o
+      // teto, o plano fica SENT com o motivo, em vez de reabrir a cada
+      // minuto até o plantão começar.
+      const reopen = plan.attemptCount + 1 < DEPARTURE_MAX_SEND_ATTEMPTS;
       await input.db
         .update(departurePlans)
-        .set({ lastFailureReason: "SEND_FAILED" })
-        .where(eq(departurePlans.id, plan.id));
+        .set(
+          reopen
+            ? {
+                status: "SCHEDULED",
+                sentAt: null,
+                lastFailureReason: "SEND_FAILED",
+                version: sql`${departurePlans.version} + 1`,
+              }
+            : { lastFailureReason: "SEND_FAILED" },
+        )
+        .where(
+          and(
+            eq(departurePlans.id, plan.id),
+            eq(departurePlans.status, "SENT"),
+            eq(departurePlans.version, plan.version + 1),
+          ),
+        );
       summary.failed += 1;
     }
   }
