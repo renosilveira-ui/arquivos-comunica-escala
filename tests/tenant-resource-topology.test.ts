@@ -32,8 +32,14 @@ import {
 } from "../server/cron/shift-confirmation-dispatcher";
 import { confirmationRouter } from "../server/confirmation-router";
 import { appRouter } from "../server/routers";
-import { assertInstitutionHierarchy, resolveInstitutionForUser } from "../server/_core/tenant";
-import { assertManagerScopeAccess, resolveTenantActor } from "../server/_core/policy";
+import {
+  assertInstitutionHierarchy,
+  resolveInstitutionForUser,
+} from "../server/_core/tenant";
+import {
+  assertManagerScopeAccess,
+  resolveTenantActor,
+} from "../server/_core/policy";
 import { getDb } from "../server/db";
 import { dayKeyBrt, mondayOfKey } from "../server/local-time";
 import {
@@ -77,10 +83,27 @@ const queuedPushMock = vi.hoisted(() =>
     providerAccepted: false,
   })),
 );
+const findTrackedByDedupMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ id: number; status: string } | null> => null),
+);
+// A classe precisa ser real: o dispatcher decide por `instanceof`.
+const TrackedIntentCollisionErrorMock = vi.hoisted(
+  () =>
+    class TrackedIntentCollisionError extends Error {
+      readonly dedupKey: string;
+      constructor(dedupKey: string) {
+        super(`Colisão de dedupKey em notificação rastreada: ${dedupKey}`);
+        this.name = "TrackedIntentCollisionError";
+        this.dedupKey = dedupKey;
+      }
+    },
+);
 vi.mock("../server/push-delivery", () => ({
   sendTrackedPushNotification: trackedPushMock,
   enqueueTrackedPushNotification: queuedPushMock,
   processPendingPushDeliveries: vi.fn(async () => 0),
+  findTrackedNotificationByDedupKey: findTrackedByDedupMock,
+  TrackedIntentCollisionError: TrackedIntentCollisionErrorMock,
 }));
 
 type ActorKind = "plus" | "admin";
@@ -130,7 +153,10 @@ describe("hierarquia institution → hospital → sector", () => {
   const userIds: number[] = [];
   const professionalIds: number[] = [];
   const runId = randomUUID().replaceAll("-", "");
-  const cnpjBase = BigInt(`0x${runId.slice(0, 12)}`).toString().slice(-12).padStart(12, "0");
+  const cnpjBase = BigInt(`0x${runId.slice(0, 12)}`)
+    .toString()
+    .slice(-12)
+    .padStart(12, "0");
   const publicationYearMonth = "2030-02";
   const publishYearMonth = publicationYearMonth;
   const lockYearMonth = "2030-04";
@@ -139,7 +165,9 @@ describe("hierarquia institution → hospital → sector", () => {
   const managerFutureLockYearMonth = "2031-11";
   const membershipSourceYearMonth = "2030-08";
   const membershipTargetYearMonth = "2030-09";
-  const publicationStart = new Date(`${publicationYearMonth}-10T07:00:00-03:00`);
+  const publicationStart = new Date(
+    `${publicationYearMonth}-10T07:00:00-03:00`,
+  );
   const publicationEnd = new Date(`${publicationYearMonth}-10T13:00:00-03:00`);
 
   const ctxFor = (kind: ActorKind) => {
@@ -159,8 +187,12 @@ describe("hierarquia institution → hospital → sector", () => {
   };
 
   const shiftsAs = (kind: ActorKind) => shiftsRouter.createCaller(ctxFor(kind));
-  const calendarAs = (kind: ActorKind) => calendarRouter.createCaller(ctxFor(kind));
-  const appAs = (userId: number, role: "doctor" | "manager" | "admin" = "doctor") =>
+  const calendarAs = (kind: ActorKind) =>
+    calendarRouter.createCaller(ctxFor(kind));
+  const appAs = (
+    userId: number,
+    role: "doctor" | "manager" | "admin" = "doctor",
+  ) =>
     appRouter.createCaller({
       user: {
         id: userId,
@@ -172,17 +204,18 @@ describe("hierarquia institution → hospital → sector", () => {
       institutionId: institutionAId,
       allowedInstitutionIds: [institutionAId],
     } as any);
-  const shiftsAsUser = (userId: number) => shiftsRouter.createCaller({
-    user: {
-      id: userId,
-      role: "doctor",
-      name: `Topology reader ${userId}`,
-      email: `topology-reader-${userId}-${runId}@test.local`,
-      sessionVersion: 1,
-    },
-    institutionId: institutionAId,
-    allowedInstitutionIds: [institutionAId],
-  } as any);
+  const shiftsAsUser = (userId: number) =>
+    shiftsRouter.createCaller({
+      user: {
+        id: userId,
+        role: "doctor",
+        name: `Topology reader ${userId}`,
+        email: `topology-reader-${userId}-${runId}@test.local`,
+        sessionVersion: 1,
+      },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId],
+    } as any);
 
   async function createPerson(
     tag: string,
@@ -193,7 +226,12 @@ describe("hierarquia institution → hospital → sector", () => {
     const email = `topology-${tag}-${runId}@test.local`;
     const [user] = await db
       .insert(users)
-      .values({ name: `Topology ${tag}`, email, passwordHash: "test", role: globalRole })
+      .values({
+        name: `Topology ${tag}`,
+        email,
+        passwordHash: "test",
+        role: globalRole,
+      })
       .$returningId();
     const [professional] = await db
       .insert(professionals)
@@ -249,12 +287,18 @@ describe("hierarquia institution → hospital → sector", () => {
 
     const [hospitalA] = await db
       .insert(hospitals)
-      .values({ institutionId: institutionAId, name: `Topology Hospital A ${runId}` })
+      .values({
+        institutionId: institutionAId,
+        name: `Topology Hospital A ${runId}`,
+      })
       .$returningId();
     hospitalAId = hospitalA.id;
     const [hospitalB] = await db
       .insert(hospitals)
-      .values({ institutionId: institutionBId, name: `Topology Hospital B ${runId}` })
+      .values({
+        institutionId: institutionBId,
+        name: `Topology Hospital B ${runId}`,
+      })
       .$returningId();
     hospitalBId = hospitalB.id;
 
@@ -321,18 +365,38 @@ describe("hierarquia institution → hospital → sector", () => {
       .$returningId();
     templateAId = templateA.id;
 
-    const plus = await createPerson("plus", institutionAId, "manager", "GESTOR_PLUS");
+    const plus = await createPerson(
+      "plus",
+      institutionAId,
+      "manager",
+      "GESTOR_PLUS",
+    );
     plusUserId = plus.userId;
     plusProfessionalId = plus.professionalId;
     const admin = await createPerson("admin", institutionAId, "admin", "USER");
     adminUserId = admin.userId;
-    const recipientA = await createPerson("recipient-a", institutionAId, "doctor", "USER");
+    const recipientA = await createPerson(
+      "recipient-a",
+      institutionAId,
+      "doctor",
+      "USER",
+    );
     recipientAUserId = recipientA.userId;
     recipientAProfessionalId = recipientA.professionalId;
-    const recipientA2 = await createPerson("recipient-a2", institutionAId, "doctor", "USER");
+    const recipientA2 = await createPerson(
+      "recipient-a2",
+      institutionAId,
+      "doctor",
+      "USER",
+    );
     recipientA2UserId = recipientA2.userId;
     recipientA2ProfessionalId = recipientA2.professionalId;
-    const recipientB = await createPerson("recipient-b", institutionBId, "doctor", "USER");
+    const recipientB = await createPerson(
+      "recipient-b",
+      institutionBId,
+      "doctor",
+      "USER",
+    );
     recipientBUserId = recipientB.userId;
     recipientBProfessionalId = recipientB.professionalId;
     await db.insert(professionalAccess).values([
@@ -377,12 +441,27 @@ describe("hierarquia institution → hospital → sector", () => {
       isPrimary: false,
       active: true,
     });
-    const exactManager = await createPerson("manager-exact", institutionAId, "manager", "GESTOR_MEDICO");
+    const exactManager = await createPerson(
+      "manager-exact",
+      institutionAId,
+      "manager",
+      "GESTOR_MEDICO",
+    );
     exactManagerUserId = exactManager.userId;
-    const hospitalManager = await createPerson("manager-hospital", institutionAId, "manager", "GESTOR_MEDICO");
+    const hospitalManager = await createPerson(
+      "manager-hospital",
+      institutionAId,
+      "manager",
+      "GESTOR_MEDICO",
+    );
     hospitalManagerUserId = hospitalManager.userId;
     hospitalManagerProfessionalId = hospitalManager.professionalId;
-    const otherSectorManager = await createPerson("manager-other", institutionAId, "manager", "GESTOR_MEDICO");
+    const otherSectorManager = await createPerson(
+      "manager-other",
+      institutionAId,
+      "manager",
+      "GESTOR_MEDICO",
+    );
     otherSectorManagerUserId = otherSectorManager.userId;
 
     await db.insert(managerScope).values([
@@ -465,106 +544,109 @@ describe("hierarquia institution → hospital → sector", () => {
       .$returningId();
     membershipSourceShiftId = membershipSourceShift.id;
 
-    const insertedAssignments = await db.insert(shiftAssignmentsV2).values([
-      {
-        shiftInstanceId: publicationShiftAId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorAId,
-        professionalId: recipientAProfessionalId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      {
-        shiftInstanceId: publicationShiftBId,
-        institutionId: institutionBId,
-        hospitalId: hospitalBId,
-        sectorId: sectorBId,
-        professionalId: recipientBProfessionalId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      // Rows adversariais: as três primeiras divergem da tupla do shift A
-      // em uma dimensão, mas usam profissional A válido para que o join de
-      // vínculo não mascare a comparação sa↔si. A quarta repete A/A/A com
-      // profissional só de B.
-      {
-        shiftInstanceId: publicationShiftAId,
-        institutionId: institutionBId,
-        hospitalId: hospitalAId,
-        sectorId: sectorAId,
-        professionalId: recipientA2ProfessionalId,
-        assignmentType: "BACKUP",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      {
-        shiftInstanceId: publicationShiftAId,
-        institutionId: institutionAId,
-        hospitalId: hospitalBId,
-        sectorId: sectorAId,
-        professionalId: recipientA2ProfessionalId,
-        assignmentType: "ON_CALL",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      {
-        shiftInstanceId: publicationShiftAId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorBId,
-        professionalId: recipientA2ProfessionalId,
-        assignmentType: "BACKUP",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      {
-        shiftInstanceId: publicationShiftAId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorAId,
-        professionalId: recipientBProfessionalId,
-        assignmentType: "ON_CALL",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      // O próprio shift cruza A/hospitalA/sectorB, e a assignment repete
-      // essa tupla. Só a validação canônica h/s consegue excluí-la.
-      {
-        shiftInstanceId: corruptNotificationShiftId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorBId,
-        professionalId: recipientA2ProfessionalId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      // Origem isolada: tupla A válida e apenas o vínculo do profissional
-      // é estrangeiro, tornando a checagem de PI load-bearing na réplica.
-      {
-        shiftInstanceId: membershipSourceShiftId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorAId,
-        professionalId: recipientBProfessionalId,
-        assignmentType: "ON_DUTY",
-        status: "OCUPADO",
-        isActive: true,
-      },
-      {
-        shiftInstanceId: membershipSourceShiftId,
-        institutionId: institutionAId,
-        hospitalId: hospitalAId,
-        sectorId: sectorAId,
-        professionalId: recipientA2ProfessionalId,
-        assignmentType: "BACKUP",
-        status: "OCUPADO",
-        isActive: true,
-      },
-    ]).$returningId();
+    const insertedAssignments = await db
+      .insert(shiftAssignmentsV2)
+      .values([
+        {
+          shiftInstanceId: publicationShiftAId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          professionalId: recipientAProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          shiftInstanceId: publicationShiftBId,
+          institutionId: institutionBId,
+          hospitalId: hospitalBId,
+          sectorId: sectorBId,
+          professionalId: recipientBProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        // Rows adversariais: as três primeiras divergem da tupla do shift A
+        // em uma dimensão, mas usam profissional A válido para que o join de
+        // vínculo não mascare a comparação sa↔si. A quarta repete A/A/A com
+        // profissional só de B.
+        {
+          shiftInstanceId: publicationShiftAId,
+          institutionId: institutionBId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          professionalId: recipientA2ProfessionalId,
+          assignmentType: "BACKUP",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          shiftInstanceId: publicationShiftAId,
+          institutionId: institutionAId,
+          hospitalId: hospitalBId,
+          sectorId: sectorAId,
+          professionalId: recipientA2ProfessionalId,
+          assignmentType: "ON_CALL",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          shiftInstanceId: publicationShiftAId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorBId,
+          professionalId: recipientA2ProfessionalId,
+          assignmentType: "BACKUP",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          shiftInstanceId: publicationShiftAId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          professionalId: recipientBProfessionalId,
+          assignmentType: "ON_CALL",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        // O próprio shift cruza A/hospitalA/sectorB, e a assignment repete
+        // essa tupla. Só a validação canônica h/s consegue excluí-la.
+        {
+          shiftInstanceId: corruptNotificationShiftId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorBId,
+          professionalId: recipientA2ProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        // Origem isolada: tupla A válida e apenas o vínculo do profissional
+        // é estrangeiro, tornando a checagem de PI load-bearing na réplica.
+        {
+          shiftInstanceId: membershipSourceShiftId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          professionalId: recipientBProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          shiftInstanceId: membershipSourceShiftId,
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          professionalId: recipientA2ProfessionalId,
+          assignmentType: "BACKUP",
+          status: "OCUPADO",
+          isActive: true,
+        },
+      ])
+      .$returningId();
     topologyAssignmentIds.push(...insertedAssignments.map((row) => row.id));
     validAssignmentAId = insertedAssignments[0].id;
     validAssignmentBId = insertedAssignments[1].id;
@@ -596,31 +678,79 @@ describe("hierarquia institution → hospital → sector", () => {
     const fixtureShifts = await db
       .select({ id: shiftInstances.id })
       .from(shiftInstances)
-      .where(inArray(shiftInstances.institutionId, [institutionAId, institutionBId]));
+      .where(
+        inArray(shiftInstances.institutionId, [institutionAId, institutionBId]),
+      );
     const fixtureShiftIds = fixtureShifts.map((shift) => shift.id);
     await db
       .delete(dutyConfirmations)
-      .where(inArray(dutyConfirmations.institutionId, [institutionAId, institutionBId]));
-    await db.delete(auditTrail).where(inArray(auditTrail.institutionId, [institutionAId, institutionBId]));
-    await db.delete(monthlyRosters).where(inArray(monthlyRosters.institutionId, [institutionAId, institutionBId]));
+      .where(
+        inArray(dutyConfirmations.institutionId, [
+          institutionAId,
+          institutionBId,
+        ]),
+      );
+    await db
+      .delete(auditTrail)
+      .where(
+        inArray(auditTrail.institutionId, [institutionAId, institutionBId]),
+      );
+    await db
+      .delete(monthlyRosters)
+      .where(
+        inArray(monthlyRosters.institutionId, [institutionAId, institutionBId]),
+      );
     if (fixtureShiftIds.length > 0) {
-      await db.delete(shiftAuditLog).where(inArray(shiftAuditLog.shiftInstanceId, fixtureShiftIds));
-      await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, fixtureShiftIds));
+      await db
+        .delete(shiftAuditLog)
+        .where(inArray(shiftAuditLog.shiftInstanceId, fixtureShiftIds));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(inArray(shiftAssignmentsV2.shiftInstanceId, fixtureShiftIds));
     }
-    await db.delete(shiftInstances).where(inArray(shiftInstances.institutionId, [institutionAId, institutionBId]));
+    await db
+      .delete(shiftInstances)
+      .where(
+        inArray(shiftInstances.institutionId, [institutionAId, institutionBId]),
+      );
     await db.delete(shiftTemplates).where(eq(shiftTemplates.id, templateAId));
-    await db.delete(managerScope).where(inArray(managerScope.institutionId, [institutionAId, institutionBId]));
+    await db
+      .delete(managerScope)
+      .where(
+        inArray(managerScope.institutionId, [institutionAId, institutionBId]),
+      );
     await db
       .delete(professionalAccess)
       .where(inArray(professionalAccess.professionalId, professionalIds));
     await db
       .delete(professionalInstitutions)
-      .where(inArray(professionalInstitutions.institutionId, [institutionAId, institutionBId]));
-    await db.delete(professionals).where(inArray(professionals.id, professionalIds));
-    await db.delete(scheduleContexts).where(inArray(scheduleContexts.id, [scheduleContextAId, scheduleContextA2Id, scheduleContextBId]));
-    await db.delete(sectors).where(inArray(sectors.id, [sectorAId, sectorA2Id, sectorBId]));
-    await db.delete(hospitals).where(inArray(hospitals.id, [hospitalAId, hospitalBId]));
-    await db.delete(institutions).where(inArray(institutions.id, [institutionAId, institutionBId]));
+      .where(
+        inArray(professionalInstitutions.institutionId, [
+          institutionAId,
+          institutionBId,
+        ]),
+      );
+    await db
+      .delete(professionals)
+      .where(inArray(professionals.id, professionalIds));
+    await db
+      .delete(scheduleContexts)
+      .where(
+        inArray(scheduleContexts.id, [
+          scheduleContextAId,
+          scheduleContextA2Id,
+          scheduleContextBId,
+        ]),
+      );
+    await db
+      .delete(sectors)
+      .where(inArray(sectors.id, [sectorAId, sectorA2Id, sectorBId]));
+    await db
+      .delete(hospitals)
+      .where(inArray(hospitals.id, [hospitalAId, hospitalBId]));
+    await db
+      .delete(institutions)
+      .where(inArray(institutions.id, [institutionAId, institutionBId]));
     await db.delete(users).where(inArray(users.id, userIds));
   });
 
@@ -639,11 +769,17 @@ describe("hierarquia institution → hospital → sector", () => {
         institutionAId,
         kind === "admin",
       );
-      await expect(assertManagerScopeAccess(actor, hospitalAId, sectorAId)).resolves.toBeUndefined();
-      await expect(assertManagerScopeAccess(actor, hospitalBId, sectorBId)).rejects.toMatchObject({
+      await expect(
+        assertManagerScopeAccess(actor, hospitalAId, sectorAId),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertManagerScopeAccess(actor, hospitalBId, sectorBId),
+      ).rejects.toMatchObject({
         code: "FORBIDDEN",
       });
-      await expect(assertManagerScopeAccess(actor, hospitalAId, sectorBId)).rejects.toMatchObject({
+      await expect(
+        assertManagerScopeAccess(actor, hospitalAId, sectorBId),
+      ).rejects.toMatchObject({
         code: "FORBIDDEN",
       });
     }
@@ -770,7 +906,10 @@ describe("hierarquia institution → hospital → sector", () => {
 
       it("não apresenta hospital estrangeiro como roster DRAFT", async () => {
         await expect(
-          shiftsAs(kind).rosterStatus({ hospitalId: hospitalBId, yearMonth: publishYearMonth }),
+          shiftsAs(kind).rosterStatus({
+            hospitalId: hospitalBId,
+            yearMonth: publishYearMonth,
+          }),
         ).rejects.toMatchObject({ code: "FORBIDDEN" });
       });
 
@@ -826,19 +965,45 @@ describe("hierarquia institution → hospital → sector", () => {
   }
 
   it("revalida a hierarquia nas fronteiras profundas de publish/lock", async () => {
-    const plusActor = await resolveTenantActor(plusUserId, institutionAId, false);
-    const adminActor = await resolveTenantActor(adminUserId, institutionAId, true);
+    const plusActor = await resolveTenantActor(
+      plusUserId,
+      institutionAId,
+      false,
+    );
+    const adminActor = await resolveTenantActor(
+      adminUserId,
+      institutionAId,
+      true,
+    );
     await expect(
-      publishMonth(institutionAId, hospitalBId, deepPublishYearMonth, plusActor, 1),
+      publishMonth(
+        institutionAId,
+        hospitalBId,
+        deepPublishYearMonth,
+        plusActor,
+        1,
+      ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       lockMonth(institutionAId, hospitalBId, lockYearMonth, adminActor, 1),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
-      publishMonth(institutionAId, hospitalAId, deepPublishYearMonth, adminActor, 1),
+      publishMonth(
+        institutionAId,
+        hospitalAId,
+        deepPublishYearMonth,
+        adminActor,
+        1,
+      ),
     ).resolves.toBeUndefined();
     await expect(
-      lockMonth(institutionAId, hospitalAId, deepPublishYearMonth, adminActor, 1),
+      lockMonth(
+        institutionAId,
+        hospitalAId,
+        deepPublishYearMonth,
+        adminActor,
+        1,
+      ),
     ).resolves.toBeUndefined();
 
     const directPublishRows = await db
@@ -900,7 +1065,10 @@ describe("hierarquia institution → hospital → sector", () => {
         ),
       );
     const [lockedCandidate] = await db
-      .select({ status: monthlyRosters.status, lockedAt: monthlyRosters.lockedAt })
+      .select({
+        status: monthlyRosters.status,
+        lockedAt: monthlyRosters.lockedAt,
+      })
       .from(monthlyRosters)
       .where(eq(monthlyRosters.id, futureRoster.id));
     const lockAudits = await db
@@ -913,7 +1081,10 @@ describe("hierarquia institution → hospital → sector", () => {
         ),
       );
     expect(publishRows).toHaveLength(0);
-    expect(lockedCandidate).toMatchObject({ status: "PUBLISHED", lockedAt: null });
+    expect(lockedCandidate).toMatchObject({
+      status: "PUBLISHED",
+      lockedAt: null,
+    });
     expect(lockAudits).toHaveLength(0);
   });
 
@@ -951,7 +1122,10 @@ describe("hierarquia institution → hospital → sector", () => {
       shiftsAs("plus").replicateRange({
         hospitalId: hospitalAId,
         sectorId: sectorAId,
-        from: { start: `${membershipSourceYearMonth}-01`, granularity: "month" },
+        from: {
+          start: `${membershipSourceYearMonth}-01`,
+          granularity: "month",
+        },
         to: { start: `${membershipTargetYearMonth}-01` },
         includeAssignments: true,
         dryRun: false,
@@ -976,7 +1150,10 @@ describe("hierarquia institution → hospital → sector", () => {
           eq(shiftInstances.hospitalId, hospitalAId),
           eq(shiftInstances.sectorId, sectorAId),
           eq(shiftInstances.label, "Topology membership source"),
-          eq(shiftInstances.startAt, new Date(`${membershipTargetYearMonth}-10T07:00:00-03:00`)),
+          eq(
+            shiftInstances.startAt,
+            new Date(`${membershipTargetYearMonth}-10T07:00:00-03:00`),
+          ),
         ),
       );
     expect(auditAfter).toEqual(auditBefore);
@@ -1002,14 +1179,18 @@ describe("hierarquia institution → hospital → sector", () => {
     const assignmentsBefore = await db
       .select({ id: shiftAssignmentsV2.id })
       .from(shiftAssignmentsV2)
-      .where(eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId));
+      .where(
+        eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId),
+      );
     const auditsBefore = await db
       .select({ id: shiftAuditLog.id })
       .from(shiftAuditLog)
       .where(eq(shiftAuditLog.shiftInstanceId, corruptNotificationShiftId));
 
     await expect(
-      caller.shiftAssignments.assumeVacancy({ shiftInstanceId: corruptNotificationShiftId }),
+      caller.shiftAssignments.assumeVacancy({
+        shiftInstanceId: corruptNotificationShiftId,
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const [shiftAfter] = await db
@@ -1019,7 +1200,9 @@ describe("hierarquia institution → hospital → sector", () => {
     const assignmentsAfter = await db
       .select({ id: shiftAssignmentsV2.id })
       .from(shiftAssignmentsV2)
-      .where(eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId));
+      .where(
+        eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId),
+      );
     const auditsAfter = await db
       .select({ id: shiftAuditLog.id })
       .from(shiftAuditLog)
@@ -1031,7 +1214,9 @@ describe("hierarquia institution → hospital → sector", () => {
 
   it("listVacancies omite shift cuja instituição não corresponde ao hospital/setor exibido", async () => {
     const rows = await appAs(recipientAUserId).shiftInstances.listVacancies({});
-    expect(rows.some((row) => row.shiftInstanceId === corruptNotificationShiftId)).toBe(false);
+    expect(
+      rows.some((row) => row.shiftInstanceId === corruptNotificationShiftId),
+    ).toBe(false);
   });
 
   it("listMyVacancyRequests não atravessa assignment A para shift B", async () => {
@@ -1050,10 +1235,13 @@ describe("hierarquia institution → hospital → sector", () => {
       })
       .$returningId();
     try {
-      const rows = await appAs(recipientAUserId).shiftAssignments.listMyVacancyRequests();
+      const rows =
+        await appAs(recipientAUserId).shiftAssignments.listMyVacancyRequests();
       expect(rows.some((row) => row.assignmentId === poisoned.id)).toBe(false);
     } finally {
-      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, poisoned.id));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, poisoned.id));
     }
   });
 
@@ -1073,10 +1261,15 @@ describe("hierarquia institution → hospital → sector", () => {
       })
       .$returningId();
     try {
-      const rows = await appAs(plusUserId, "manager").shiftAssignments.listPending({});
+      const rows = await appAs(
+        plusUserId,
+        "manager",
+      ).shiftAssignments.listPending({});
       expect(rows.some((row) => row.assignmentId === poisoned.id)).toBe(false);
     } finally {
-      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, poisoned.id));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, poisoned.id));
     }
   });
 
@@ -1086,7 +1279,9 @@ describe("hierarquia institution → hospital → sector", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     const valid = await shiftsAs("plus").get({ id: publicationShiftAId });
-    expect(valid.assignments.map((assignment) => assignment.id)).toEqual([validAssignmentAId]);
+    expect(valid.assignments.map((assignment) => assignment.id)).toEqual([
+      validAssignmentAId,
+    ]);
   });
 
   it("shifts.listByPeriod omite shift contaminado e assignments sem tupla/PI canônicas", async () => {
@@ -1095,7 +1290,9 @@ describe("hierarquia institution → hospital → sector", () => {
       endDate: new Date(publicationEnd.getTime() + 1).toISOString(),
     });
     expect(rows.map((row) => row.id)).toEqual([publicationShiftAId]);
-    expect(rows[0].assignments.map((assignment) => assignment.id)).toEqual([validAssignmentAId]);
+    expect(rows[0].assignments.map((assignment) => assignment.id)).toEqual([
+      validAssignmentAId,
+    ]);
   });
 
   it("shifts.listAgenda omite topologia contaminada nos grupos e nos nomes profissionais", async () => {
@@ -1123,7 +1320,12 @@ describe("hierarquia institution → hospital → sector", () => {
   });
 
   it("getActiveShift/getNextShift não usam assignment ligado a shift de hierarquia contaminada", async () => {
-    const reader = await createPerson("read-current", institutionAId, "doctor", "USER");
+    const reader = await createPerson(
+      "read-current",
+      institutionAId,
+      "doctor",
+      "USER",
+    );
     const now = Date.now();
     const [shift] = await db
       .insert(shiftInstances)
@@ -1156,7 +1358,9 @@ describe("hierarquia institution → hospital → sector", () => {
       await expect(caller.getActiveShift()).resolves.toBeNull();
       await expect(caller.getNextShift()).resolves.toBeNull();
     } finally {
-      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, assignment.id));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, assignment.id));
       await db.delete(shiftInstances).where(eq(shiftInstances.id, shift.id));
     }
   });
@@ -1204,8 +1408,18 @@ describe("hierarquia institution → hospital → sector", () => {
     const notifyMock = vi.mocked(enqueueComunicaRosterPublished);
     notifyMock.mockClear();
 
-    const plusActor = await resolveTenantActor(plusUserId, institutionAId, false);
-    await publishMonth(institutionAId, hospitalAId, publicationYearMonth, plusActor, 1);
+    const plusActor = await resolveTenantActor(
+      plusUserId,
+      institutionAId,
+      false,
+    );
+    await publishMonth(
+      institutionAId,
+      hospitalAId,
+      publicationYearMonth,
+      plusActor,
+      1,
+    );
     expect(notifyMock).toHaveBeenCalledTimes(1);
     expect(notifyMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1243,9 +1457,7 @@ describe("hierarquia institution → hospital → sector", () => {
     dutySyncMock.mockClear();
 
     try {
-      await dispatchConfirmations(
-        new Date("2030-02-09T22:00:00-03:00"),
-      );
+      await dispatchConfirmations(new Date("2030-02-09T22:00:00-03:00"));
       const dispatched = await db
         .select({ assignmentId: dutyConfirmations.assignmentId })
         .from(dutyConfirmations)
@@ -1255,10 +1467,14 @@ describe("hierarquia institution → hospital → sector", () => {
       );
       expect(trackedPushMock).toHaveBeenCalledTimes(2);
       expect(queuedPushMock).toHaveBeenCalledTimes(2);
-      expect(new Set(trackedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
-        new Set([recipientAUserId, recipientBUserId]),
-      );
-      expect(trackedPushMock.mock.calls.some(([input]) => input.userId === recipientA2UserId)).toBe(false);
+      expect(
+        new Set(trackedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(new Set([recipientAUserId, recipientBUserId]));
+      expect(
+        trackedPushMock.mock.calls.some(
+          ([input]) => input.userId === recipientA2UserId,
+        ),
+      ).toBe(false);
 
       await db
         .delete(dutyConfirmations)
@@ -1298,24 +1514,34 @@ describe("hierarquia institution → hospital → sector", () => {
       );
       expect(after.managerNotified).toBe(false);
       expect(trackedPushMock).not.toHaveBeenCalled();
-      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
-        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+      expect(
+        new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(
+        new Set([
+          plusUserId,
+          exactManagerUserId,
+          hospitalManagerUserId,
+          adminUserId,
+        ]),
       );
       expect(autoSsoMock).not.toHaveBeenCalled();
       expect(dutySyncMock).not.toHaveBeenCalled();
 
-      const recipientCtx = (activeInstitutionId: number) => ({
-        user: {
-          id: recipientBUserId,
-          role: "doctor",
-          name: "Topology recipient B",
-          email: `topology-recipient-b-${runId}@test.local`,
-        },
-        institutionId: activeInstitutionId,
-        allowedInstitutionIds: [activeInstitutionId],
-      }) as any;
+      const recipientCtx = (activeInstitutionId: number) =>
+        ({
+          user: {
+            id: recipientBUserId,
+            role: "doctor",
+            name: "Topology recipient B",
+            email: `topology-recipient-b-${runId}@test.local`,
+          },
+          institutionId: activeInstitutionId,
+          allowedInstitutionIds: [activeInstitutionId],
+        }) as any;
       await expect(
-        confirmationRouter.createCaller(recipientCtx(institutionBId)).getPending(),
+        confirmationRouter
+          .createCaller(recipientCtx(institutionBId))
+          .getPending(),
       ).resolves.toBeNull();
       await expect(
         confirmationRouter.createCaller(recipientCtx(institutionBId)).confirm({
@@ -1323,7 +1549,9 @@ describe("hierarquia institution → hospital → sector", () => {
         }),
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(
-        confirmationRouter.createCaller(recipientCtx(institutionAId)).getPending(),
+        confirmationRouter
+          .createCaller(recipientCtx(institutionAId))
+          .getPending(),
       ).resolves.toBeNull();
       await expect(
         confirmationRouter.createCaller(recipientCtx(institutionAId)).confirm({
@@ -1369,19 +1597,23 @@ describe("hierarquia institution → hospital → sector", () => {
           },
         ])
         .$returningId();
-      const pendingA2 = await confirmationRouter.createCaller({
-        user: {
-          id: recipientA2UserId,
-          role: "doctor",
-          name: "Topology recipient A2",
-          email: `topology-recipient-a2-${runId}@test.local`,
-        },
-        institutionId: institutionAId,
-        allowedInstitutionIds: [institutionAId],
-      } as any).getPending();
+      const pendingA2 = await confirmationRouter
+        .createCaller({
+          user: {
+            id: recipientA2UserId,
+            role: "doctor",
+            name: "Topology recipient A2",
+            email: `topology-recipient-a2-${runId}@test.local`,
+          },
+          institutionId: institutionAId,
+          allowedInstitutionIds: [institutionAId],
+        } as any)
+        .getPending();
       expect(pendingA2?.id).toBe(pendingPair[1].id);
 
-      await db.delete(dutyConfirmations).where(eq(dutyConfirmations.id, poisoned.id));
+      await db
+        .delete(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, poisoned.id));
       queuedPushMock.mockClear();
       const [startPoisoned] = await db
         .insert(dutyConfirmations)
@@ -1396,7 +1628,9 @@ describe("hierarquia institution → hospital → sector", () => {
           confirmationToken: `topology-start-${runId}`,
         })
         .$returningId();
-      await processShiftStartPushes(new Date(publicationStart.getTime() + 2 * 60_000));
+      await processShiftStartPushes(
+        new Date(publicationStart.getTime() + 2 * 60_000),
+      );
       const [startAfter] = await db
         .select({ startPushSentAt: dutyConfirmations.startPushSentAt })
         .from(dutyConfirmations)
@@ -1459,10 +1693,20 @@ describe("hierarquia institution → hospital → sector", () => {
         .$returningId();
       confirmationIds.push(validConfirmation.id);
 
-      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
-      const notified = new Set(queuedPushMock.mock.calls.map(([input]) => input.userId));
+      await notifyManagersConfirmationEscalation(
+        validConfirmation.id,
+        "NO_RESPONSE",
+      );
+      const notified = new Set(
+        queuedPushMock.mock.calls.map(([input]) => input.userId),
+      );
       expect(notified).toEqual(
-        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+        new Set([
+          plusUserId,
+          exactManagerUserId,
+          hospitalManagerUserId,
+          adminUserId,
+        ]),
       );
       expect(notified.has(otherSectorManagerUserId)).toBe(false);
       expect(notified.has(adminUserId)).toBe(true);
@@ -1477,10 +1721,13 @@ describe("hierarquia institution → hospital → sector", () => {
           ),
         );
       queuedPushMock.mockClear();
-      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
-      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
-        new Set([plusUserId, hospitalManagerUserId, adminUserId]),
+      await notifyManagersConfirmationEscalation(
+        validConfirmation.id,
+        "NO_RESPONSE",
       );
+      expect(
+        new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(new Set([plusUserId, hospitalManagerUserId, adminUserId]));
 
       await db
         .update(professionalInstitutions)
@@ -1496,7 +1743,10 @@ describe("hierarquia institution → hospital → sector", () => {
         .set({ userId: recipientBUserId })
         .where(
           and(
-            eq(professionalInstitutions.professionalId, hospitalManagerProfessionalId),
+            eq(
+              professionalInstitutions.professionalId,
+              hospitalManagerProfessionalId,
+            ),
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
@@ -1507,17 +1757,27 @@ describe("hierarquia institution → hospital → sector", () => {
         resolveInstitutionForUser(recipientBUserId, institutionAId),
       ).rejects.toThrow("Tenant inválido para o usuário autenticado");
       queuedPushMock.mockClear();
-      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
-      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
-        new Set([plusUserId, exactManagerUserId, adminUserId]),
+      await notifyManagersConfirmationEscalation(
+        validConfirmation.id,
+        "NO_RESPONSE",
       );
-      expect(queuedPushMock.mock.calls.some(([input]) => input.userId === recipientBUserId)).toBe(false);
+      expect(
+        new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(new Set([plusUserId, exactManagerUserId, adminUserId]));
+      expect(
+        queuedPushMock.mock.calls.some(
+          ([input]) => input.userId === recipientBUserId,
+        ),
+      ).toBe(false);
       await db
         .update(professionalInstitutions)
         .set({ userId: hospitalManagerUserId })
         .where(
           and(
-            eq(professionalInstitutions.professionalId, hospitalManagerProfessionalId),
+            eq(
+              professionalInstitutions.professionalId,
+              hospitalManagerProfessionalId,
+            ),
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
@@ -1532,11 +1792,20 @@ describe("hierarquia institution → hospital → sector", () => {
           ),
         );
       queuedPushMock.mockClear();
-      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
-      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+      await notifyManagersConfirmationEscalation(
+        validConfirmation.id,
+        "NO_RESPONSE",
+      );
+      expect(
+        new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(
         new Set([exactManagerUserId, hospitalManagerUserId, adminUserId]),
       );
-      expect(queuedPushMock.mock.calls.some(([input]) => input.userId === recipientBUserId)).toBe(false);
+      expect(
+        queuedPushMock.mock.calls.some(
+          ([input]) => input.userId === recipientBUserId,
+        ),
+      ).toBe(false);
       await db
         .update(professionalInstitutions)
         .set({ userId: plusUserId })
@@ -1622,12 +1891,21 @@ describe("hierarquia institution → hospital → sector", () => {
           "NO_RESPONSE",
         ),
       ).resolves.toEqual({ managerCount: 4, intentCount: 4 });
-      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
-        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+      expect(
+        new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
+      ).toEqual(
+        new Set([
+          plusUserId,
+          exactManagerUserId,
+          hospitalManagerUserId,
+          adminUserId,
+        ]),
       );
     } finally {
       if (confirmationIds.length > 0) {
-        await db.delete(dutyConfirmations).where(inArray(dutyConfirmations.id, confirmationIds));
+        await db
+          .delete(dutyConfirmations)
+          .where(inArray(dutyConfirmations.id, confirmationIds));
       }
       const rosterScope = and(
         eq(monthlyRosters.institutionId, institutionAId),
@@ -1656,7 +1934,10 @@ describe("hierarquia institution → hospital → sector", () => {
         .set({ userId: hospitalManagerUserId })
         .where(
           and(
-            eq(professionalInstitutions.professionalId, hospitalManagerProfessionalId),
+            eq(
+              professionalInstitutions.professionalId,
+              hospitalManagerProfessionalId,
+            ),
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
