@@ -21,6 +21,7 @@ export default defineConfig({
       "tests/auth-recovery-migration-mysql.test.ts",
       "tests/core-schema-reproducibility-migration-mysql.test.ts",
       "tests/confirmation-expiry-policy-migration-mysql.test.ts",
+      "tests/audit-trail-action-enum-migration-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,

@@ -2292,6 +2292,12 @@ export const scheduleInvitesRouter = router({
 
       return {
         accepted,
+        // Compatibilidade com o app instalado (TestFlight build 32, anterior ao
+        // #462), que lê `result.sent.length`: sem este alias a tela do celular
+        // quebra com "undefined is not an object" DEPOIS de o convite ter saído
+        // (12/09/2026). Remover quando a build com o endereço novo estiver nos
+        // aparelhos.
+        sent: accepted,
         failed,
         hospitalName: responseContext.hospitalName,
         sectorName: responseContext.sectorName,

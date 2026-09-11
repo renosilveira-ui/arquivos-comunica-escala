@@ -120,9 +120,17 @@ nos dois sentidos (`needsReset`):
   atraso ainda deixa meia hora útil. Depois disso ele atrapalha — o médico
   confere o relógio e conclui que o app está errado.
 - Uma entrega que falha não derruba o lote: os outros médicos do mesmo tick
-  têm plantão hoje também. O plano continua `SENT` de propósito — o outbox de
-  push tem retry próprio, e reverter aqui abriria a porta para o mesmo aviso
-  sair duas vezes.
+  têm plantão hoje também. O que falha aqui é o **enfileiramento** (nada
+  chegou ao outbox), então o plano volta para `SCHEDULED` com
+  `last_failure_reason = SEND_FAILED` e o tick seguinte tenta de novo. Não
+  há aviso duplicado: o outbox é idempotente por `dedup_key`, e a intenção já
+  gravada conta como entregue mesmo que o texto ("saia até 10:00" → "saia
+  agora") tenha mudado entre as tentativas. Quem encerra as retentativas é a
+  janela de 30 minutos acima — passada ela, `CANCELLED` / `EXPIRED`, sem loop.
+- Conta excluída (soft-delete) com plano devido: encerrado como
+  `CANCELLED` / `ACCOUNT_DELETED`, sem push; a preferência é desligada para a
+  conta sair da varredura. A exclusão de conta já apaga planos, preferências e
+  origens; este caminho cobre o que sobreviveu.
 - O envio usa `enqueueTrackedPushNotification`, o outbox durável que já
   existe — herda idempotência, retry, receipts e limpeza de token inválido. Um
   caminho paralelo de push seria uma segunda chance de errar tudo isso.
