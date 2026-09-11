@@ -44,6 +44,8 @@ type LinkDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 export type GoogleLinkSnapshot = {
   linkState: ExternalLinkState;
   externalCalendarId: string | null;
+  /** Escopos que o Google de fato concedeu, separados por espaço. */
+  grantedScopes: string | null;
   syncCursor: string | null;
   lastSyncedAt: Date | null;
   lastFailureReason: string | null;
@@ -66,6 +68,7 @@ export async function readGoogleLink(
     .select({
       linkState: userExternalCredentials.linkState,
       externalCalendarId: userExternalCredentials.externalCalendarId,
+      grantedScopes: userExternalCredentials.grantedScopes,
       syncCursor: userExternalCredentials.syncCursor,
       lastSyncedAt: userExternalCredentials.lastSyncedAt,
       lastFailureReason: userExternalCredentials.lastFailureReason,
@@ -102,6 +105,7 @@ export async function readGoogleLink(
   return {
     linkState: row.linkState as ExternalLinkState,
     externalCalendarId: row.externalCalendarId,
+    grantedScopes: row.grantedScopes,
     syncCursor: row.syncCursor,
     lastSyncedAt: row.lastSyncedAt,
     lastFailureReason: row.lastFailureReason,
@@ -315,8 +319,21 @@ export async function withGoogleAccessToken<T>(input: {
     return refreshed;
   }
 
-  const value = await input.run(refreshed.value.accessToken, link);
-  return providerSuccess(value);
+  try {
+    const value = await input.run(refreshed.value.accessToken, link);
+    return providerSuccess(value);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === "CalendarUnavailableError" &&
+      "reason" in error
+    ) {
+      return providerFailure(
+        (error as { reason: ProviderFailureReason }).reason,
+      );
+    }
+    throw error;
+  }
 }
 
 /**
