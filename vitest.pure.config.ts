@@ -123,6 +123,7 @@ export default defineConfig({
       "tests/institution-features.test.ts",
       "tests/institution-feature-entitlements-migration.test.ts",
       "tests/duty-sync-v2-contract.test.ts",
+      "tests/duty-sync-service-name.test.ts",
       "tests/swap-offer-actions.test.ts",
       "tests/swap-offer-create-live-mutex-source.test.ts",
       "tests/swap-list-eligible-recipients-source.test.ts",
