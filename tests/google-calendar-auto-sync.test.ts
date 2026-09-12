@@ -11,6 +11,7 @@ import {
 } from "../drizzle/schema";
 import { EXTERNAL_LINK_STATES } from "../lib/integration-providers";
 import {
+  claimGoogleSyncCandidate,
   resetGoogleCalendarSyncState,
   selectGoogleSyncCandidates,
   tickGoogleCalendarSync,
@@ -230,5 +231,54 @@ describe("sincronização automática com o Google Agenda", () => {
     await tickGoogleCalendarSync(at(63), { provider, config: CONFIG });
     expect(provider.calls.list).toBeGreaterThan(before);
     expect((await link(connectedUserId))?.failures).toBe(0);
+  });
+
+  /**
+   * Dois processos sobre o mesmo banco.
+   *
+   * Não é hipótese: enquanto o serviço antigo e o novo estiverem os dois no
+   * ar, ambos rodam este worker contra o mesmo banco. A guarda que existia
+   * era uma tabela em memória, que não atravessa processo. Quem arbitra tem
+   * de ser o banco.
+   */
+  it("dois processos, uma conta: só um ganha a janela", async () => {
+    const db = (await getDb()) as Db;
+    const quando = at(80);
+
+    const primeiro = await claimGoogleSyncCandidate(db, connectedUserId, quando);
+    const segundo = await claimGoogleSyncCandidate(db, connectedUserId, quando);
+
+    expect(primeiro).toBe(true);
+    expect(segundo).toBe(false);
+  });
+
+  /**
+   * A corrida de verdade, reproduzida passo a passo.
+   *
+   * A seleção acontece ANTES de qualquer escrita. Dois processos que varrem
+   * no mesmo instante — o que acontece toda vez que um deles sobe, porque o
+   * worker dá um tick no boot — enxergam a mesma conta vencida. Sem a
+   * reserva, os dois partiriam do mesmo cursor do Google.
+   *
+   * Repare no que este teste NÃO afirma: não é toda janela que colide. A
+   * varredura já descarta quem sincronizou há menos de 15 minutos, então a
+   * janela de colisão é o tempo entre a seleção e a gravação. Curta — e
+   * suficiente para embaralhar um cursor.
+   */
+  it("dois processos que selecionaram a mesma conta: só um fala com o Google", async () => {
+    const db = (await getDb()) as Db;
+    const quando = at(112);
+
+    const processoA = await selectGoogleSyncCandidates(db, quando, 10);
+    const processoB = await selectGoogleSyncCandidates(db, quando, 10);
+    expect(processoA.some((c) => c.userId === connectedUserId)).toBe(true);
+    expect(processoB.some((c) => c.userId === connectedUserId)).toBe(true);
+
+    expect(await claimGoogleSyncCandidate(db, connectedUserId, quando)).toBe(
+      true,
+    );
+    expect(await claimGoogleSyncCandidate(db, connectedUserId, quando)).toBe(
+      false,
+    );
   });
 });
