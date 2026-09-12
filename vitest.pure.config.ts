@@ -16,6 +16,7 @@ export default defineConfig({
     environment: "node",
     setupFiles: [],
     include: [
+      "tests/screens-scrollable.test.ts",
       "tests/shift-capacity.test.ts",
       "tests/roster-read-visibility.test.ts",
       "tests/onboarding-direction.test.ts",

@@ -1,5 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Text, TextInput, TouchableOpacity, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { BellRing, MapPin, Trash2 } from "lucide-react-native";
 
 import { AppButton } from "@/components/ui/AppButton";
@@ -236,7 +243,14 @@ export default function DepartureAlertsScreen() {
   }
 
   return (
-    <ScreenGradient>
+    <ScreenGradient scrollable>
+      {/* Teclado: o campo de texto fica na metade de baixo do
+          formulário e, sem isto, o teclado cobre o que está sendo
+          digitado. Mesmo arranjo de app/whatsapp-contact.tsx. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
       <ScreenContainer>
         <View style={{ gap: theme.space[5], paddingBottom: theme.space[10] }}>
           <View style={{ gap: theme.space[2] }}>
@@ -519,6 +533,7 @@ export default function DepartureAlertsScreen() {
           ) : null}
         </View>
       </ScreenContainer>
+      </KeyboardAvoidingView>
     </ScreenGradient>
   );
 }
