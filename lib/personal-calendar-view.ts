@@ -446,6 +446,16 @@ export function recurrenceSummary(
   return base;
 }
 
+/**
+ * Quantos alertas a pessoa pode escolher. Espelha `MAX_ALERT_RULES` do
+ * domínio no servidor, que RECUSA o write acima disso.
+ *
+ * Enquanto o catálogo tinha 8 opções, estourar era impossível e o número não
+ * precisava existir aqui. Com 12, passou a ser alcançável — e um formulário
+ * que ignora o toque sem dizer por quê é pior do que um que não oferece.
+ */
+export const MAX_ALERT_SELECTION = 8;
+
 export const ALERT_OFFSET_OPTIONS: readonly {
   minutes: number;
   label: string;
@@ -456,8 +466,12 @@ export const ALERT_OFFSET_OPTIONS: readonly {
   { minutes: 30, label: "30 minutos antes" },
   { minutes: 60, label: "1 hora antes" },
   { minutes: 120, label: "2 horas antes" },
+  { minutes: 360, label: "6 horas antes" },
+  { minutes: 720, label: "12 horas antes" },
   { minutes: 1440, label: "1 dia antes" },
   { minutes: 2880, label: "2 dias antes" },
+  { minutes: 5760, label: "4 dias antes" },
+  { minutes: 10080, label: "7 dias antes" },
 ];
 
 export function alertOffsetsSummary(offsets: readonly number[]): string {
