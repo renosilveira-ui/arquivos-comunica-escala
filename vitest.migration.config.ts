@@ -22,6 +22,7 @@ export default defineConfig({
       "tests/core-schema-reproducibility-migration-mysql.test.ts",
       "tests/confirmation-expiry-policy-migration-mysql.test.ts",
       "tests/shift-specialty-blank-migration-mysql.test.ts",
+      "tests/institution-time-zone-migration-mysql.test.ts",
       "tests/push-token-provenance-v2-migration-mysql.test.ts",
       "tests/manual-migration-ledger-mysql.test.ts",
       "tests/professional-institutions-drop-user-role-migration-mysql.test.ts",

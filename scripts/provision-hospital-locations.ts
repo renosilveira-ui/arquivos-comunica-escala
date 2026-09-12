@@ -251,6 +251,18 @@ async function main(): Promise<void> {
           );
         }
       }
+      // O `COALESCE(time_zone, ?)` abaixo é deliberado e está travado por
+      // teste: provisionamento não pode pisar num fuso que alguém escolheu.
+      //
+      // Só que ele nunca dispara: `institutions.time_zone` é NOT NULL DEFAULT
+      // 'America/Sao_Paulo', então a coluna jamais está nula e o parâmetro de
+      // fuso deste script é inócuo. Foi assim que as três instituições, todas
+      // de Fortaleza, ficaram meses gravadas como São Paulo (12/09/2026).
+      //
+      // A correção NÃO é aqui — sobrescrever aqui quebraria a garantia que o
+      // teste protege. Quem corrige é a migração
+      // 2026-09-12-institution-time-zone-from-hospitals.sql, que deduz o fuso
+      // dos hospitais da instituição e só age quando eles são unânimes.
       for (const spec of INSTITUTION_RENAMES) {
         const [result] = await conn.query<mysql.ResultSetHeader>(
           `UPDATE institutions
