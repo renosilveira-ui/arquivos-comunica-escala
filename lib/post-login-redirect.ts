@@ -74,3 +74,19 @@ export function takeIntendedRoute(): string | null {
   intendedRoute = null;
   return route;
 }
+
+/**
+ * Esquece o destino sem usá-lo. Chamado no fim de sessão.
+ *
+ * O destino é guardado antes de saber QUEM vai entrar. Se A abre um convite
+ * por QR, desiste do login e devolve o aparelho, o destino de A continua
+ * armado — e o próximo login, de B, saltaria para lá. O servidor recusa o
+ * convite de A para B, então não há tomada de conta; mas B é levado a uma
+ * tela que não pediu, com o código de A à vista. Aparelho compartilhado é a
+ * regra no posto de enfermagem, não a exceção.
+ *
+ * Mesmo raciocínio do token push, que já é apagado aqui ao lado.
+ */
+export function forgetIntendedRoute(): void {
+  intendedRoute = null;
+}

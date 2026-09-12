@@ -186,18 +186,22 @@ export default function PersonalCalendarScreen() {
   }, [view, anchor, window.fromDate, window.toDate]);
 
   return (
-    <ScreenGradient>
-      <ScreenContainer
-        flex
-        refreshControl={
-          <RefreshControl
-            refreshing={listQuery.isRefetching}
-            onRefresh={() => {
-              listQuery.refetch();
-            }}
-          />
-        }
-      >
+    <ScreenGradient
+      scrollable
+      // O refreshControl mora aqui, não no ScreenContainer: o container só
+      // repassa o controle quando é ele a página rolável (`scrollPage`), e
+      // esta tela nunca usou essa variante — o puxar-para-atualizar vinha
+      // sendo descartado em silêncio junto com a rolagem.
+      refreshControl={
+        <RefreshControl
+          refreshing={listQuery.isRefetching}
+          onRefresh={() => {
+            listQuery.refetch();
+          }}
+        />
+      }
+    >
+      <ScreenContainer>
         <View style={{ gap: theme.space[4], paddingBottom: theme.space[8] }}>
           <View style={{ gap: theme.space[1] }}>
             <Text

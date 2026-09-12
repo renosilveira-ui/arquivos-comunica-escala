@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   buildHref,
   isSafeInternalRoute,
+  forgetIntendedRoute,
   rememberIntendedRoute,
   takeIntendedRoute,
 } from "../lib/post-login-redirect";
@@ -66,5 +67,21 @@ describe("post-login-redirect", () => {
     rememberIntendedRoute("/join-schedule?invite=ABC123");
     rememberIntendedRoute("https://exemplo.invalido");
     expect(takeIntendedRoute()).toBe("/join-schedule?invite=ABC123");
+  });
+
+  it("o fim de sessão esquece o destino: B não herda o salto de A", () => {
+    // A abre o convite por QR com o app deslogado; a guarda arma o destino.
+    rememberIntendedRoute("/join-schedule?invite=ABC123");
+    // A desiste e devolve o aparelho. endSession chama isto.
+    forgetIntendedRoute();
+    // B entra e vai para a casa dele, não para o convite de A.
+    expect(takeIntendedRoute()).toBeNull();
+  });
+
+  it("esquecer é idempotente e não atrapalha um destino novo", () => {
+    forgetIntendedRoute();
+    forgetIntendedRoute();
+    rememberIntendedRoute("/agenda");
+    expect(takeIntendedRoute()).toBe("/agenda");
   });
 });
