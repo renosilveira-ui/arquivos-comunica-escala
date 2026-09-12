@@ -11,7 +11,9 @@ import {
   addDaysToKey,
   dayKeyBrt,
   dayWindowBrt,
+  monthWindowBrt,
   weekdayOfKey,
+  yearMonthBrt,
 } from "./local-time";
 
 export { ALLOCATION_REPEAT_RULES, type AllocationRepeatRule };
@@ -181,13 +183,36 @@ export type AllocationRepeatPlan = {
   blockedDayKeys: string[];
 };
 
+/**
+ * Até onde a repetição vai, e se ela pode abrir vaga.
+ *
+ * `month` é o contrato antigo, preservado para clientes que ainda não
+ * mandam horizonte: vai até o fim do mês de origem e só preenche vaga que
+ * já existe. Uma build antiga no aparelho do gestor não pode começar a
+ * abrir plantão sozinha por causa de um deploy de servidor.
+ */
+export type AllocationRepeatScope =
+  { kind: "month" } | { kind: "horizon"; months: number };
+
+export function repeatScopeLastDayKey(
+  sourceStartAt: Date,
+  scope: AllocationRepeatScope,
+): string {
+  if (scope.kind === "horizon") {
+    return repeatLastDayKey(sourceStartAt, scope.months);
+  }
+  // Fim do mês de origem, exclusivo por um dia para virar chave de dia.
+  const end = monthWindowBrt(yearMonthBrt(sourceStartAt)).end;
+  return dayKeyBrt(new Date(end.getTime() - DAY_MS));
+}
+
 export async function planAllocationRepeat(
   db: RepeatDb,
   source: RepeatCandidate,
   rule: AllocationRepeatRule,
-  months: number,
+  scope: AllocationRepeatScope,
 ): Promise<AllocationRepeatPlan> {
-  const lastDayKey = repeatLastDayKey(source.startAt, months);
+  const lastDayKey = repeatScopeLastDayKey(source.startAt, scope);
   if (rule === "none") {
     return { lastDayKey, targets: [], missingDayKeys: [], blockedDayKeys: [] };
   }
@@ -247,6 +272,7 @@ export async function planAllocationRepeat(
     // capacidade — com capacidade NULL o modelo legado permite que dois
     // rótulos dividam o mesmo bloco, e bloquear ali barraria escala válida.
     const collides =
+      scope.kind === "horizon" &&
       source.requiredCapacity != null &&
       rows.some(
         (row) =>
@@ -255,7 +281,7 @@ export async function planAllocationRepeat(
           row.endAt.getTime() === slot.endAt.getTime(),
       );
     if (collides) blockedDayKeys.push(dayKey);
-    else missingDayKeys.push(dayKey);
+    else if (scope.kind === "horizon") missingDayKeys.push(dayKey);
   }
   return { lastDayKey, targets, missingDayKeys, blockedDayKeys };
 }

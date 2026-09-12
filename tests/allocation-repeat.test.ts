@@ -19,6 +19,7 @@ import {
   daysBetweenKeys,
   isAllocationRepeatTargetDay,
   repeatLastDayKey,
+  repeatScopeLastDayKey,
   repeatSlotAt,
   selectRepeatTargets,
   weekdayOrdinalInMonth,
@@ -82,6 +83,23 @@ describe("horizonte da repetição", () => {
     expect(addMonthsToKey("2026-12-31", 2)).toBe("2027-02-28");
     expect(addMonthsToKey("2026-08-31", 1)).toBe("2026-09-30");
     expect(addMonthsToKey("2026-11-30", 1)).toBe("2026-12-30");
+  });
+
+  it("sem horizonte, o escopo antigo para no fim do mês de origem", () => {
+    const { startAt } = at("2026-08-04");
+    expect(repeatScopeLastDayKey(startAt, { kind: "month" })).toBe(
+      "2026-08-31",
+    );
+    expect(repeatScopeLastDayKey(startAt, { kind: "horizon", months: 2 })).toBe(
+      "2026-10-04",
+    );
+    // Fevereiro e os meses de 30 dias não podem escorregar para o mês seguinte.
+    expect(
+      repeatScopeLastDayKey(at("2027-02-09").startAt, { kind: "month" }),
+    ).toBe("2027-02-28");
+    expect(
+      repeatScopeLastDayKey(at("2026-09-15").startAt, { kind: "month" }),
+    ).toBe("2026-09-30");
   });
 
   it("o último dia sai do plantão de origem", () => {

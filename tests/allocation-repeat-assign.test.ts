@@ -745,6 +745,42 @@ describe("editor.assignDirect com regra de repetição", () => {
     expect(inTargetMonth).toHaveLength(expected.length);
   });
 
+  it("sem horizonte, o cliente antigo não abre vaga nenhuma", async () => {
+    // Uma build antiga no aparelho manda repeatRule sem repeatMonths. Um
+    // deploy de servidor não pode transformar isso em criação de plantão.
+    const sourceKey = tuesdayKeys[0];
+    const existing = await insertShift({
+      dayKey: tuesdayKeys[1],
+      label: "Manhã legado",
+    });
+    const sourceId = await insertShift({
+      dayKey: sourceKey,
+      label: "Manhã legado",
+    });
+    const before = (await institutionShiftIds()).length;
+
+    const result = await caller().assignDirect({
+      shiftInstanceId: sourceId,
+      professionalId: doctorProfessionalId,
+      assignmentType: "ON_DUTY",
+      reason: "Cliente antigo",
+      repeatRule: "weekly",
+    });
+
+    expect(result.createdSlotCount).toBe(0);
+    expect(result.allocatedCount).toBe(2);
+    expect((await institutionShiftIds()).length).toBe(before);
+    const rows = await shiftsByLabel("Manhã legado");
+    expect(
+      rows.every(
+        (row) =>
+          row.startAt.toISOString().slice(0, 7) === sourceKey.slice(0, 7),
+      ),
+    ).toBe(true);
+    const assigned = await assignedProfessionalIds([sourceId, existing]);
+    expect(assigned).toHaveLength(2);
+  });
+
   it("o horizonte não vence a autoridade do gestor sobre a data", async () => {
     // A fixture é GESTOR_MEDICO: alcança o mês corrente e o seguinte.
     const sourceId = await insertShift({

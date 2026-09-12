@@ -34,9 +34,9 @@ import {
   repeatSlotAt,
   selectRepeatTargets,
   type AllocationRepeatRule,
+  type AllocationRepeatScope,
 } from "./allocation-repeat";
 import {
-  DEFAULT_ALLOCATION_REPEAT_MONTHS,
   MAX_ALLOCATION_REPEAT_MONTHS,
   allocationRepeatConflictMessage,
 } from "../lib/allocation-repeat";
@@ -505,18 +505,23 @@ export const editorRouter = router({
         assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]),
         reason: z.string().optional(),
         repeatRule: z.enum(ALLOCATION_REPEAT_RULES).default("none"),
+        // Opcional de propósito: ausente = contrato antigo (até o fim do
+        // mês, sem abrir vaga). Cliente que manda o horizonte opta pelo novo.
         repeatMonths: z
           .number()
           .int()
           .min(1)
           .max(MAX_ALLOCATION_REPEAT_MONTHS)
-          .default(DEFAULT_ALLOCATION_REPEAT_MONTHS),
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const { shiftInstanceId, professionalId, assignmentType, reason } = input;
       const repeatRule: AllocationRepeatRule = input.repeatRule;
-      const repeatMonths = input.repeatMonths;
+      const repeatScope: AllocationRepeatScope =
+        input.repeatMonths == null
+          ? { kind: "month" }
+          : { kind: "horizon", months: input.repeatMonths };
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -553,7 +558,7 @@ export const editorRouter = router({
           tx,
           shift,
           repeatRule,
-          repeatMonths,
+          repeatScope,
         );
         // A escala daquele dia já diz outra coisa na mesma janela: abrir a
         // vaga ali criaria dois plantões no mesmo horário do mesmo contexto.
