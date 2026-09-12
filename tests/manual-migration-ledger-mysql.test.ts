@@ -91,4 +91,24 @@ describe("ledger de migrações manuais", () => {
     );
     expect(Number((count as unknown as { n: number }[])[0]?.n)).toBe(2);
   });
+  /**
+   * O defeito da #532: a unificação de collation converteu esta tabela, mas o
+   * `CREATE TABLE` que a cria em banco novo continuou na família antiga. Como
+   * o executor chama o bootstrap depois de cada migração aplicada, todo
+   * ambiente novo reintroduzia a divergência que a unificação eliminou.
+   *
+   * Este teste olha a collation REAL da tabela criada pelo executor, não o
+   * texto do arquivo.
+   */
+  it("nasce na collation do resto do banco, não na antiga", async () => {
+    await recordManualMigration(db, {
+      fileName: "2026-09-12-collation-do-ledger.sql",
+      content: "SELECT 1",
+    });
+    const [rows] = await db.query(
+      "SELECT TABLE_COLLATION AS tabela FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+      [DB_NAME, MANUAL_MIGRATION_LEDGER_TABLE],
+    );
+    expect((rows as { tabela: string }[])[0]?.tabela).toBe("utf8mb4_0900_ai_ci");
+  });
 });

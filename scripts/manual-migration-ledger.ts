@@ -21,6 +21,14 @@ import type { Connection, RowDataPacket } from "mysql2/promise";
 
 export const MANUAL_MIGRATION_LEDGER_TABLE = "manual_migration_ledger";
 
+/**
+ * A collation TEM de ser a mesma do resto do banco. A migração
+ * `2026-09-12-unify-table-collation.sql` converteu esta tabela junto com as
+ * outras nove, mas este DDL ficou em `utf8mb4_unicode_ci` e recriava a
+ * divergência em todo banco novo — o executor chama `ensureManualMigrationLedger`
+ * depois de cada aplicação bem-sucedida. Ao mudar a collation do schema, mudar
+ * aqui também.
+ */
 export const MANUAL_MIGRATION_LEDGER_DDL = `
 CREATE TABLE IF NOT EXISTS ${MANUAL_MIGRATION_LEDGER_TABLE} (
   id INT NOT NULL AUTO_INCREMENT,
@@ -32,7 +40,7 @@ CREATE TABLE IF NOT EXISTS ${MANUAL_MIGRATION_LEDGER_TABLE} (
   note VARCHAR(255) NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_manual_migration_ledger_file (file_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 `.trim();
 
 export function sha256Of(content: string): string {
