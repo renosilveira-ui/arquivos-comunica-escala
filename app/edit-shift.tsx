@@ -1,6 +1,17 @@
 import { useState, useEffect } from "react";
-import { ScrollView, View, TouchableOpacity, ActivityIndicator, Platform, Modal, Pressable, Keyboard } from "react-native";
+import {
+  ScrollView,
+  View,
+  TouchableOpacity,
+  ActivityIndicator,
+  Platform,
+  Modal,
+  Pressable,
+  Keyboard,
+} from "react-native";
 import { Text, TextInput } from "@/components/ui/Text";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
@@ -123,7 +134,13 @@ export default function EditShiftScreen() {
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
 
   // Buscar detalhes da escala
-  const { data: shiftData, isLoading: loadingShift } = trpc.shifts.get.useQuery(
+  const {
+    data: shiftData,
+    isLoading: loadingShift,
+    isError: shiftLoadFailed,
+    error: shiftLoadError,
+    refetch: refetchShift,
+  } = trpc.shifts.get.useQuery(
     { id: shiftId },
     { enabled: canLoadEditShift(permissionState, !!shiftId) },
   );
@@ -418,6 +435,31 @@ export default function EditShiftScreen() {
             Carregando...
           </Text>
         </View>
+      </ScreenGradient>
+    );
+  }
+
+  /**
+   * A busca do plantão falhou.
+   *
+   * Sem este ramo, a tela saía do carregamento e montava o formulário com
+   * todos os campos VAZIOS — como se o plantão não tivesse dados. Quem
+   * tentasse salvar recebia "Preencha todos os campos obrigatórios", uma
+   * mensagem que mente sobre a causa: os campos não foram deixados em
+   * branco, a requisição é que não voltou. Achado da revisão de 12/09/2026.
+   */
+  if (shiftLoadFailed) {
+    return (
+      <ScreenGradient scrollable>
+        <ScreenContainer>
+          <QueryErrorState
+            title="Não foi possível carregar este plantão"
+            error={shiftLoadError}
+            onRetry={() => {
+              void refetchShift();
+            }}
+          />
+        </ScreenContainer>
       </ScreenGradient>
     );
   }

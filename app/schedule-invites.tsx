@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
 import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -8,14 +8,43 @@ import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalDateLong } from "@/lib/hospital-time";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { uiAlert } from "@/lib/ui/alert";
 
 export default function ScheduleInvitesScreen() {
   const utils = trpc.useUtils();
+  const feedback = useActionFeedback();
   const scales = trpc.scheduleInvites.listManageableScales.useQuery();
   const active = trpc.scheduleInvites.listActive.useQuery();
   const create = trpc.scheduleInvites.create.useMutation();
-  const revoke = trpc.scheduleInvites.revoke.useMutation();
+  /**
+   * Encerrar convite é irreversível e, até 12/09/2026, falhava calado.
+   *
+   * O `mutateAsync(...).then(...)` não tinha `catch` nem `onError`: numa
+   * falha de rede, nada aparecia na tela, o botão voltava ao normal e o
+   * gestor ficava sem saber se o convite continuava valendo. Achado da
+   * revisão do aplicativo.
+   */
+  const revoke = trpc.scheduleInvites.revoke.useMutation({
+    onSuccess: async () => {
+      await utils.scheduleInvites.listActive.invalidate();
+      feedback.success("Convite encerrado.");
+    },
+    onError: (error) => feedback.error(error.message),
+  });
+
+  const encerrarConvite = useCallback(
+    async (inviteId: number) => {
+      const confirmado = await feedback.confirmDestructive(
+        "Encerrar convite",
+        "Quem ainda não entrou por este convite deixa de conseguir. Não dá para reativá-lo depois.",
+        "Encerrar",
+      );
+      if (!confirmado) return;
+      revoke.mutate({ inviteId });
+    },
+    [feedback, revoke],
+  );
   const [selectedScale, setSelectedScale] = useState<{
     hospitalId: number;
     sectorId: number;
@@ -355,11 +384,9 @@ export default function ScheduleInvitesScreen() {
               <AppButton
                 title="Encerrar convite"
                 variant="danger"
-                onPress={() =>
-                  revoke
-                    .mutateAsync({ inviteId: invite.id })
-                    .then(() => utils.scheduleInvites.listActive.invalidate())
-                }
+                onPress={() => {
+                  void encerrarConvite(invite.id);
+                }}
                 size="md"
                 disabled={revoke.isPending}
                 style={{ marginTop: theme.space[2], alignSelf: "flex-start" }}

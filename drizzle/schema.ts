@@ -2149,6 +2149,13 @@ export const shiftInstances = mysqlTable(
       "chk_shift_capacity",
       sql`${table.requiredCapacity} IS NULL OR ${table.requiredCapacity} BETWEEN 1 AND 1000`,
     ),
+    // Especialidade em branco é ausência, e ausência se escreve NULL.
+    // Antes desta guarda, 76 plantões tinham '' e a confirmação de cada um
+    // deles caía com "Envelope imutável inválido no duty-sync" (12/09/2026).
+    chkShiftInstancesSpecialtyNotBlank: check(
+      "chk_shift_instances_specialty_not_blank",
+      sql`${table.specialty} IS NULL OR TRIM(${table.specialty}) <> ''`,
+    ),
     // Chave-pai física da FK composta de eventos operacionais. Mantém o
     // vínculo de um turno com a topologia em instalações novas do schema.
     uniqShiftInstancesTopologyId: unique("uniq_shift_instances_topology_id").on(
