@@ -44,6 +44,7 @@ import {
   confirmationDiscoveryStartAtRange,
   isDueForConfirmation,
 } from "./confirmation-due";
+import { resolveScheduleTimeZone } from "../institution-time-zone";
 import {
   dutyShiftSnapshot,
   isCanonicalDutyConfirmationRejection,
@@ -365,6 +366,11 @@ export async function dispatchConfirmations(now: Date) {
       sectorId: shiftInstances.sectorId,
       userId: professionals.userId,
       confirmationId: dutyConfirmations.id,
+      // O fuso de quem manda no relógio: o hospital primeiro, a instituição
+      // como padrão. Sem isto, a antecedência da confirmação era calculada
+      // num fuso global — correto só enquanto todo hospital estiver em UTC-3.
+      hospitalTimeZone: hospitals.timeZone,
+      institutionTimeZone: institutions.timeZone,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -390,6 +396,10 @@ export async function dispatchConfirmations(now: Date) {
         eq(sectors.institutionId, shiftInstances.institutionId),
         eq(sectors.hospitalId, shiftInstances.hospitalId),
       ),
+    )
+    .innerJoin(
+      institutions,
+      eq(institutions.id, shiftInstances.institutionId),
     )
     .innerJoin(
       professionals,
@@ -461,7 +471,18 @@ export async function dispatchConfirmations(now: Date) {
     );
 
   const dueAssignments = assignments.filter((assignment) =>
-    isDueForConfirmation(assignment.startAt, now),
+    isDueForConfirmation(
+      assignment.startAt,
+      now,
+      // A antecedência depende da hora LOCAL do plantão: início às 07:00
+      // pede 9 h, o resto pede 2 h. Ler essa hora no fuso errado move a
+      // fronteira e o médico é chamado na hora errada — 9 h antes em vez de
+      // 2 h, ou o contrário.
+      resolveScheduleTimeZone({
+        hospitalTimeZone: assignment.hospitalTimeZone,
+        institutionTimeZone: assignment.institutionTimeZone,
+      }),
+    ),
   );
 
   if (dueAssignments.length === 0) {

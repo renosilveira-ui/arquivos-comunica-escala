@@ -93,6 +93,16 @@ import {
 } from "./schedule-contexts";
 import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
 import { buildShiftTimestamps as buildHospitalShiftTimestamps } from "../lib/hospital-time";
+import { civilDateTimeToInstant } from "./personal-calendar-domain";
+import {
+  civilPartsInZone,
+  dayStartInZone,
+  daysBetweenKeys,
+  firstMondayKeyOnOrAfter,
+  monthWindowInZone,
+  readHospitalTimeZone,
+  shiftInstantByDays,
+} from "./institution-time-zone";
 import {
   planOpenMonthShifts,
   type OpenMonthShiftsMode,
@@ -110,19 +120,38 @@ import {
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
  * For overnight shifts (endTime < startTime), the end date is advanced by 1 day.
  */
-// Horários de escala são operacionais locais (Fortaleza/Brasil), não UTC do servidor.
-const SCHEDULE_TIME_ZONE_OFFSET = "-03:00";
-
+/**
+ * Horário civil do plantão → instante, no fuso de QUEM opera o plantão.
+ *
+ * Este é o caminho de ESCRITA: é aqui que "03/03, 08:00 às 14:00" vira o
+ * instante que fica gravado. Errar o fuso aqui não desalinha uma tela —
+ * grava o plantão na hora errada, para sempre.
+ *
+ * Até 12/09/2026 havia um `-03:00` fixo, cópia própria deste arquivo (a
+ * terceira do repositório). Correto enquanto todo hospital estiver em UTC-3
+ * e sem horário de verão; errado no dia em que não estiver. O fuso agora vem
+ * do hospital, com a instituição como padrão, e a conversão passa pelo mesmo
+ * motor do calendário pessoal, que resolve transição de horário de verão.
+ *
+ * A virada do plantão noturno também deixou de ser "soma 24 h": num dia de
+ * mudança de horário de verão o dia civil tem 23 ou 25 horas. Agora é o DIA
+ * SEGUINTE no calendário, convertido no fuso — que é o que "termina às
+ * 07:00 do dia seguinte" significa.
+ */
 function buildShiftTimestamps(
   date: string,
   startTime: string,
   endTime: string,
+  timeZone: string,
 ): [Date, Date] {
-  const startAt = new Date(`${date}T${startTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
-  const endAt = new Date(`${date}T${endTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
-  if (endAt <= startAt) {
-    endAt.setDate(endAt.getDate() + 1);
-  }
+  const startAt = civilDateTimeToInstant(date, startTime, timeZone).instant;
+  const sameDayEnd = civilDateTimeToInstant(date, endTime, timeZone).instant;
+  if (sameDayEnd > startAt) return [startAt, sameDayEnd];
+  const endAt = civilDateTimeToInstant(
+    addDaysToKey(date, 1),
+    endTime,
+    timeZone,
+  ).instant;
   return [startAt, endAt];
 }
 
@@ -283,7 +312,6 @@ function assertModalityCoherent(
 // ---------------------------------------------------------------------
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const replicateRangeInput = z.object({
   hospitalId: z.number().int(),
@@ -375,27 +403,6 @@ const readinessAcknowledgementInput = z
 
 type OpenMonthShiftsInput = z.infer<typeof openMonthShiftsInput>;
 
-/** Instante UTC da meia-noite local (-03:00) de um dia "YYYY-MM-DD". */
-function localDayStart(date: string): Date {
-  return new Date(`${date}T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`);
-}
-
-// Fortaleza/Brasil não tem horário de verão: somar dias em ms preserva
-// a hora local. Se isso mudar, trocar por aritmética com Intl.
-function addDays(d: Date, days: number): Date {
-  return new Date(d.getTime() + days * DAY_MS);
-}
-
-/** Dia da semana LOCAL (0 = domingo) de um instante: hora local = UTC − 3h. */
-function localWeekday(d: Date): number {
-  return new Date(d.getTime() - 3 * 60 * 60 * 1000).getUTCDay();
-}
-
-function firstMondayOnOrAfter(d: Date): Date {
-  const dow = localWeekday(d);
-  return addDays(d, (8 - dow) % 7);
-}
-
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -408,55 +415,42 @@ interface ReplicationWindow {
   offsetDays: number;
 }
 
-/**
- * Janela de origem [fromStart, fromEnd), janela de destino e o
- * deslocamento em dias locais.
- *
- * - week: 7 dias a partir de from.start → 7 dias a partir de to.start.
- * - month: mês civil de from.start → mês civil de to.start. O
- *   deslocamento alinha a primeira segunda-feira da origem à primeira
- *   segunda-feira do destino, para que cada turno caia no MESMO DIA DA
- *   SEMANA (escala hospitalar é semanal por natureza). Turnos que, com
- *   esse deslocamento, caem fora do mês de destino não são copiados e
- *   contam em outOfRange.
- */
 function resolveReplicationWindow(
   from: ReplicateRangeInput["from"],
   to: ReplicateRangeInput["to"],
+  timeZone: string,
 ): ReplicationWindow {
   if (from.granularity === "week") {
-    const fromStart = localDayStart(from.start);
-    const targetStart = localDayStart(to.start);
     return {
-      fromStart,
-      fromEnd: addDays(fromStart, 7),
-      targetStart,
-      targetEnd: addDays(targetStart, 7),
-      offsetDays: Math.round(
-        (targetStart.getTime() - fromStart.getTime()) / DAY_MS,
-      ),
+      fromStart: dayStartInZone(from.start, timeZone),
+      fromEnd: dayStartInZone(addDaysToKey(from.start, 7), timeZone),
+      targetStart: dayStartInZone(to.start, timeZone),
+      targetEnd: dayStartInZone(addDaysToKey(to.start, 7), timeZone),
+      // Deslocamento em DIAS civis, não em milissegundos: numa mudança de
+      // horário de verão a diferença em horas não seria múltipla de 24.
+      offsetDays: daysBetweenKeys(from.start, to.start),
     };
   }
 
   const [fy, fm] = from.start.split("-").map(Number);
   const [ty, tm] = to.start.split("-").map(Number);
-  const monthStart = (y: number, m: number) =>
-    localDayStart(`${y}-${pad2(m)}-01`);
-  const nextMonthStart = (y: number, m: number) =>
-    m === 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
+  const monthStartKey = (y: number, m: number) => `${y}-${pad2(m)}-01`;
+  const nextMonthStartKey = (y: number, m: number) =>
+    m === 12 ? monthStartKey(y + 1, 1) : monthStartKey(y, m + 1);
 
-  const fromStart = monthStart(fy, fm);
-  const targetStart = monthStart(ty, tm);
-  const offsetDays = Math.round(
-    (firstMondayOnOrAfter(targetStart).getTime() -
-      firstMondayOnOrAfter(fromStart).getTime()) /
-      DAY_MS,
+  const fromStartKey = monthStartKey(fy, fm);
+  const targetStartKey = monthStartKey(ty, tm);
+  const fromStart = dayStartInZone(fromStartKey, timeZone);
+  const targetStart = dayStartInZone(targetStartKey, timeZone);
+  const offsetDays = daysBetweenKeys(
+    firstMondayKeyOnOrAfter(fromStartKey),
+    firstMondayKeyOnOrAfter(targetStartKey),
   );
   return {
     fromStart,
-    fromEnd: nextMonthStart(fy, fm),
+    fromEnd: dayStartInZone(nextMonthStartKey(fy, fm), timeZone),
     targetStart,
-    targetEnd: nextMonthStart(ty, tm),
+    targetEnd: dayStartInZone(nextMonthStartKey(ty, tm), timeZone),
     offsetDays,
   };
 }
@@ -491,7 +485,12 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const win = resolveReplicationWindow(input.from, input.to);
+  const replicaTimeZone = await readHospitalTimeZone(
+    db,
+    ctx.institutionId,
+    input.hospitalId,
+  );
+  const win = resolveReplicationWindow(input.from, input.to, replicaTimeZone);
   if (win.offsetDays === 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -549,8 +548,8 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   // não entram.
   const candidates = sourceShifts.map((source) => ({
     source,
-    startAt: addDays(source.startAt, win.offsetDays),
-    endAt: addDays(source.endAt, win.offsetDays),
+    startAt: shiftInstantByDays(source.startAt, win.offsetDays, replicaTimeZone),
+    endAt: shiftInstantByDays(source.endAt, win.offsetDays, replicaTimeZone),
   }));
   const inRange = candidates.filter(
     (c) => c.startAt >= win.targetStart && c.startAt < win.targetEnd,
@@ -1135,6 +1134,12 @@ async function buildTemplateMonthCandidates(
 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  // O relógio que vale é o de quem opera o plantão, não o do processo.
+  const hospitalTimeZone = await readHospitalTimeZone(
+    db,
+    ctx.institutionId,
+    input.hospitalId,
+  );
   const templates = await db
     .select()
     .from(shiftTemplates)
@@ -1182,6 +1187,7 @@ async function buildTemplateMonthCandidates(
         dayKey,
         clockFromTemplate(template.startTime),
         clockFromTemplate(template.endTime),
+        hospitalTimeZone,
       );
       raw.push({
         sourceShiftId: template.id,
@@ -1216,8 +1222,13 @@ async function replicateMonthCalendar(
 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const sourceWindow = monthWindowBrt(input.sourceMonth);
-  const targetWindow = monthWindowBrt(input.targetMonth);
+  const calendarTimeZone = await readHospitalTimeZone(
+    db,
+    ctx.institutionId,
+    input.hospitalId,
+  );
+  const sourceWindow = monthWindowInZone(input.sourceMonth, calendarTimeZone);
+  const targetWindow = monthWindowInZone(input.targetMonth, calendarTimeZone);
   const sourceShifts = await db
     .select()
     .from(shiftInstances)
@@ -1267,10 +1278,13 @@ async function replicateMonthCalendar(
       });
     }
     const selected = selectCalendarReplicationCandidates(sourceShifts, input);
-    const offsetDays = Math.round(
-      (firstMondayOnOrAfter(targetWindow.start).getTime() -
-        firstMondayOnOrAfter(sourceWindow.start).getTime()) /
-        DAY_MS,
+    const offsetDays = daysBetweenKeys(
+      firstMondayKeyOnOrAfter(
+        civilPartsInZone(sourceWindow.start, calendarTimeZone)[0],
+      ),
+      firstMondayKeyOnOrAfter(
+        civilPartsInZone(targetWindow.start, calendarTimeZone)[0],
+      ),
     );
     candidates = selected
       .map((source) => ({
@@ -1279,8 +1293,8 @@ async function replicateMonthCalendar(
           source.requiredCapacity ??
           Math.max(1, sourceActiveCounts.get(source.id) ?? 0),
         label: source.label,
-        startAt: addDays(source.startAt, offsetDays),
-        endAt: addDays(source.endAt, offsetDays),
+        startAt: shiftInstantByDays(source.startAt, offsetDays, calendarTimeZone),
+        endAt: shiftInstantByDays(source.endAt, offsetDays, calendarTimeZone),
         institutionId: source.institutionId,
         hospitalId: source.hospitalId,
         sectorId: source.sectorId,
@@ -1821,10 +1835,16 @@ export const shiftsRouter = router({
 
       assertModalityCoherent(input);
 
+      const hospitalTimeZone = await readHospitalTimeZone(
+        db,
+        ctx.institutionId,
+        template.hospitalId,
+      );
       const [startAt, endAt] = buildShiftTimestamps(
         input.date,
         template.startTime,
         template.endTime,
+        hospitalTimeZone,
       );
       assertCanEditScheduleDate(actor, startAt);
       const insertId = await db.transaction(async (tx) => {
