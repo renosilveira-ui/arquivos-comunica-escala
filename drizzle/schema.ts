@@ -716,6 +716,15 @@ export const institutions = mysqlTable("institutions", {
     .notNull()
     .default("America/Sao_Paulo"),
   metadata: json("metadata"),
+  /**
+   * Aviso ao gestor quando um plantão não é confirmado. Decisão do PO
+   * (12/09/2026): é escolha do grupo de trabalho, não imposição do sistema —
+   * ligado por padrão, desligável pelo gestor na aba Perfil. Ver
+   * docs/operations/confirmation-coverage.md.
+   */
+  notifyManagerOnUnconfirmed: boolean("notify_manager_on_unconfirmed")
+    .notNull()
+    .default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 });
@@ -3308,6 +3317,7 @@ export const dutyConfirmations = mysqlTable(
       "REPLACEMENT_CONFIRMED", // Substituto aceitou
       "REPLACEMENT_DECLINED", // Substituto recusou
       "AUTO_CONFIRMED", // Legado somente leitura; não é mais produzido
+      "EXPIRED", // Plantão terminou sem resposta; terminal, sem notificação
     ])
       .notNull()
       .default("PENDING"),
@@ -3336,6 +3346,13 @@ export const dutyConfirmations = mysqlTable(
     // Metadata
     declineReason: varchar("decline_reason", { length: 500 }),
     managerNotified: boolean("manager_notified").notNull().default(false),
+    // Terminal: o plantão terminou e ninguém respondeu. Encerrado pelo cron,
+    // sem notificação. Substitui o "PENDING para sempre".
+    expiredAt: timestamp("expired_at"),
+    // O aviso teria ido ao gestor, mas a instituição desligou o aviso
+    // (`institutions.notify_manager_on_unconfirmed`). A descoberta trata
+    // como escalada: não re-arma, não redescobre.
+    escalationSuppressedAt: timestamp("escalation_suppressed_at"),
 
     // Push de início de plantão ("seu plantão começou — abra o Comunica+").
     // Marcado pelo cron quando o push é enviado; NULL = ainda não enviado.

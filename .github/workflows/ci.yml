@@ -136,6 +136,8 @@ jobs:
       - name: Validate core schema reproducibility migration
         run: pnpm test:core-schema-repro-migration
 
+      - name: Validate confirmation expiry and escalation policy migration
+        run: pnpm test:confirmation-policy-migration
       - name: Validate push token provenance v2 migration
         run: pnpm test:push-token-v2-migration
       - name: Validate manual migration ledger

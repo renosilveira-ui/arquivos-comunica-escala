@@ -29,6 +29,7 @@
     "test:schedule-invite-migrations": "vitest run --config vitest.migration.config.ts tests/schedule-invite-issuance-fence-migration-mysql.test.ts tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
     "test:auth-recovery-migration": "vitest run --config vitest.migration.config.ts tests/auth-recovery-migration-mysql.test.ts",
     "test:core-schema-repro-migration": "vitest run --config vitest.migration.config.ts tests/core-schema-reproducibility-migration-mysql.test.ts",
+    "test:confirmation-policy-migration": "vitest run --config vitest.migration.config.ts tests/confirmation-expiry-policy-migration-mysql.test.ts",
     "test:push-token-v2-migration": "vitest run --config vitest.migration.config.ts tests/push-token-provenance-v2-migration-mysql.test.ts",
     "test:manual-migration-ledger": "vitest run --config vitest.migration.config.ts tests/manual-migration-ledger-mysql.test.ts",
     "test:pi-drop-user-role-migration": "vitest run --config vitest.migration.config.ts tests/professional-institutions-drop-user-role-migration-mysql.test.ts",
