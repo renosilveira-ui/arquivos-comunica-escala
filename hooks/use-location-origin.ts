@@ -41,6 +41,14 @@ type PermissionSnapshot = {
   foreground: Location.PermissionStatus;
   background: Location.PermissionStatus | null;
   canAskAgain: boolean;
+  /**
+   * O sistema ainda aceita mostrar o pedido de "sempre" dentro do app?
+   *
+   * No iPhone, logo depois de liberar "durante o uso", aceita — e é um toque.
+   * Depois de recusado, ou no Android a partir do 11, não aceita mais: o
+   * único caminho são os ajustes do aparelho.
+   */
+  backgroundCanAskAgain: boolean;
 };
 
 function accessFrom(snapshot: PermissionSnapshot | null): LocationAccess {
@@ -64,6 +72,7 @@ async function readPermissions(): Promise<PermissionSnapshot> {
       foreground: foreground.status,
       background: null,
       canAskAgain: foreground.canAskAgain,
+      backgroundCanAskAgain: false,
     };
   }
   const background = await Location.getBackgroundPermissionsAsync();
@@ -71,6 +80,7 @@ async function readPermissions(): Promise<PermissionSnapshot> {
     foreground: foreground.status,
     background: background.status,
     canAskAgain: foreground.canAskAgain,
+    backgroundCanAskAgain: background.canAskAgain,
   };
 }
 
@@ -95,6 +105,8 @@ export type LocationOriginState = {
   access: LocationAccess;
   guidance: LocationGuidance;
   busy: boolean;
+  /** O pedido de "sempre" ainda pode ser mostrado dentro do app. */
+  canAskInApp: boolean;
   /** Ligar: pede as permissões e começa a informar a posição. */
   enable: () => Promise<void>;
   /** Desligar: para de informar e chama o descarte do ponto guardado. */
@@ -104,6 +116,14 @@ export type LocationOriginState = {
 };
 
 export function useLocationOrigin(options: {
+  /**
+   * O recurso que precisa da localização está ligado?
+   *
+   * Rastrear em segundo plano com o aviso de plantão desligado é gastar
+   * bateria e coletar posição para nada. O dado só se justifica enquanto
+   * serve ao aviso — desligou o aviso, a tarefa para.
+   */
+  active?: boolean;
   /** Chamado ao desligar: a tela apaga a origem automática no servidor. */
   onDisabled?: () => Promise<void> | void;
 }): LocationOriginState {
@@ -124,16 +144,28 @@ export function useLocationOrigin(options: {
 
   const access = accessFrom(snapshot);
 
-  // Já autorizado: garante que a tarefa está de pé (reinstalação, reboot) e
-  // manda um ponto agora. Não pergunta nada — a permissão já foi dada.
+  const active = options.active ?? true;
+
+  // Já autorizado E com o aviso ligado: garante que a tarefa está de pé
+  // (reinstalação, reboot) e manda um ponto agora. Não pergunta nada — a
+  // permissão já foi dada.
+  //
+  // Com o aviso desligado, o caminho é o oposto: parar a tarefa se ela ficou
+  // de pé de uma sessão anterior. Permissão concedida não é licença para
+  // rastrear indefinidamente; é licença para servir ao aviso enquanto ele
+  // existir.
   useEffect(() => {
+    if (!active) {
+      void stopLocationOrigin().catch(() => undefined);
+      return;
+    }
     if (access === LOCATION_ACCESS.always) {
       void startLocationOrigin().catch(() => undefined);
       void reportOnce();
     } else if (access === LOCATION_ACCESS.foreground) {
       void reportOnce();
     }
-  }, [access]);
+  }, [access, active]);
 
   const enable = useCallback(async () => {
     setBusy(true);
@@ -176,10 +208,13 @@ export function useLocationOrigin(options: {
     }
   }, []);
 
+  const canAskInApp = snapshot?.backgroundCanAskAgain ?? false;
+
   return {
     access,
-    guidance: locationGuidance(access),
+    guidance: locationGuidance(access, { canAskInApp }),
     busy,
+    canAskInApp,
     enable,
     disable,
     openSettings,

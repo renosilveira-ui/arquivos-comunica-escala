@@ -141,18 +141,6 @@ export default function DepartureAlertsScreen() {
 
   const status = statusQuery.data;
 
-  // Desligar a localização apaga a origem automática no servidor: não faz
-  // sentido guardar onde a pessoa estava depois que ela pediu para parar.
-  const location = useLocationOrigin({
-    onDisabled: async () => {
-      const automatic = statusQuery.data?.origins.find(
-        (origin) => origin.label === AUTOMATIC_ORIGIN_LABEL,
-      );
-      if (automatic) {
-        await deleteOrigin.mutateAsync({ originId: automatic.id });
-      }
-    },
-  });
   /**
    * Estado exibido do interruptor.
    *
@@ -164,8 +152,36 @@ export default function DepartureAlertsScreen() {
     savePreferences.isPending && savePreferences.variables
       ? savePreferences.variables.enabled
       : (status?.enabled ?? false);
+
+  // Desligar a localização apaga a origem automática no servidor: não faz
+  // sentido guardar onde a pessoa estava depois que ela pediu para parar.
+  const location = useLocationOrigin({
+    // Com o aviso desligado não há por que rastrear: a tarefa em segundo
+    // plano para, e volta sozinha quando o aviso for religado.
+    active: enabled,
+    onDisabled: async () => {
+      const automatic = statusQuery.data?.origins.find(
+        (origin) => origin.label === AUTOMATIC_ORIGIN_LABEL,
+      );
+      if (automatic) {
+        await deleteOrigin.mutateAsync({ originId: automatic.id });
+      }
+    },
+  });
   const busy =
     savePreferences.isPending || saveOrigin.isPending || deleteOrigin.isPending;
+
+  /**
+   * O botão pede a permissão, ou manda para os ajustes do aparelho?
+   *
+   * Pede sempre que o sistema ainda aceita a pergunta: nunca perguntamos
+   * ainda, ou já temos "durante o uso" e o aparelho aceita mostrar o pedido
+   * de "sempre". Só quando o sistema fecha a porta é que os ajustes viram o
+   * caminho — e aí a tela diz isso com todas as letras.
+   */
+  const canRequestInApp =
+    location.access === LOCATION_ACCESS.unknown ||
+    (location.access === LOCATION_ACCESS.foreground && location.canAskInApp);
 
   const toggle = useCallback(
     (next: boolean) => {
@@ -175,8 +191,20 @@ export default function DepartureAlertsScreen() {
         enabled: next,
         travelOriginId: status.travelOriginId,
       });
+      // Ligar o aviso É o momento em que o médico declara que quer o tempo
+      // de trânsito. Pedir a localização aqui é pedir no instante em que a
+      // razão do pedido está na cabeça dele. Antes, o pedido morava num
+      // botão de uma seção mais abaixo, que ele podia nunca rolar até ver —
+      // e o aviso chegava sem trânsito sem que ninguém entendesse por quê.
+      //
+      // Se já está tudo liberado, não pergunta nada. Se foi recusado sem
+      // direito a nova pergunta, o sistema devolve a recusa na hora e a
+      // seção abaixo explica o caminho pelos ajustes.
+      if (next && location.access !== LOCATION_ACCESS.always && !location.busy) {
+        void location.enable();
+      }
     },
-    [status, savePreferences],
+    [status, savePreferences, location],
   );
 
   const chooseOrigin = useCallback(
@@ -296,7 +324,12 @@ export default function DepartureAlertsScreen() {
                 fullWidth
                 disabled={busy || location.busy}
               />
-            ) : location.access === LOCATION_ACCESS.unknown ? (
+            ) : canRequestInApp ? (
+              /* Enquanto o próprio sistema aceita mostrar o pedido, o botão
+                 pede — não manda ninguém para os ajustes. Isso inclui o
+                 estado "durante o uso" no iPhone, em que basta um toque para
+                 subir de nível; mandar aos ajustes ali era perder a pessoa
+                 no meio do caminho. */
               <AppButton
                 title={
                   location.busy

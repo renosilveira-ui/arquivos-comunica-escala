@@ -42,13 +42,29 @@ export type LocationGuidance = {
 };
 
 /**
+ * Opções que mudam o CAMINHO oferecido, não o estado.
+ *
+ * `canAskInApp` distingue as duas situações que o estado `FOREGROUND` junta:
+ * o sistema ainda aceita mostrar o pedido de "sempre" dentro do app (iPhone,
+ * logo após liberar "durante o uso"), ou já não aceita e o único caminho são
+ * os ajustes do aparelho. Mandar alguém aos ajustes quando bastava um toque
+ * é perder a pessoa no meio do caminho.
+ */
+export type LocationGuidanceOptions = {
+  canAskInApp?: boolean;
+};
+
+/**
  * O que dizer ao médico em cada estado da permissão.
  *
  * `FOREGROUND` é o estado traiçoeiro: parece que está tudo certo, e o aviso
  * sairia sem trânsito porque, uma hora antes do plantão, o app está fechado.
  * A tela precisa dizer isso com todas as letras em vez de mostrar um "ok".
  */
-export function locationGuidance(access: LocationAccess): LocationGuidance {
+export function locationGuidance(
+  access: LocationAccess,
+  options: LocationGuidanceOptions = {},
+): LocationGuidance {
   switch (access) {
     case LOCATION_ACCESS.always:
       return {
@@ -58,12 +74,19 @@ export function locationGuidance(access: LocationAccess): LocationGuidance {
         trafficWorks: true,
       };
     case LOCATION_ACCESS.foreground:
-      return {
-        title: "Falta liberar com o app fechado",
-        body: "Hoje o Escala+ só enxerga sua localização enquanto o app está aberto. Mas o aviso sai uma hora antes do plantão, quando o app está fechado — e aí ele chega sem o tempo de trânsito. Para resolver, mude a permissão de localização do Escala+ para “Sempre” nos ajustes do aparelho.",
-        action: "Abrir ajustes do aparelho",
-        trafficWorks: false,
-      };
+      return options.canAskInApp
+        ? {
+            title: "Falta liberar com o app fechado",
+            body: "Hoje o Escala+ só enxerga sua localização enquanto o app está aberto. Mas o aviso sai uma hora antes do plantão, quando o app está fechado — e aí ele chega sem o tempo de trânsito. Toque abaixo e escolha “Sempre” quando o aparelho perguntar.",
+            action: "Liberar com o app fechado",
+            trafficWorks: false,
+          }
+        : {
+            title: "Falta liberar com o app fechado",
+            body: "Hoje o Escala+ só enxerga sua localização enquanto o app está aberto. Mas o aviso sai uma hora antes do plantão, quando o app está fechado — e aí ele chega sem o tempo de trânsito. Para resolver, mude a permissão de localização do Escala+ para “Sempre” nos ajustes do aparelho.",
+            action: "Abrir ajustes do aparelho",
+            trafficWorks: false,
+          };
     case LOCATION_ACCESS.denied:
       return {
         title: "Localização desligada",

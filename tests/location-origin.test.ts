@@ -67,11 +67,51 @@ describe("o texto que o médico lê", () => {
    * tela precisa dizer isso, não mostrar um "ok".
    */
   it("permissão só com o app aberto é tratada como pendência, não como pronto", () => {
-    const g = locationGuidance(LOCATION_ACCESS.foreground);
-    expect(g.trafficWorks).toBe(false);
-    expect(g.action).toBeTruthy();
-    expect(g.body).toMatch(/fechado/i);
-    expect(g.title).not.toMatch(/ligada|pronto|ok/i);
+    for (const canAskInApp of [true, false]) {
+      const g = locationGuidance(LOCATION_ACCESS.foreground, { canAskInApp });
+      expect(g.trafficWorks, String(canAskInApp)).toBe(false);
+      expect(g.action, String(canAskInApp)).toBeTruthy();
+      expect(g.body, String(canAskInApp)).toMatch(/fechado/i);
+      expect(g.title, String(canAskInApp)).not.toMatch(/ligada|pronto|ok/i);
+    }
+  });
+
+  /**
+   * Mandar alguém aos ajustes do aparelho quando bastava um toque é perder a
+   * pessoa no meio do caminho. Enquanto o sistema aceita mostrar o pedido, a
+   * tela pede; só quando ele fecha a porta é que os ajustes viram o caminho.
+   */
+  it("com o app aberto: pede ali mesmo enquanto o sistema aceita, e só então manda aos ajustes", () => {
+    const podePedir = locationGuidance(LOCATION_ACCESS.foreground, {
+      canAskInApp: true,
+    });
+    expect(podePedir.action).toBe("Liberar com o app fechado");
+    expect(podePedir.action).not.toMatch(/ajustes/i);
+    expect(podePedir.body).not.toMatch(/ajustes do aparelho/i);
+
+    const portaFechada = locationGuidance(LOCATION_ACCESS.foreground, {
+      canAskInApp: false,
+    });
+    expect(portaFechada.action).toMatch(/ajustes/i);
+    expect(portaFechada.body).toMatch(/ajustes do aparelho/i);
+  });
+
+  it("sem a opção, o padrão é o caminho conservador dos ajustes", () => {
+    expect(locationGuidance(LOCATION_ACCESS.foreground).action).toMatch(
+      /ajustes/i,
+    );
+  });
+
+  it("a opção não muda nenhum outro estado", () => {
+    for (const state of [
+      LOCATION_ACCESS.always,
+      LOCATION_ACCESS.denied,
+      LOCATION_ACCESS.unknown,
+    ]) {
+      expect(locationGuidance(state, { canAskInApp: true }), state).toEqual(
+        locationGuidance(state, { canAskInApp: false }),
+      );
+    }
   });
 
   it("só o estado completo promete o trânsito", () => {
