@@ -18,12 +18,13 @@ import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search,
 import { formatDateBR } from "@/lib/datetime";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import {
-  ALLOCATION_REPEAT_HORIZON_MONTHS,
   ALLOCATION_REPEAT_OPTIONS,
   ALLOCATION_REPEAT_SECTION_TITLE,
   DEFAULT_ALLOCATION_REPEAT_MONTHS,
   allocationRepeatHorizonHint,
   allocationRepeatHorizonLabel,
+  allocationRepeatHorizonsForRole,
+  allocationRepeatRoleCapHint,
   allocationRepeatPreviewText,
   allocationRepeatToast,
   type AllocationRepeatRule,
@@ -42,7 +43,7 @@ const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
  */
 export default function ShiftDetailsScreen() {
   const { user } = useAuth();
-  const { can } = usePermissions();
+  const { can, roleInInstitution } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const { width } = useWindowDimensions();
@@ -51,6 +52,13 @@ export default function ShiftDetailsScreen() {
   const [selectedProfessionalId, setSelectedProfessionalId] = useState<number | null>(null);
   const [repeatRule, setRepeatRule] = useState<AllocationRepeatRule>("none");
   const [repeatMonths, setRepeatMonths] = useState<number>(DEFAULT_ALLOCATION_REPEAT_MONTHS);
+  const repeatHorizons = allocationRepeatHorizonsForRole(roleInInstitution);
+  // O papel pode chegar depois da escolha; o valor efetivo nunca passa do
+  // que ele alcança, para a tela não pedir o que a escrita vai recusar.
+  const effectiveRepeatMonths = Math.min(
+    repeatMonths,
+    repeatHorizons[repeatHorizons.length - 1] ?? repeatMonths,
+  );
   const feedback = useActionFeedback();
 
   // Buscar detalhes da escala (API ou demo)
@@ -89,7 +97,7 @@ export default function ShiftDetailsScreen() {
   // O que a repetição fará, dito antes de fazer. Também é aqui que o
   // limite do papel sobre a data aparece, em vez de só depois do toque.
   const repeatPreview = trpc.editor.previewAssignRepeat.useQuery(
-    { shiftInstanceId: shiftId, repeatRule, repeatMonths },
+    { shiftInstanceId: shiftId, repeatRule, repeatMonths: effectiveRepeatMonths },
     { enabled: repeatRule !== "none" && Number.isFinite(shiftId) },
   );
 
@@ -198,7 +206,7 @@ export default function ShiftDetailsScreen() {
       assignmentType: selectedAssignmentType,
       reason: "Alocação direta pela tela de detalhes",
       repeatRule,
-      repeatMonths,
+      repeatMonths: effectiveRepeatMonths,
     });
   };
 
@@ -576,8 +584,8 @@ export default function ShiftDetailsScreen() {
                     <>
                       <Text style={styles.repeatSubtitle}>Repetir por:</Text>
                       <View style={styles.repeatGrid}>
-                        {ALLOCATION_REPEAT_HORIZON_MONTHS.map((months) => {
-                          const selected = months === repeatMonths;
+                        {repeatHorizons.map((months) => {
+                          const selected = months === effectiveRepeatMonths;
                           return (
                             <TouchableOpacity
                               key={months}
@@ -606,8 +614,17 @@ export default function ShiftDetailsScreen() {
                     </>
                   ) : null}
                   <Text style={styles.repeatHint}>
-                    {allocationRepeatHorizonHint(repeatRule, repeatMonths)}
+                    {allocationRepeatHorizonHint(
+                      repeatRule,
+                      effectiveRepeatMonths,
+                    )}
                   </Text>
+                  {repeatRule !== "none" &&
+                  allocationRepeatRoleCapHint(roleInInstitution) ? (
+                    <Text style={styles.repeatHint}>
+                      {allocationRepeatRoleCapHint(roleInInstitution)}
+                    </Text>
+                  ) : null}
                   {repeatRule !== "none" && repeatPreview.isError ? (
                     <Text style={styles.repeatWarning}>
                       {repeatPreview.error.message}

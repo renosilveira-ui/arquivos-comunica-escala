@@ -25,6 +25,7 @@ import { appRouter } from "../server/routers";
 import { scheduleContextsRouter } from "../server/schedule-contexts";
 import { shiftsRouter } from "../server/shifts-crud";
 import { addMonthsYearMonth, yearMonthBrt } from "../server/local-time";
+import { GESTOR_MEDICO_MONTH_WINDOW } from "../lib/schedule-authority";
 import { lockMonth, publishMonth } from "../server/month-guards";
 
 /**
@@ -66,6 +67,9 @@ describe("system review — correções de raiz", () => {
   const currentYm = yearMonthBrt(new Date());
   const nextYm = addMonthsYearMonth(currentYm, 1);
   const plus2Ym = addMonthsYearMonth(currentYm, 2);
+  // Primeiro mês fora do alcance do gestor de hospital. plus2Ym segue
+  // servindo os testes de GESTOR_PLUS e admin, que não têm janela.
+  const beyondWindowYm = addMonthsYearMonth(currentYm, GESTOR_MEDICO_MONTH_WINDOW);
 
   const ctxFor = (
     userId: number,
@@ -407,7 +411,7 @@ describe("system review — correções de raiz", () => {
       );
   }
 
-  it("1: GESTOR_MEDICO abre o próximo mês e não abre mês+2 (−03:00)", async () => {
+  it("1: GESTOR_MEDICO abre o próximo mês e não abre fora da janela (−03:00)", async () => {
     const ensured = await callerContexts(
       medicoAUserId,
       "manager",
@@ -437,15 +441,15 @@ describe("system review — correções de raiz", () => {
         hospitalId: hospitalA,
         sectorId: sectorA,
         scheduleContextId: ensured.scheduleContextId,
-        yearMonth: plus2Ym,
+        yearMonth: beyondWindowYm,
         mode: "custom",
         templateNames: ["Manhã"],
       }),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
-      message: expect.stringMatching(/mês corrente ou do próximo/),
+      message: expect.stringMatching(/mês corrente e dos \d+ seguintes/),
     });
-    expect(await countShifts(institutionA, sectorA, plus2Ym)).toHaveLength(0);
+    expect(await countShifts(institutionA, sectorA, beyondWindowYm)).toHaveLength(0);
   });
 
   it("1b: gestor A não abre o mês da instituição B", async () => {

@@ -1,5 +1,6 @@
 import { and, eq, isNull, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { GESTOR_MEDICO_MONTH_WINDOW } from "../../lib/schedule-authority";
 import { getDb } from "../db";
 import {
   managerScope,
@@ -206,19 +207,24 @@ export function isSameCalendarMonth(date: Date, now: Date): boolean {
 }
 
 /** GESTOR_MEDICO opera o mês corrente e o imediatamente seguinte (−03:00). */
-export function isCurrentOrNextCalendarMonth(date: Date, now: Date): boolean {
+// A janela mora em lib/schedule-authority.ts porque a tela também precisa
+// dela: um número só, para oferta e recusa não discordarem.
+export function isWithinGestorMedicoMonthWindow(date: Date, now: Date): boolean {
   const target = yearMonthBrt(date);
   const current = yearMonthBrt(now);
-  return target === current || target === addMonthsYearMonth(current, 1);
+  for (let offset = 0; offset < GESTOR_MEDICO_MONTH_WINDOW; offset += 1) {
+    if (target === addMonthsYearMonth(current, offset)) return true;
+  }
+  return false;
 }
 
-const GESTOR_MEDICO_MONTH_WINDOW_MESSAGE =
-  "Gestor de hospital só pode editar escala do mês corrente ou do próximo.";
+// Derivada da constante para que regra e mensagem não desencontrem.
+const GESTOR_MEDICO_MONTH_WINDOW_MESSAGE = `Gestor de hospital só pode editar escala do mês corrente e dos ${GESTOR_MEDICO_MONTH_WINDOW - 1} seguintes.`;
 
 export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = new Date()): void {
   assertCanManageInstitutionSchedule(actor);
   if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") return;
-  if (actor.roleInInstitution === "GESTOR_MEDICO" && isCurrentOrNextCalendarMonth(date, now)) {
+  if (actor.roleInInstitution === "GESTOR_MEDICO" && isWithinGestorMedicoMonthWindow(date, now)) {
     return;
   }
 
@@ -392,7 +398,7 @@ export async function assertManagerScopeAccessForUpdate(
     });
   }
   for (const date of dates) {
-    if (role === "GESTOR_MEDICO" && !isCurrentOrNextCalendarMonth(date, new Date())) {
+    if (role === "GESTOR_MEDICO" && !isWithinGestorMedicoMonthWindow(date, new Date())) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: GESTOR_MEDICO_MONTH_WINDOW_MESSAGE,

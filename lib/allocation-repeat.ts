@@ -19,6 +19,10 @@
  * declarada pelo gestor em outro lugar.
  */
 import { isoToBr } from "./form-masks-br";
+import {
+  maxRepeatMonthsForRole,
+  type ScheduleAuthorityRole,
+} from "./schedule-authority";
 
 export const ALLOCATION_REPEAT_RULES = [
   "none",
@@ -79,6 +83,26 @@ export const ALLOCATION_REPEAT_OPTIONS: {
     hint: "Mesma semana do mês e mesmo dia da semana, uma vez por mês.",
   },
 ];
+
+/** Horizontes que este papel pode escolher, em meses. */
+export function allocationRepeatHorizonsForRole(
+  role: ScheduleAuthorityRole | null | undefined,
+): number[] {
+  const max = maxRepeatMonthsForRole(role, MAX_ALLOCATION_REPEAT_MONTHS);
+  return ALLOCATION_REPEAT_HORIZON_MONTHS.filter((months) => months <= max);
+}
+
+/**
+ * Por que o seletor tem menos opções. Sem isso o gestor de hospital vê um
+ * teto menor e não sabe se é limite dele ou do sistema.
+ */
+export function allocationRepeatRoleCapHint(
+  role: ScheduleAuthorityRole | null | undefined,
+): string | null {
+  const max = maxRepeatMonthsForRole(role, MAX_ALLOCATION_REPEAT_MONTHS);
+  if (max >= MAX_ALLOCATION_REPEAT_MONTHS) return null;
+  return `Gestor de hospital alcança ${allocationRepeatHorizonLabel(max)}.`;
+}
 
 export function allocationRepeatHint(rule: AllocationRepeatRule): string {
   return (

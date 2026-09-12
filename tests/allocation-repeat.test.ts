@@ -10,7 +10,9 @@ import {
   allocationRepeatHint,
   allocationRepeatHorizonHint,
   allocationRepeatHorizonLabel,
+  allocationRepeatHorizonsForRole,
   allocationRepeatPreviewText,
+  allocationRepeatRoleCapHint,
   allocationRepeatToast,
   clampAllocationRepeatMonths,
 } from "../lib/allocation-repeat";
@@ -26,6 +28,10 @@ import {
   weekdayOrdinalInMonth,
 } from "../server/allocation-repeat";
 import { buildShiftTimestamps, formatHospitalTime } from "../lib/hospital-time";
+import {
+  GESTOR_MEDICO_MONTH_WINDOW,
+  maxRepeatMonthsForRole,
+} from "../lib/schedule-authority";
 
 const at = (date: string, start = "07:00:00", end = "13:00:00") => {
   const [startAt, endAt] = buildShiftTimestamps(date, start, end);
@@ -130,6 +136,51 @@ describe("horizonte da repetição", () => {
     expect(
       allocationRepeatTargetDayKeys("2026-08-04", "monthly", "2026-10-04"),
     ).toEqual(["2026-09-01"]);
+  });
+});
+
+describe("o horizonte que cada papel alcança", () => {
+  it("gestor de hospital para um mês antes da janela; os demais vão ao teto", () => {
+    expect(maxRepeatMonthsForRole("GESTOR_MEDICO", 6)).toBe(
+      GESTOR_MEDICO_MONTH_WINDOW - 1,
+    );
+    expect(maxRepeatMonthsForRole("GESTOR_PLUS", 6)).toBe(6);
+    // Papel ainda não carregado recebe o teto: quem decide é o servidor, e
+    // encolher o seletor por engano esconderia opção legítima.
+    expect(maxRepeatMonthsForRole(undefined, 6)).toBe(6);
+    expect(maxRepeatMonthsForRole(null, 6)).toBe(6);
+    // O teto absoluto manda quando é menor que a janela.
+    expect(maxRepeatMonthsForRole("GESTOR_MEDICO", 2)).toBe(2);
+  });
+
+  it("o seletor oferece só o que o papel alcança", () => {
+    expect(allocationRepeatHorizonsForRole("GESTOR_PLUS")).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+    expect(allocationRepeatHorizonsForRole("GESTOR_MEDICO")).toEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it("explica o teto menor em vez de só encolher a lista", () => {
+    expect(allocationRepeatRoleCapHint("GESTOR_PLUS")).toBeNull();
+    expect(allocationRepeatRoleCapHint("GESTOR_MEDICO")).toBe(
+      "Gestor de hospital alcança 4 meses.",
+    );
+  });
+
+  it("o padrão cabe no que o gestor de hospital alcança", () => {
+    // Se o padrão passar do teto do papel, a tela abre já pedindo recusa.
+    expect(DEFAULT_ALLOCATION_REPEAT_MONTHS).toBeLessThanOrEqual(
+      maxRepeatMonthsForRole("GESTOR_MEDICO", MAX_ALLOCATION_REPEAT_MONTHS),
+    );
+  });
+
+  it("a janela do servidor e a do app são a mesma constante", () => {
+    // Um número só: a policy importa de lib/ em vez de repetir o valor.
+    const policy = readFileSync("server/_core/policy.ts", "utf8");
+    expect(policy).toContain('from "../../lib/schedule-authority"');
+    expect(policy).not.toMatch(/GESTOR_MEDICO_MONTH_WINDOW\s*=\s*\d/);
   });
 });
 
@@ -333,9 +384,11 @@ describe("wiring da tela de detalhes", () => {
   });
 
   it("manda o horizonte escolhido junto com a regra", () => {
-    expect(screen).toContain("ALLOCATION_REPEAT_HORIZON_MONTHS");
+    expect(screen).toContain("allocationRepeatHorizonsForRole");
     expect(screen).toContain("setRepeatMonths");
-    expect(screen).toMatch(/repeatRule,\s*repeatMonths,/);
+    expect(screen).toMatch(
+      /repeatRule,\s*repeatMonths: effectiveRepeatMonths,/,
+    );
     expect(screen).toContain("result.createdSlotCount");
     expect(screen).toContain("previewAssignRepeat");
     expect(screen).toContain("allocationRepeatPreviewText");

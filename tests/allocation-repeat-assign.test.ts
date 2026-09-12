@@ -822,7 +822,7 @@ describe("editor.assignDirect com regra de repetição", () => {
   });
 
   it("o horizonte não vence a autoridade do gestor sobre a data", async () => {
-    // A fixture é GESTOR_MEDICO: alcança o mês corrente e o seguinte.
+    // A fixture é GESTOR_MEDICO: alcança o mês corrente e os três seguintes.
     const sourceId = await insertShift({
       dayKey: tuesdayKeys[0],
       label: "Manhã longe",
@@ -834,7 +834,7 @@ describe("editor.assignDirect com regra de repetição", () => {
         assignmentType: "ON_DUTY",
         reason: "Repetir longe demais",
         repeatRule: "weekly",
-        repeatMonths: 3,
+        repeatMonths: 6,
       }),
     ).rejects.toThrow();
     const rows = await shiftsByLabel("Manhã longe");
