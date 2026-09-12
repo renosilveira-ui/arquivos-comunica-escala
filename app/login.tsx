@@ -177,18 +177,6 @@ export default function LoginScreen() {
               </View>
             </View>
           </Surface>
-
-          <Pressable
-            onPress={() => router.replace("/(tabs)")}
-            accessibilityRole="link"
-            accessibilityLabel="Explorar em modo demonstração"
-            hitSlop={8}
-            style={{ alignSelf: "center", minHeight: theme.space[10], justifyContent: "center" }}
-          >
-            <Text style={{ ...theme.text.caption, color: theme.colors.textMuted, textDecorationLine: "underline" }}>
-              Explorar em modo demonstração
-            </Text>
-          </Pressable>
         </View>
       </KeyboardAvoidingView>
     </ScreenGradient>
