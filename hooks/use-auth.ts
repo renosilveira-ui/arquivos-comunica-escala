@@ -11,6 +11,7 @@
 // consome o contexto. A API pública do hook é idêntica à anterior.
 
 import { getLastPushToken, setLastPushToken } from "@/lib/push-token";
+import { forgetIntendedRoute } from "@/lib/post-login-redirect";
 import {
   authApi,
   isSessionMutationMismatchCode,
@@ -408,6 +409,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // precisa apagá-lo tanto quanto o botão de logout; caso contrário B pode
       // herdar o token bruto de A e manter o aparelho inscrito nas duas contas.
       setLastPushToken(null);
+      // A rota pretendida é guardada antes de saber quem vai entrar. Sem
+      // apagá-la aqui, o destino armado por quem desistiu do login é
+      // consumido pelo próximo login, de outra pessoa.
+      forgetIntendedRoute();
       await waitForPushRegistrationIdle();
       if (!appSessionEpoch.isCurrent(cleanupEpoch)) return false;
 
