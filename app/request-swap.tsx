@@ -1,12 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
-import {
-  Text,
-  View,
-  TouchableOpacity,
-  ScrollView,
-  TextInput,
-  ActivityIndicator,
-} from "react-native";
+import { View, TouchableOpacity, ScrollView, ActivityIndicator } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { DirectedOfferRecipientPicker } from "@/components/swaps/DirectedOfferRecipientPicker";

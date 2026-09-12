@@ -1,14 +1,6 @@
 import { useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";

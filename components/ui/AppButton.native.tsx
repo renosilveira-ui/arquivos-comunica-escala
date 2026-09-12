@@ -1,5 +1,6 @@
 import React from "react";
-import { Pressable, Text, ViewStyle, TextStyle } from "react-native";
+import { Pressable, ViewStyle, TextStyle } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 
 /**

@@ -6,15 +6,8 @@
 // afirma entrega; o link, quando aceito pelo provedor, abre /reset-password.
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { ChevronLeft, MailCheck } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

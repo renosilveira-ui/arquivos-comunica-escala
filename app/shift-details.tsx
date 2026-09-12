@@ -1,14 +1,6 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
-import {
-  Text,
-  TextInput,
-  View,
-  TouchableOpacity,
-  ActivityIndicator,
-  StyleSheet,
-  useWindowDimensions,
-  type ViewStyle,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, type ViewStyle } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";

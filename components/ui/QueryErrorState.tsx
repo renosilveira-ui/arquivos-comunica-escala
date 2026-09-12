@@ -7,7 +7,8 @@
 // sabe, e o usuário confia (gestor deixa de aprovar, médico acha que
 // está em dia). Erro tem que parecer erro.
 
-import { View, Text, TouchableOpacity } from "react-native";
+import { View, TouchableOpacity } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { AlertCircle, CloudOff } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { presentQueryError } from "@/lib/query-error-presentation";

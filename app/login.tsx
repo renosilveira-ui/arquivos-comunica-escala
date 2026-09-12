@@ -6,7 +6,8 @@
 // visível nos campos, erro em tom danger e alvos ≥ 44pt.
 
 import { useState } from "react";
-import { Image, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View } from "react-native";
+import { Image, KeyboardAvoidingView, Platform, Pressable, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Surface } from "@/components/ui/Surface";

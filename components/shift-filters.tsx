@@ -1,11 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Platform,
-  useWindowDimensions,
-} from "react-native";
+import { View, TouchableOpacity, Platform, useWindowDimensions } from "react-native";
+import { Text } from "@/components/ui/Text";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
 import { theme } from "@/lib/theme";

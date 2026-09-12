@@ -4,7 +4,8 @@
 // tela pequena). Tons de texto em [700]/[600] sobre o tint claro para
 // bater 4,5:1 mesmo em 12px.
 
-import { Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 import { shiftStatusMeta, type ShiftStatusContext, type ShiftStatusTone } from "@/lib/shift-status";
 

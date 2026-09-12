@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
-import { RefreshControl, Text, TouchableOpacity, View } from "react-native";
+import { RefreshControl, TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react-native";
 

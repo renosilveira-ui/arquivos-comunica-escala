@@ -6,7 +6,8 @@
 // de horário em numeral tabular. Alvo de 58 pt: a lista é operada com uma
 // mão, no corredor.
 
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";

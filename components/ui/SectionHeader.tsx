@@ -4,7 +4,8 @@
 // tela usa isto: ritmo vertical e hierarquia iguais em todas as telas.
 
 import type { ReactNode } from "react";
-import { Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 
 export interface SectionHeaderProps {

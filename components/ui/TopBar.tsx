@@ -1,4 +1,5 @@
-import { View, Text, TouchableOpacity } from "react-native";
+import { View, TouchableOpacity } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Menu, User } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { theme } from "@/lib/theme";

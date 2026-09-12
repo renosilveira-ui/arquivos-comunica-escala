@@ -1,4 +1,5 @@
-import { View, Text, Platform } from "react-native";
+import { View, Platform } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useTestUserId } from "@/hooks/use-test-user-id";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";

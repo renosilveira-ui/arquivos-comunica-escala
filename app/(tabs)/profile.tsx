@@ -23,18 +23,8 @@
 //    (listByPeriod falhar não derruba identidade nem as rotas de gestão).
 
 import { useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Share,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Share, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import {
   AlertTriangle,
   Bell,

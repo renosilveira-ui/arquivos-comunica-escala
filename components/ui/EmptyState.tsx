@@ -1,4 +1,5 @@
-import { View, Text, type ViewProps } from "react-native";
+import { View, type ViewProps } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { cn } from "@/lib/utils";
 import { theme } from "@/lib/theme";
 

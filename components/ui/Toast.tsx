@@ -16,15 +16,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  AccessibilityInfo,
-  Animated,
-  Easing,
-  Platform,
-  Pressable,
-  Text,
-  View,
-} from "react-native";
+import { AccessibilityInfo, Animated, Easing, Platform, Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AlertCircle, CheckCircle2, Info } from "lucide-react-native";
 import { theme } from "@/lib/theme";

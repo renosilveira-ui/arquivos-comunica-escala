@@ -1,4 +1,5 @@
-import { TouchableOpacity, Text, type TouchableOpacityProps, ActivityIndicator } from "react-native";
+import { TouchableOpacity, type TouchableOpacityProps, ActivityIndicator } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { cn } from "@/lib/utils";
 import { theme } from "@/lib/theme";
 

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { FlatList, Modal, Text, TouchableOpacity, View } from "react-native";
+import { FlatList, Modal, TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check, ChevronDown, X } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import type { ScheduleContextAccessOption } from "./ScheduleContextAccessPicker.logic";

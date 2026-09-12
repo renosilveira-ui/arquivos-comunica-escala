@@ -14,13 +14,8 @@
 // horizontal como último recurso.
 
 import { useMemo, type ReactElement } from "react";
-import {
-  ScrollView,
-  Text,
-  Pressable,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { ScrollView, Pressable, View, type RefreshControlProps } from "react-native";
+import { Text } from "@/components/ui/Text";
 import {
   CheckCircle2,
   CircleDashed,

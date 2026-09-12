@@ -1,4 +1,5 @@
-import { View, Text } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useTestUserId } from "@/hooks/use-test-user-id";
 import { trpc } from "@/lib/trpc";
 import Constants from "expo-constants";

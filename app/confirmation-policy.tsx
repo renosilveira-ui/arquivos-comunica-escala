@@ -1,5 +1,6 @@
 import { Stack } from "expo-router";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 
 import { ListRow } from "@/components/ui/ListRow";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";

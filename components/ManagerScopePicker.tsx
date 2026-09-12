@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import {

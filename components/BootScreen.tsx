@@ -8,7 +8,8 @@
 // aviso honesto de que o servidor está acordando.
 
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Image, Text, View } from "react-native";
+import { ActivityIndicator, Image, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 
 const HINT_AFTER_MS = 2500;

@@ -1,10 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  Text,
-  View,
-  TouchableOpacity,
-  ActivityIndicator,
- } from "react-native";
+import { View, TouchableOpacity, ActivityIndicator } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";

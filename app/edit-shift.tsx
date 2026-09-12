@@ -1,16 +1,15 @@
 import { useState, useEffect } from "react";
 import {
   ScrollView,
-  Text,
   View,
   TouchableOpacity,
-  TextInput,
   ActivityIndicator,
   Platform,
   Modal,
   Pressable,
   Keyboard,
 } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

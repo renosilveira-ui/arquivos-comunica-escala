@@ -5,7 +5,8 @@
 // é a guarda. Voz fica sobreposta no centro, sem quinto slot.
 
 import { type BottomTabBarProps } from "@react-navigation/bottom-tabs";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
 import { isHiddenByNavigator, MOBILE_TAB_NAMES } from "@/lib/mobile-tab-bar";

@@ -1,5 +1,7 @@
 import { Platform } from "react-native";
 
+import { FONT_FAMILY_BASE } from "./typography";
+
 /**
  * Design system tokens for Escalas Hospitalares.
  *
@@ -81,8 +83,12 @@ const palette = {
 } as const;
 
 const fontFamily = {
-  sans:
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  // A fonte do produto é a Inter, e quem a aplica é o <Text> de
+  // components/ui/Text.tsx — o peso decide o arquivo, porque no nativo
+  // `fontFamily` é UMA fonte e o aparelho não deriva o negrito sozinho.
+  // Este token existe para quem precisar do nome base (web, medição);
+  // telas não devem defini-lo à mão.
+  sans: FONT_FAMILY_BASE,
   // Numeral tabular (hora, contagem, dia do mês). No nativo fontFamily é UM
   // nome de fonte instalada — a pilha CSS só vale na web; em iOS/Android a
   // pilha caía em silêncio na fonte do sistema (proporcional).
