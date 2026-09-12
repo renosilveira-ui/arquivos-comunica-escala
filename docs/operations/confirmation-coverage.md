@@ -5,16 +5,19 @@ roda **dentro do processo web**, com `setInterval` de 60 s após o `listen`,
 e também via CLI one-shot (`pnpm confirmation:tick`). Os dois chamam o
 mesmo `tick()`.
 
+**Decidido em 10/09/2026:** o PO tirou o `escalas-staging` do plano free.
+O serviço está em instância sempre ligada (1 CPU / 2 GB, `plan: standard`
+no `render.yaml`), sem spin-down: o tick in-process roda contínuo, e a
+rechecagem +30 min e o push de início correm pontualmente. O finding
+operacional está fechado para o staging. O texto abaixo fica como
+referência para qualquer ambiente que volte a um plano que dorme.
+
 No plano Render **free** a instância dorme após 15 min sem tráfego.
 Enquanto dorme, não há tick in-process: a rechecagem +30 min e o push de
 início (lookback 5 min) não correm. A **discovery** de pedidos de
 confirmação é due-based e faz catch-up no próximo tick enquanto o plantão
 ainda não começou — um deploy/sleep que atravessa 11:00 BRT **não** perde
-mais o pedido do dia. Pontualidade 24/7 (recheck, start-push, primeiro
-aviso no due) continua `EXTERNAL_INFRA_ACTION_REQUIRED`.
-
-O código deste repositório **não consegue** manter o processo acordado.
-Fechar o finding operacional é decisão de custo do PO.
+mais o pedido do dia.
 
 ## Algoritmo de discovery (código)
 
@@ -68,20 +71,18 @@ permanece aberta.
 
 ## O que o código não faz (e não deve)
 
-- Não muda `plan: free` → `starter` neste repositório.
 - Não cria um serviço `type: cron` ativo no Blueprint (mínimo US$ 1/mês;
   aplicar o YAML cobraria).
-- Não liga o CLI sozinho. Sem serviço sempre-on ou Cron cobrado, recheck e
-  start-push continuam sujeitos ao spin-down.
+- Não liga o CLI sozinho.
 
-## Opções de infra (PO)
+## Opções de infra (PO) — histórico
 
-Qualquer uma fecha o finding operacional. Não são exclusivas; A+B é
-redundante e seguro.
+Em 10/09/2026 o PO escolheu a opção **A** (instância sempre ligada). A
+tabela fica como registro da decisão.
 
 | Opção | Custo (ordem de grandeza) | Efeito |
 |---|---|---|
-| **A.** `plan: starter` no web `escalas-staging` | US$ 7/mês | Sem spin-down. O `setInterval` in-process cobre 24/7. |
+| **A.** instância sempre ligada no web `escalas-staging` (escolhida: `standard`, 1 CPU / 2 GB) | a partir de US$ 7/mês | Sem spin-down. O `setInterval` in-process cobre 24/7. |
 | **B.** Render Cron cobrado chamando o CLI a cada minuto | US$ 1/mês mínimo | Cobre o web dormindo. O web no free continua com o intervalo só quando acordado. |
 
 A discovery due-based tolera intervalo maior que 1 min (o atraso máximo do
@@ -170,3 +171,31 @@ Isso **vai acontecer de novo** para todo médico sem o app instalado: o push
 falha, escala ao gestor, e a confirmação fica parada em `PENDING` até alguém
 agir. É o comportamento desenhado — a diferença é que agora ele não custa o
 subsistema inteiro.
+
+## Estado terminal EXPIRED e o aviso ao gestor como escolha (12/09/2026)
+
+Parecer de bancos (12/09): 83 confirmações `PENDING` no staging, 79 de
+plantões já terminados, a mais antiga de 26/08. Depois da escalação ao
+gestor a confirmação esperava um humano — e nada a encerrava quando o
+plantão terminava. Decisão do PO:
+
+- **Plantão não confirmado continua sendo avisado ao gestor da escala**, mas
+  cada instituição pode desligar o aviso: "é uma decisão do grupo de
+  trabalho, não imposição do sistema; nós oferecemos a ferramenta".
+  Chave em Perfil → Gestão → **Plantão não confirmado** (só quem gerencia a
+  escala; auditado como `INSTITUTION_FEATURE_UPDATED`). Coluna
+  `institutions.notify_manager_on_unconfirmed`, ligada por padrão.
+- **Confirmação sem resposta encerra quando o plantão termina**: passo
+  `expireStaleConfirmations` do tick — abertas (`PENDING`, `NOMINATED`,
+  `DECLINED`, `REPLACEMENT_DECLINED`) com `end_at < now` viram `EXPIRED`
+  (`expired_at`), sem notificação. Terminal: ninguém sai de `EXPIRED`.
+  As pendências antigas foram descartadas por este caminho na primeira
+  rodada após o deploy.
+- Com o aviso desligado, a escalação não cria intenção nenhuma e marca
+  `escalation_suppressed_at`; a descoberta trata como escalado (não re-arma,
+  não redescobre), e a confirmação segue até `EXPIRED`.
+- Notificações do "produto" (o que dizer ao médico e ao gestor quando o
+  plantão vira produto de verdade): dívida registrada, a resolver depois.
+
+Migração: `drizzle/migrations/manual/2026-09-12-confirmation-expiry-and-escalation-policy.sql`.
+

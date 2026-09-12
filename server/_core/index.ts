@@ -54,6 +54,10 @@ import {
   stopDepartureCron,
 } from "../cron/departure-dispatcher";
 import {
+  startEphemeralRetentionCron,
+  stopEphemeralRetentionCron,
+} from "../cron/ephemeral-retention-dispatcher";
+import {
   startGoogleCalendarSyncCron,
   stopGoogleCalendarSyncCron,
 } from "../cron/google-calendar-sync-dispatcher";
@@ -297,6 +301,7 @@ async function startServer() {
     startConfirmationCron();
     startAuthRecoveryCron();
     startDepartureCron();
+    startEphemeralRetentionCron();
     startGoogleCalendarSyncCron();
     startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
@@ -343,6 +348,15 @@ async function startServer() {
           "stopDepartureCron failed",
         );
       }
+      let ephemeralDrain = Promise.resolve();
+      try {
+        ephemeralDrain = stopEphemeralRetentionCron();
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopEphemeralRetentionCron failed",
+        );
+      }
       // A sincronização com o Google pode estar no meio de uma conta:
       // drenar evita registrar "sincronizado" sem ter terminado.
       let googleSyncDrain = Promise.resolve();
@@ -376,6 +390,14 @@ async function startServer() {
         logger.error(
           safeErrorDiagnostic(err, "application"),
           "stopDepartureCron failed",
+        );
+      }
+      try {
+        await ephemeralDrain;
+      } catch (err) {
+        logger.error(
+          safeErrorDiagnostic(err, "application"),
+          "stopEphemeralRetentionCron failed",
         );
       }
       try {

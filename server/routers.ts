@@ -56,6 +56,7 @@ import { calendarAuxiliaryRouter } from "./calendar-auxiliary-router";
 import { googleCalendarRouter } from "./google-calendar-router";
 import { weatherRouter } from "./weather-router";
 import { departureRouter } from "./departure-router";
+import { institutionPolicyRouter } from "./institution-policy-router";
 import {
   actionableVacancyFiltersSchema,
   listActionableVacancyRows,
@@ -1147,6 +1148,7 @@ export const appRouter = router({
   calendarAuxiliary: calendarAuxiliaryRouter,
   googleCalendar: googleCalendarRouter,
   departure: departureRouter,
+  institutionPolicy: institutionPolicyRouter,
   weather: weatherRouter,
   corporateReadiness: corporateReadinessRouter,
 });

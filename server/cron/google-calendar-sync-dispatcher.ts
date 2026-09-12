@@ -1,10 +1,6 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
-import {
-  professionalInstitutions,
-  userExternalCredentials,
-  users,
-} from "../../drizzle/schema";
+import { userExternalCredentials, users } from "../../drizzle/schema";
 import {
   EXTERNAL_LINK_STATES,
   EXTERNAL_PROVIDERS,
@@ -25,10 +21,8 @@ import {
   isDueForSync,
 } from "../integrations/google/sync-policy";
 import type { ExternalCalendarProvider } from "../integrations/providers/calendar-provider";
-import {
-  readInstitutionTimeZone,
-  resolveScheduleTimeZone,
-} from "../institution-time-zone";
+import { resolveUserTimeZone } from "../institution-time-zone";
+import { SchemaDormancy, isMissingSchema } from "./schema-dormancy";
 
 /**
  * Sincronização automática com o Google Agenda.
@@ -69,14 +63,9 @@ const GOOGLE_SYNC_BATCH = 10;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let activeTick: Promise<void> | null = null;
 let acceptingTicks = false;
-let dormantForMissingSchema = false;
+const schemaDormancy = new SchemaDormancy();
 let warnedNotConfigured = false;
 const lastAttemptAtMs = new Map<number, number>();
-
-function isMissingSchema(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  return (error as { code?: unknown }).code === "ER_NO_SUCH_TABLE";
-}
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
@@ -84,7 +73,7 @@ function errorName(error: unknown): string {
 
 /** Somente para teste: esquece tentativas e reabilita o worker. */
 export function resetGoogleCalendarSyncState(): void {
-  dormantForMissingSchema = false;
+  schemaDormancy.reset();
   warnedNotConfigured = false;
   lastAttemptAtMs.clear();
 }
@@ -100,6 +89,10 @@ type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 /**
  * Candidatas do tick: as mais atrasadas primeiro. O filtro fino (backoff e
  * tentativa recente) é aplicado em memória, por `isDueForSync`.
+ *
+ * Conta excluída (soft-delete) fica de fora mesmo que a credencial ainda
+ * exista: a finalidade acabou, e usar o token dela seria tratar como viva
+ * uma conta que o usuário encerrou.
  */
 export async function selectGoogleSyncCandidates(
   db: Db,
@@ -108,6 +101,8 @@ export async function selectGoogleSyncCandidates(
 ): Promise<
   {
     userId: number;
+    /** Versão da sessão no instante da varredura; o CAS de escrita revalida. */
+    sessionVersion: number;
     lastSyncedAt: Date | null;
     updatedAt: Date;
     consecutiveFailureCount: number;
@@ -117,11 +112,13 @@ export async function selectGoogleSyncCandidates(
   return db
     .select({
       userId: userExternalCredentials.userId,
+      sessionVersion: users.sessionVersion,
       lastSyncedAt: userExternalCredentials.lastSyncedAt,
       updatedAt: userExternalCredentials.updatedAt,
       consecutiveFailureCount: userExternalCredentials.consecutiveFailureCount,
     })
     .from(userExternalCredentials)
+    .innerJoin(users, eq(users.id, userExternalCredentials.userId))
     .where(
       and(
         eq(userExternalCredentials.provider, EXTERNAL_PROVIDERS.googleCalendar),
@@ -133,34 +130,11 @@ export async function selectGoogleSyncCandidates(
           isNull(userExternalCredentials.lastSyncedAt),
           lte(userExternalCredentials.lastSyncedAt, staleBefore),
         ),
+        isNull(users.deletedAt),
       ),
     )
     .orderBy(asc(userExternalCredentials.lastSyncedAt))
     .limit(limit);
-}
-
-/**
- * Fuso da conta para datas civis dos compromissos: o da instituição
- * principal da pessoa (ou a primeira ativa); sem vínculo, o padrão do
- * sistema. O botão usa o fuso do aparelho; aqui não há aparelho.
- */
-async function resolveUserTimeZone(db: Db, userId: number): Promise<string> {
-  const [row] = await db
-    .select({ institutionId: professionalInstitutions.institutionId })
-    .from(professionalInstitutions)
-    .where(
-      and(
-        eq(professionalInstitutions.userId, userId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .orderBy(
-      desc(professionalInstitutions.isPrimary),
-      asc(professionalInstitutions.id),
-    )
-    .limit(1);
-  if (!row) return resolveScheduleTimeZone({});
-  return readInstitutionTimeZone(db, row.institutionId);
 }
 
 export async function tickGoogleCalendarSync(
@@ -168,7 +142,7 @@ export async function tickGoogleCalendarSync(
   deps: GoogleCalendarSyncDeps = {},
 ): Promise<void> {
   if (activeTick) return activeTick;
-  if (dormantForMissingSchema) return;
+  if (schemaDormancy.isDormant(now)) return;
 
   let tick!: Promise<void>;
   tick = (async () => {
@@ -217,20 +191,11 @@ export async function tickGoogleCalendarSync(
         lastAttemptAtMs.set(candidate.userId, now.getTime());
 
         try {
-          const [user] = await db
-            .select({ sessionVersion: users.sessionVersion })
-            .from(users)
-            .where(eq(users.id, candidate.userId))
-            .limit(1);
-          if (!user) {
-            skipped += 1;
-            continue;
-          }
           const timeZone = await resolveUserTimeZone(db, candidate.userId);
           const result = await runGoogleFullSync({
             db,
             userId: candidate.userId,
-            expectedSessionVersion: user.sessionVersion,
+            expectedSessionVersion: candidate.sessionVersion,
             config,
             provider,
             timeZone,
@@ -241,6 +206,15 @@ export async function tickGoogleCalendarSync(
             synced += 1;
           } else {
             failed += 1;
+          }
+          if (summary.pullTruncated) {
+            // Mais de 8 páginas de mudanças num ciclo: o cursor não avançou
+            // e o próximo ciclo relê do mesmo ponto. Raro; se virar rotina,
+            // o teto de páginas é o que precisa mudar.
+            logger.warn(
+              { event: "google_sync_pull_truncated", userId: candidate.userId },
+              "google calendar change feed exceeded the page cap; cursor kept",
+            );
           }
           importedCreated += summary.importedCreated;
           exportedCreated += summary.created;
@@ -273,10 +247,12 @@ export async function tickGoogleCalendarSync(
       }
     } catch (error) {
       if (isMissingSchema(error)) {
-        dormantForMissingSchema = true;
         logger.warn(
-          { event: "google_sync_schema_missing" },
-          "google sync tables absent; worker dormant until the manual migration runs",
+          {
+            event: "google_sync_schema_missing",
+            retryInSeconds: schemaDormancy.markMissing(now),
+          },
+          "google sync tables absent; worker pauses and retries after the manual migration runs",
         );
         return;
       }

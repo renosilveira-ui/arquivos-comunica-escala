@@ -103,11 +103,17 @@ describe("confirmation tick CLI — source", () => {
     expect(dispatcher).not.toContain("professionalAccess");
   });
 
-  it("Blueprint não cobra Cron sozinho; finding permanece EXTERNAL_INFRA", () => {
+  it("Blueprint sem Cron ativo; plano sempre ligado registrado no YAML e no runbook", () => {
     expect(uncommentedRenderYaml(renderYaml)).not.toMatch(/type:\s*cron/);
-    expect(uncommentedRenderYaml(renderYaml)).toContain("plan: free");
+    // Decisão do PO em 10/09/2026: instância sempre ligada (standard). Um
+    // Blueprint com `free` rebaixaria o serviço numa sincronização.
+    expect(uncommentedRenderYaml(renderYaml)).toContain("plan: standard");
+    expect(uncommentedRenderYaml(renderYaml)).not.toContain("plan: free");
     expect(renderYaml).toContain("docs/operations/confirmation-coverage.md");
-    expect(coverageDoc).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
+    // O finding operacional foi fechado pela instância sempre ligada; o
+    // runbook registra a decisão e o plano escolhido.
+    expect(coverageDoc).toContain("plan: standard");
+    expect(coverageDoc).toContain("10/09/2026");
     expect(coverageDoc).toContain("due-based");
     expect(coverageDoc).toContain("[06:30, 07:30]");
     expect(coverageDoc).toContain("professional_access");
