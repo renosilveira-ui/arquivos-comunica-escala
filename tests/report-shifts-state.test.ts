@@ -59,8 +59,6 @@ function queryInput(
   overrides: Partial<Parameters<typeof resolveReportShiftsState>[0]> = {},
 ) {
   return {
-    isDemo: false,
-    demoCount: 0,
     isLoading: false,
     isPending: false,
     isError: false,
@@ -186,19 +184,6 @@ describe("resolveReportShiftsState", () => {
         }),
       ),
     ).toBe("ERROR");
-  });
-
-  it("demo usa o array local: vazio é EMPTY, com itens é READY", () => {
-    expect(
-      resolveReportShiftsState(
-        queryInput({ isDemo: true, demoCount: 0, isPending: true }),
-      ),
-    ).toBe("EMPTY");
-    expect(
-      resolveReportShiftsState(
-        queryInput({ isDemo: true, demoCount: 2, isError: true }),
-      ),
-    ).toBe("READY");
   });
 });
 
