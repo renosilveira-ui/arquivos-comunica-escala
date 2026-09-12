@@ -33,6 +33,27 @@ const OUTBOX_BATCH_SIZE = 24;
 const OUTBOX_CONCURRENCY = 4;
 const OUTBOX_LEASE_MS = 120_000;
 const OUTBOX_MAX_RETRY_MS = 30 * 60_000;
+/**
+ * Tentativas de entrega com o Comunica+ LIGADO antes de desistir do recado.
+ * Com a espera crescente (1 min, depois até 30 min), vinte tentativas cobrem
+ * cerca de 1h40 de indisponibilidade. Sem teto, um recado que falha por um
+ * motivo permanente voltava para a fila a cada ciclo, para sempre.
+ */
+export const COMUNICA_OUTBOX_MAX_ATTEMPTS = 20;
+/**
+ * Falhas que não são do recado, e sim da NOSSA configuração (envio
+ * desligado, URL não confiável, credencial ou mapa de organização ausente).
+ * Não gastam tentativa: decisão registrada no teste "sem opt-in preserva o
+ * intent" — o envio desligado na Beta não pode descartar recados que sairão
+ * quando for ligado. A fila só volta a andar quando a configuração mudar, e
+ * por isso o recado espera o máximo entre uma checagem e outra.
+ */
+const PARKED_ERROR_CODES: ReadonlySet<string> = new Set([
+  "COMUNICA_OUTBOUND_DISABLED",
+  "UNTRUSTED_COMUNICA_URL",
+  "INVALID_COMUNICA_CREDENTIAL_CONFIG",
+  "UNMAPPED_COMUNICA_ORGANIZATION",
+]);
 const COMUNICA_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const POSITIVE_CACHE_TTL_MS = 5_000;
@@ -552,11 +573,27 @@ async function retryOrFail(
     });
     return;
   }
+  const parked = PARKED_ERROR_CODES.has(error.code);
+  if (!parked && state.attemptCount >= COMUNICA_OUTBOX_MAX_ATTEMPTS) {
+    await markTerminal(db, notificationId, state, "FAILED", now, {
+      code: error.code,
+      retryability: "EXHAUSTED",
+      attemptCount: state.attemptCount,
+      ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+    });
+    return;
+  }
   const queued: MutableOutboxState = {
     ...state,
     phase: "QUEUED",
     revision: state.revision + 1,
-    availableAt: new Date(now.getTime() + retryDelayMs(state.attemptCount)).toISOString(),
+    // Estacionado: devolve a tentativa que o claim gastou (o recado não foi
+    // tentado de verdade) e espera o máximo — nada muda até a configuração
+    // mudar, e checar a cada minuto só enchia o log.
+    attemptCount: parked ? Math.max(0, state.attemptCount - 1) : state.attemptCount,
+    availableAt: new Date(
+      now.getTime() + (parked ? OUTBOX_MAX_RETRY_MS : retryDelayMs(state.attemptCount)),
+    ).toISOString(),
     lastErrorCode: error.code,
   };
   delete queued.leaseUntil;
@@ -632,11 +669,12 @@ async function loadAccessibleShift(
     shiftInstanceId: number;
     professionalId: number;
   },
-): Promise<{ hospitalId: number; sectorId: number } | null> {
+): Promise<{ hospitalId: number; sectorId: number; endAt: Date } | null> {
   const [shift] = await db
     .select({
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      endAt: shiftInstances.endAt,
     })
     .from(shiftInstances)
     .innerJoin(
@@ -686,6 +724,7 @@ async function revalidateAuthority(
   db: Pick<Db, "select">,
   row: typeof notifications.$inferSelect,
   state: MutableOutboxState,
+  now: Date,
 ): Promise<AuthorityResult> {
   if (
     row.institutionId <= 0 ||
@@ -707,7 +746,14 @@ async function revalidateAuthority(
     return { state: "SUPPRESSED", code: "RECIPIENT_EMAIL_CHANGED" };
   }
 
+  // Validade do recado: um aviso que só faria sentido ANTES de um instante
+  // que já passou não é atrasado, é ruído. Sai como SUPPRESSED (com o
+  // motivo), nunca como entrega tardia — inclusive quando o envio ficou
+  // desligado por semanas e só então foi ligado.
   if (state.event.kind === "ROSTER_PUBLISHED") {
+    if (monthBounds(state.event.yearMonth).end <= now) {
+      return { state: "SUPPRESSED", code: "ROSTER_MONTH_ENDED" };
+    }
     const [roster] = await db
       .select({ status: monthlyRosters.status, version: monthlyRosters.version })
       .from(monthlyRosters)
@@ -788,6 +834,9 @@ async function revalidateAuthority(
     });
     if (!accessibleShift) {
       return { state: "SUPPRESSED", code: "RECIPIENT_SHIFT_ACCESS_REVOKED" };
+    }
+    if (accessibleShift.endAt <= now) {
+      return { state: "SUPPRESSED", code: "SHIFT_ALREADY_ENDED" };
     }
     const [swap] = await db
       .select({
@@ -1120,7 +1169,7 @@ async function processClaimedRow(
 ): Promise<void> {
   let state = initialState;
   try {
-    const authority = await revalidateAuthority(db, row, state);
+    const authority = await revalidateAuthority(db, row, state, now);
     if (authority.state === "SUPPRESSED") {
       await markTerminal(db, row.id, state, "SUPPRESSED", now, { code: authority.code });
       return;
