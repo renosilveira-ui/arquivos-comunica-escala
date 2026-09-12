@@ -38,9 +38,9 @@ import {
 import {
   AlertTriangle,
   Bell,
+  BellRing,
   Building2,
   CalendarSync,
-  Navigation,
   History,
   Inbox,
   KeyRound,
@@ -48,6 +48,7 @@ import {
   Link2,
   LogOut,
   MessageCircle,
+  Navigation,
   ShieldCheck,
   Trash2,
   X,
@@ -127,6 +128,12 @@ export default function ProfileScreen() {
     { staleTime: 30_000 },
   );
 
+  // Política da instituição (só quem gerencia a escala vê a linha).
+  const confirmationPolicyQuery = trpc.institutionPolicy.get.useQuery(undefined, {
+    staleTime: 30_000,
+  });
+  const confirmationPolicy = confirmationPolicyQuery.data;
+
   const managementLinks = useMemo(
     () =>
       [
@@ -160,6 +167,18 @@ export default function ProfileScreen() {
               href: "/(tabs)/admin",
             }
           : null,
+        confirmationPolicy?.canManage
+          ? {
+              key: "confirmation-policy",
+              title: "Plantão não confirmado",
+              subtitle: confirmationPolicy.notifyManagerOnUnconfirmed
+                ? "Aviso ao gestor: ligado"
+                : "Aviso ao gestor: desligado",
+              Icon: BellRing,
+              tone: "default" as const,
+              href: "/confirmation-policy",
+            }
+          : null,
         showScheduleInvites
           ? {
               key: "invites",
@@ -171,7 +190,7 @@ export default function ProfileScreen() {
             }
           : null,
       ].filter((l): l is NonNullable<typeof l> => l !== null),
-    [can, canApproveAssignments, showScheduleInvites],
+    [can, canApproveAssignments, showScheduleInvites, confirmationPolicy],
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 

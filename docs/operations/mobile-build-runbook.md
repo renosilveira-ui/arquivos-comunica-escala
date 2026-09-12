@@ -12,7 +12,7 @@
 | iOS | `pnpm dlx eas-cli@latest build --platform ios --profile preview` | `.ipa` ad hoc instalável somente em aparelhos com UDID registrado |
 | Android | `pnpm dlx eas-cli@latest build --platform android --profile preview` | APK interno instalável pelo link do EAS |
 
-Ambos apontam para `https://escalas-staging.onrender.com`. TestFlight,
+Ambos apontam para `https://app.comunicamais-escala.com.br`. TestFlight,
 Transporter, `eas submit` e Play Store não fazem parte deste runbook. Eles
 requerem uma futura configuração de distribuição de loja aprovada; não usar o
 perfil `production` por inferência.
