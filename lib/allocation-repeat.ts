@@ -18,6 +18,8 @@
  * precisa; a forma completa do mês (tem noite? tem fim de semana?) é
  * declarada pelo gestor em outro lugar.
  */
+import { isoToBr } from "./form-masks-br";
+
 export const ALLOCATION_REPEAT_RULES = [
   "none",
   "weekly",
@@ -127,12 +129,40 @@ export function allocationRepeatToast(
  * Mensagem do bloqueio por choque de janela: já existe outro plantão
  * ocupando exatamente aquele horário no setor, então a vaga da repetição
  * não pode ser aberta ali.
+ *
+ * Os dias chegam em ISO e saem em DD/MM/AAAA — quem lê é o gestor.
  */
 export function allocationRepeatConflictMessage(
   blockedDays: readonly string[],
 ): string {
-  const shown = blockedDays.slice(0, 3).join(", ");
+  const shown = blockedDays.slice(0, 3).map(isoToBr).join(", ");
   const rest = blockedDays.length - 3;
   const tail = rest > 0 ? ` e mais ${rest}` : "";
   return `Já existe outro plantão neste horário em ${shown}${tail}. Ajuste a escala desses dias ou encurte a repetição.`;
+}
+
+/**
+ * O que a repetição fará, dito antes de fazer. Uma ação que pode abrir oito
+ * plantões não deve ser descoberta pelo resultado.
+ */
+export function allocationRepeatPreviewText(preview: {
+  matchCount: number;
+  willOpenCount: number;
+  blockedDays: readonly string[];
+  lastDayKey: string;
+}): string {
+  if (preview.blockedDays.length > 0) {
+    return allocationRepeatConflictMessage(preview.blockedDays);
+  }
+  const total = 1 + preview.matchCount + preview.willOpenCount;
+  const head =
+    total === 1
+      ? "Aloca só neste plantão"
+      : `Aloca em ${total} plantões, até ${isoToBr(preview.lastDayKey)}`;
+  if (preview.willOpenCount <= 0) return `${head}.`;
+  return `${head} — ${plural(
+    preview.willOpenCount,
+    "vaga será aberta",
+    "vagas serão abertas",
+  )} na escala.`;
 }

@@ -24,6 +24,7 @@ import {
   DEFAULT_ALLOCATION_REPEAT_MONTHS,
   allocationRepeatHorizonHint,
   allocationRepeatHorizonLabel,
+  allocationRepeatPreviewText,
   allocationRepeatToast,
   type AllocationRepeatRule,
 } from "@/lib/allocation-repeat";
@@ -85,6 +86,13 @@ export default function ShiftDetailsScreen() {
     { shiftInstanceId: shiftId },
     { enabled: !!user?.id && canManageShift && Number.isFinite(shiftId) },
   );
+  // O que a repetição fará, dito antes de fazer. Também é aqui que o
+  // limite do papel sobre a data aparece, em vez de só depois do toque.
+  const repeatPreview = trpc.editor.previewAssignRepeat.useQuery(
+    { shiftInstanceId: shiftId, repeatRule, repeatMonths },
+    { enabled: repeatRule !== "none" && Number.isFinite(shiftId) },
+  );
+
   const assignDirect = trpc.editor.assignDirect.useMutation({
     onSuccess: async (result) => {
       setSelectedProfessionalId(null);
@@ -600,6 +608,22 @@ export default function ShiftDetailsScreen() {
                   <Text style={styles.repeatHint}>
                     {allocationRepeatHorizonHint(repeatRule, repeatMonths)}
                   </Text>
+                  {repeatRule !== "none" && repeatPreview.isError ? (
+                    <Text style={styles.repeatWarning}>
+                      {repeatPreview.error.message}
+                    </Text>
+                  ) : null}
+                  {repeatRule !== "none" && repeatPreview.data ? (
+                    <Text
+                      style={
+                        repeatPreview.data.blockedDays.length > 0
+                          ? styles.repeatWarning
+                          : styles.repeatPreview
+                      }
+                    >
+                      {allocationRepeatPreviewText(repeatPreview.data)}
+                    </Text>
+                  ) : null}
                 </View>
 
                 <ActionButton
@@ -1095,6 +1119,16 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexBasis: "auto",
     paddingHorizontal: theme.space[4],
+  },
+  repeatPreview: {
+    ...theme.text.caption,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  repeatWarning: {
+    ...theme.text.caption,
+    color: theme.colors.danger,
+    fontWeight: theme.weight.semibold,
   },
   repeatHint: {
     ...theme.text.caption,

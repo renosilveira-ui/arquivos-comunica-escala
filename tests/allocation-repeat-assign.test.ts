@@ -781,6 +781,46 @@ describe("editor.assignDirect com regra de repetição", () => {
     expect(assigned).toHaveLength(2);
   });
 
+  it("a prévia conta o que fará e não escreve nada", async () => {
+    const sourceKey = tuesdayKeys[0];
+    const expected = repeatDaysAhead(sourceKey, 1, 7);
+    await insertShift({ dayKey: expected[0], label: "Manhã prévia" });
+    const sourceId = await insertShift({
+      dayKey: sourceKey,
+      label: "Manhã prévia",
+    });
+    const before = (await institutionShiftIds()).length;
+
+    const preview = await caller().previewAssignRepeat({
+      shiftInstanceId: sourceId,
+      repeatRule: "weekly",
+      repeatMonths: 1,
+    });
+
+    expect(preview.matchCount).toBe(1);
+    expect(preview.willOpenCount).toBe(expected.length - 1);
+    expect(preview.blockedDays).toEqual([]);
+    expect(preview.lastDayKey).toBe(horizonEndKey(sourceKey, 1));
+
+    // Prévia é leitura: nenhuma vaga nasce e ninguém é alocado.
+    expect((await institutionShiftIds()).length).toBe(before);
+    expect(await assignedProfessionalIds([sourceId])).toHaveLength(0);
+  });
+
+  it("a prévia mostra o limite do papel antes do toque em Alocar", async () => {
+    const sourceId = await insertShift({
+      dayKey: tuesdayKeys[0],
+      label: "Manhã limite",
+    });
+    await expect(
+      caller().previewAssignRepeat({
+        shiftInstanceId: sourceId,
+        repeatRule: "weekly",
+        repeatMonths: 6,
+      }),
+    ).rejects.toThrow(/mês corrente/i);
+  });
+
   it("o horizonte não vence a autoridade do gestor sobre a data", async () => {
     // A fixture é GESTOR_MEDICO: alcança o mês corrente e o seguinte.
     const sourceId = await insertShift({

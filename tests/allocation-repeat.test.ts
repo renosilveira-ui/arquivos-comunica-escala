@@ -10,6 +10,7 @@ import {
   allocationRepeatHint,
   allocationRepeatHorizonHint,
   allocationRepeatHorizonLabel,
+  allocationRepeatPreviewText,
   allocationRepeatToast,
   clampAllocationRepeatMonths,
 } from "../lib/allocation-repeat";
@@ -226,6 +227,52 @@ describe("copy em português", () => {
     );
   });
 
+  it("a prévia diz o que vai acontecer antes de acontecer", () => {
+    expect(
+      allocationRepeatPreviewText({
+        matchCount: 2,
+        willOpenCount: 0,
+        blockedDays: [],
+        lastDayKey: "2026-12-15",
+      }),
+    ).toBe("Aloca em 3 plantões, até 15/12/2026.");
+    expect(
+      allocationRepeatPreviewText({
+        matchCount: 2,
+        willOpenCount: 6,
+        blockedDays: [],
+        lastDayKey: "2026-12-15",
+      }),
+    ).toBe(
+      "Aloca em 9 plantões, até 15/12/2026 — 6 vagas serão abertas na escala.",
+    );
+    expect(
+      allocationRepeatPreviewText({
+        matchCount: 0,
+        willOpenCount: 1,
+        blockedDays: [],
+        lastDayKey: "2026-10-06",
+      }),
+    ).toMatch(/1 vaga será aberta na escala\.$/);
+    expect(
+      allocationRepeatPreviewText({
+        matchCount: 0,
+        willOpenCount: 0,
+        blockedDays: [],
+        lastDayKey: "2026-10-06",
+      }),
+    ).toBe("Aloca só neste plantão.");
+    // Havendo choque, a prévia é o aviso — não a contagem.
+    expect(
+      allocationRepeatPreviewText({
+        matchCount: 3,
+        willOpenCount: 3,
+        blockedDays: ["2026-09-03"],
+        lastDayKey: "2026-12-15",
+      }),
+    ).toMatch(/Já existe outro plantão/);
+  });
+
   it("o choque de janela nomeia os dias e sugere a saída", () => {
     const message = allocationRepeatConflictMessage([
       "2026-09-03",
@@ -233,7 +280,9 @@ describe("copy em português", () => {
       "2026-09-17",
       "2026-09-24",
     ]);
-    expect(message).toContain("2026-09-03");
+    // Quem lê é o gestor: data em DD/MM/AAAA, não em ISO.
+    expect(message).toContain("03/09/2026");
+    expect(message).not.toContain("2026-09-03");
     expect(message).toContain("e mais 1");
     expect(message).toMatch(/encurte a repetição/i);
   });
@@ -288,5 +337,7 @@ describe("wiring da tela de detalhes", () => {
     expect(screen).toContain("setRepeatMonths");
     expect(screen).toMatch(/repeatRule,\s*repeatMonths,/);
     expect(screen).toContain("result.createdSlotCount");
+    expect(screen).toContain("previewAssignRepeat");
+    expect(screen).toContain("allocationRepeatPreviewText");
   });
 });

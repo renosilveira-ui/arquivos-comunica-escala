@@ -494,6 +494,72 @@ function assertSameAssignmentTarget(
 
 export const editorRouter = router({
   /**
+   * previewAssignRepeat
+   * O que a repetição fará, antes de fazer: quantos plantões alcança,
+   * quantas vagas abriria, e o que a impede. Somente leitura.
+   *
+   * Aplica a mesma autoridade por data que a escrita aplica, para que o
+   * limite do papel apareça na tela e não só depois do toque em "Alocar".
+   */
+  previewAssignRepeat: protectedProcedure
+    .input(
+      z.object({
+        shiftInstanceId: z.number(),
+        repeatRule: z.enum(ALLOCATION_REPEAT_RULES).default("none"),
+        repeatMonths: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_ALLOCATION_REPEAT_MONTHS)
+          .optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const shift = await getShiftTarget(
+        db,
+        input.shiftInstanceId,
+        ctx.institutionId,
+      );
+      if (!shift) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
+      }
+      await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
+      assertCanEditScheduleDate(actor, shift.startAt);
+
+      const scope: AllocationRepeatScope =
+        input.repeatMonths == null
+          ? { kind: "month" }
+          : { kind: "horizon", months: input.repeatMonths };
+      const plan = await planAllocationRepeat(
+        db,
+        shift,
+        input.repeatRule,
+        scope,
+      );
+      for (const dayKey of [
+        ...plan.targets.map((row) => dayKeyBrt(row.startAt)),
+        ...plan.missingDayKeys,
+      ]) {
+        assertCanEditScheduleDate(actor, repeatSlotAt(shift, dayKey).startAt);
+      }
+
+      return {
+        lastDayKey: plan.lastDayKey,
+        matchCount: plan.targets.length,
+        willOpenCount: plan.missingDayKeys.length,
+        blockedDays: plan.blockedDayKeys,
+      };
+    }),
+
+  /**
    * assignDirect
    * Gestor aloca profissional diretamente no turno (sem candidatura)
    */
