@@ -6,7 +6,10 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatDateBR } from "@/lib/datetime";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalTimeRange,
+  startOfHospitalDay,
+} from "@/lib/hospital-time";
 import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -24,10 +27,11 @@ export default function DashboardScreen() {
   // cada milissegundo, cada resposta disparava um render com chave nova e
   // o Painel ficava em skeleton para sempre ("não carrega").
   const [window_] = useState(() => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 8); // hoje + 7 dias completos
+    // A janela é de DIAS DO HOSPITAL. Ancorada na meia-noite local, um
+    // aparelho fora de -03:00 pedia uma faixa deslocada e podia perder o
+    // plantão das primeiras horas do primeiro dia.
+    const start = startOfHospitalDay();
+    const end = new Date(start.getTime() + 8 * 24 * 60 * 60 * 1000);
     return { startDate: start.toISOString(), endDate: end.toISOString() };
   });
 

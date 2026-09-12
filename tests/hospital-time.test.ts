@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildShiftTimestamps,
   formatHospitalDate,
+  formatHospitalDateLong,
   formatHospitalTime,
   formatHospitalTimeRange,
   hospitalDateTime,
@@ -19,6 +20,17 @@ const HOSPITAL_TIME_UI = [
   "app/(tabs)/agenda.tsx",
   "components/agenda/ShiftRowCard.tsx",
 ] as const;
+
+/**
+ * Dívida NOMEADA, não furo desconhecido: a Agenda ainda deriva "hoje" e "esta
+ * semana" do relógio do aparelho (`startOfWeekMon`). As outras 6 chamadas da
+ * função recebem datas de grade já locais por construção e estão corretas, então
+ * a correção é trocar só os dois pontos que partem de `new Date()` — mudança que
+ * merece verificação visual da tela principal, fora do escopo deste PR.
+ */
+const SET_HOURS_PENDENTE: ReadonlySet<string> = new Set([
+  "app/(tabs)/agenda.tsx",
+]);
 
 describe("hospital-time", () => {
   it("formata hora no relógio do hospital (-03:00), não no fuso do processo", () => {
@@ -90,6 +102,29 @@ describe("hospital-time", () => {
       expect(source, file).toMatch(/formatHospitalTime(Range)?/);
       expect(source, file).not.toContain("toLocaleTimeString");
       expect(source, file).not.toMatch(/\.getHours\s*\(/);
+      // Sem `timeZone`, estas lêem o fuso do aparelho: perto da meia-noite a
+      // DATA diverge da HORA na mesma tela. Use formatHospitalDateLong.
+      expect(source, file).not.toMatch(/\.toLocaleDateString\s*\(/);
+      expect(source, file).not.toMatch(/\.toLocaleString\s*\(/);
+      if (!SET_HOURS_PENDENTE.has(file)) {
+        expect(source, file).not.toMatch(/\.setHours\s*\(/);
+      }
     }
+  });
+
+  it("a lista de dívida de setHours não cresce sem alguém decidir", () => {
+    // Nomear a dívida só serve se ela não puder aumentar em silêncio.
+    expect([...SET_HOURS_PENDENTE]).toEqual(["app/(tabs)/agenda.tsx"]);
+  });
+
+  it("formatHospitalDateLong não escorrega para o fuso do processo", () => {
+    // 01:00Z de 08/09 ainda é a noite de 07/09 no hospital.
+    expect(
+      formatHospitalDateLong(new Date("2026-09-08T01:00:00.000Z"), {
+        weekday: "long",
+        day: "2-digit",
+        month: "long",
+      }),
+    ).toBe("segunda-feira, 07 de setembro");
   });
 });

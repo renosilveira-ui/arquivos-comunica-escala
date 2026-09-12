@@ -12,7 +12,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
-import { formatHospitalTime } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTime,
+} from "@/lib/hospital-time";
 import {
   DUTY_ASSUMED_SUCCESS_COPY,
   DUTY_CONFIRM_PROMPT_COPY,
@@ -195,7 +198,11 @@ export default function ConfirmDutyScreen() {
     const nStart = new Date(nomination.shiftStartAt);
     const nEnd = new Date(nomination.shiftEndAt);
     const fmt = (d: Date) => formatHospitalTime(d);
-    const nDate = nStart.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" });
+    const nDate = formatHospitalDateLong(nStart, {
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+    });
     const nBusy = acceptNominationMutation.isPending || declineNominationMutation.isPending;
     return (
       <ScreenGradient variant="light">
@@ -284,7 +291,7 @@ export default function ConfirmDutyScreen() {
 
   const startTime = formatHospitalTime(pending.shiftStartAt);
   const endTime = formatHospitalTime(pending.shiftEndAt);
-  const dateStr = new Date(pending.shiftStartAt).toLocaleDateString("pt-BR", {
+  const dateStr = formatHospitalDateLong(pending.shiftStartAt, {
     weekday: "long",
     day: "2-digit",
     month: "long",

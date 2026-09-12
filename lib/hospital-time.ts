@@ -76,3 +76,27 @@ export function hospitalDateTime(date: string, time: string): Date {
       `:00${HOSPITAL_TIME_ZONE_OFFSET}`,
   );
 }
+
+/**
+ * Data no relógio do hospital com as opções de Intl que a tela pedir
+ * ("terça-feira, 08 de setembro", "08 de set. de 2026").
+ *
+ * Formata em UTC sobre o instante já deslocado — o mesmo truque do resto do
+ * módulo. `toLocaleDateString` sem `timeZone` lê o fuso do aparelho, e perto
+ * da meia-noite isso faz a DATA divergir da HORA na mesma tela.
+ */
+export function formatHospitalDateLong(
+  date: Date | string,
+  options: Intl.DateTimeFormatOptions,
+): string {
+  return asWallClock(toDate(date)).toLocaleDateString("pt-BR", {
+    ...options,
+    timeZone: "UTC",
+  });
+}
+
+/** Instante da meia-noite do dia do hospital que contém `reference`. */
+export function startOfHospitalDay(reference: Date | string = new Date()): Date {
+  return hospitalDateTime(toHospitalISODate(reference), "00:00");
+}
+
