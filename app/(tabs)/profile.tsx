@@ -40,7 +40,6 @@ import {
   Bell,
   BellRing,
   Building2,
-  CalendarSync,
   History,
   Inbox,
   KeyRound,
@@ -61,6 +60,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
+import { GoogleCalendarMark } from "@/components/brand/GoogleCalendarMark";
 import { ListRow } from "@/components/ui/ListRow";
 import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -626,7 +626,11 @@ export default function ProfileScreen() {
               <ListRow
                 title="Google Agenda"
                 subtitle="Seus plantões e compromissos no calendário do Google"
-                Icon={CalendarSync}
+                // Logotipo do Google, não um ícone genérico: a linha pede
+                // autorização para um terceiro ler e escrever na agenda do
+                // médico, e ele precisa ver de qual terceiro se trata antes
+                // de decidir.
+                leading={<GoogleCalendarMark size={26} />}
                 onPress={go("/google-calendar")}
                 accessibilityLabel="Vincular ou gerenciar o Google Agenda"
               />

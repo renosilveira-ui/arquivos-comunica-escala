@@ -20,6 +20,13 @@ export interface ListRowProps {
   title: string;
   subtitle?: string;
   Icon?: LucideIcon;
+  /**
+   * Substitui o quadro de ícone por um nó próprio — usado para logotipo de
+   * terceiro (Google Agenda), que não pode ser tingido pelo `tone` nem
+   * sentar sobre o fundo colorido do ícone: marca de terceiro se apresenta
+   * como ela é, ou não se apresenta.
+   */
+  leading?: ReactNode;
   tone?: ListRowTone;
   /** Texto curto à direita (contagem, "Alterar", "2 abertas"). */
   value?: string;
@@ -59,6 +66,7 @@ export function ListRow({
   title,
   subtitle,
   Icon,
+  leading,
   tone = "default",
   value,
   valueTone = "muted",
@@ -73,7 +81,18 @@ export function ListRow({
 
   const body = (
     <>
-      {Icon ? (
+      {leading ? (
+        <View
+          style={{
+            width: 32,
+            height: 32,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {leading}
+        </View>
+      ) : Icon ? (
         <View
           style={{
             width: 32,
