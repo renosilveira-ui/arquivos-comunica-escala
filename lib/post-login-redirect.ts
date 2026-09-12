@@ -68,6 +68,57 @@ export function rememberIntendedRoute(href: string): void {
   if (isSafeInternalRoute(href)) intendedRoute = href;
 }
 
+/**
+ * Lê o destino SEM consumir.
+ *
+ * A tela de login precisa saber que há algo esperando para poder explicar por
+ * que a pessoa está ali. Quem veio de um link de convite tocou no link certo;
+ * cair numa tela de login idêntica a qualquer outra faz parecer que o link não
+ * funcionou — e ela desiste antes de entrar.
+ */
+export function peekIntendedRoute(): string | null {
+  return intendedRoute;
+}
+
+export type PendingDestinationNotice = Readonly<{
+  title: string;
+  body: string;
+}>;
+
+/**
+ * O que a tela de login diz sobre o destino que está esperando.
+ *
+ * Mesma forma de `logoutFailureFeedback`: a copy mora no módulo puro, então
+ * ela tem teste. Texto de produto que só existe dentro do JSX é texto que
+ * ninguém revisa.
+ *
+ * As duas rotas nomeadas são as que chegam de FORA — convite por e-mail e
+ * confirmação por push. São os casos em que a pessoa tinha uma expectativa
+ * antes de abrir o app.
+ */
+export function pendingDestinationNotice(
+  href: string | null,
+): PendingDestinationNotice | null {
+  if (!href || !isSafeInternalRoute(href)) return null;
+  const path = href.split(/[?#]/)[0];
+  if (path === "/join-schedule") {
+    return {
+      title: "Você tem um convite de escala",
+      body: "Entre com o e-mail que recebeu o convite — ele abre em seguida.",
+    };
+  }
+  if (path === "/confirm-duty") {
+    return {
+      title: "Há uma confirmação de plantão esperando",
+      body: "Entre para confirmar sua presença.",
+    };
+  }
+  return {
+    title: "Entre para continuar",
+    body: "Levamos você ao que tentou abrir assim que a sessão começar.",
+  };
+}
+
 /** Devolve e ESQUECE o destino — um login, um salto. */
 export function takeIntendedRoute(): string | null {
   const route = intendedRoute;
