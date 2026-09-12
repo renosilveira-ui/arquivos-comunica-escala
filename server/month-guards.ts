@@ -1,7 +1,11 @@
 import { getDb } from "./db";
 import { TRPCError } from "@trpc/server";
 import { recordAudit } from "./audit-trail";
-import { monthWindowBrt, yearMonthBrt } from "./local-time";
+import { yearMonthBrt } from "./local-time";
+import {
+  monthWindowInZone,
+  readHospitalTimeZone,
+} from "./institution-time-zone";
 import { sql, eq, and, gte, isNull, lt, or } from "drizzle-orm";
 import {
   hospitals,
@@ -93,9 +97,11 @@ function dateInsideYearMonth(yearMonth: string): Date {
       message: "Mês inválido; use YYYY-MM",
     });
   }
-  // Meio-dia em Fortaleza evita qualquer transição de data durante a
-  // conversão e permite aplicar a mesma política temporal das demais
-  // mutations de escala ao publish/lock.
+  // Portador do mês, não decisão de hora local: o dia 15 ao meio-dia fica
+  // longe de qualquer fronteira, então a ida e volta por `yearMonthBrt`
+  // devolve o mesmo "YYYY-MM" em qualquer fuso do planeta. O par
+  // offset+leitura é consistente consigo mesmo; trocar só um dos dois é que
+  // quebraria. Ver server/institution-time-zone.ts para o caminho migrado.
   const date = new Date(`${yearMonth}-15T12:00:00-03:00`);
   if (!Number.isFinite(date.getTime()) || yearMonthBrt(date) !== yearMonth) {
     throw new TRPCError({
@@ -361,7 +367,12 @@ async function monthHasShiftInstances(
   hospitalId: number,
   yearMonth: string,
 ): Promise<boolean> {
-  const window = monthWindowBrt(yearMonth);
+  // O mês é o do hospital. Com fuso diferente do fixo, um plantão da virada
+  // entraria ou sairia da janela e a guarda decidiria sobre o mês errado.
+  const window = monthWindowInZone(
+    yearMonth,
+    await readHospitalTimeZone(tx, institutionId, hospitalId),
+  );
   const [row] = await tx
     .select({ id: shiftInstances.id })
     .from(shiftInstances)
@@ -552,14 +563,12 @@ async function getRosterPublicationRecipients(
   hospitalId: number,
   yearMonth: string,
 ): Promise<{ userId: number; email: string | null }[]> {
-  const start = new Date(`${yearMonth}-01T00:00:00-03:00`);
-  const [yearText, monthText] = yearMonth.split("-");
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const nextYear = month === 12 ? year + 1 : year;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const end = new Date(
-    `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T00:00:00-03:00`,
+  // Terceira cópia do -03:00 no repositório, removida em 12/09/2026. Quem
+  // recebe o e-mail de publicação é quem tem plantão NAQUELE mês — e "aquele
+  // mês" é o do hospital, não o do processo.
+  const { start, end } = monthWindowInZone(
+    yearMonth,
+    await readHospitalTimeZone(db, institutionId, hospitalId),
   );
   const rows = await db
     .select({ userId: users.id, email: users.email })

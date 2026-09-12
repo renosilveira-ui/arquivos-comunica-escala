@@ -50,6 +50,7 @@ import {
   assertAssignmentWritesAllowedForUpdate,
   assertShiftAssignmentCapacityForUpdate,
 } from "./shift-validations-v2";
+import { readHospitalTimeZone } from "./institution-time-zone";
 import { plantonistaQualificationMatchesContextSql } from "./plantonista-shift-eligibility";
 import {
   assertActiveScheduleContextTopology,
@@ -878,23 +879,22 @@ export const confirmationRouter = router({
           nextConfirmationToken: nominationToken,
         });
 
-        const TZ = "America/Sao_Paulo";
-        const startTime = new Date(current.shift.startAt).toLocaleTimeString(
-          "pt-BR",
-          {
+        // Quarta cópia do fuso fixo no repositório, removida em 12/09/2026.
+        // O horário que o substituto lê tem de ser o do relógio do hospital
+        // onde ele vai trabalhar — não o de uma constante do código.
+        const shiftTimeZone = await readHospitalTimeZone(
+          tx,
+          current.shift.institutionId,
+          current.shift.hospitalId,
+        );
+        const formatShiftTime = (value: Date | string) =>
+          new Date(value).toLocaleTimeString("pt-BR", {
             hour: "2-digit",
             minute: "2-digit",
-            timeZone: TZ,
-          },
-        );
-        const endTime = new Date(current.shift.endAt).toLocaleTimeString(
-          "pt-BR",
-          {
-            hour: "2-digit",
-            minute: "2-digit",
-            timeZone: TZ,
-          },
-        );
+            timeZone: shiftTimeZone,
+          });
+        const startTime = formatShiftTime(current.shift.startAt);
+        const endTime = formatShiftTime(current.shift.endAt);
         const intent: TrackedPushInput = {
           institutionId: current.shift.institutionId,
           userId: candidate.userId,
