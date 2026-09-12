@@ -1,3 +1,9 @@
+-- @superseded 2026-09-12-push-token-provenance-v2.sql
+-- NÃO APLICAR. Nunca foi aplicada no banco real (parecer de 12/09/2026) e não é
+-- rerodável (ADD UNIQUE/CONSTRAINT sem guarda). A v2 faz o mesmo, guardada passo
+-- a passo, e mantém a linha mais recente de um token duplicado em vez de apagar
+-- todas. Este arquivo fica como histórico; o executor genérico o recusa.
+
 -- PROMOTION GATE: executar somente com todos os writers quiescidos. MySQL faz
 -- implicit commit em DDL, portanto este arquivo NÃO promete atomicidade entre
 -- a limpeza e o ALTER. O WRITE lock reduz concorrência acidental, mas não
