@@ -1308,7 +1308,11 @@ describe("autoridade atual no outbox de confirmação", () => {
         confirmationId,
         "NO_RESPONSE",
       );
-      expect(escalation).toEqual({ managerCount: 1, intentCount: 1 });
+      expect(escalation).toEqual({
+        outcome: "NOTIFIED",
+        managerCount: 1,
+        intentCount: 1,
+      });
       const [replacementIntent] = await db
         .select({ userId: notifications.userId, status: notifications.status })
         .from(notifications)

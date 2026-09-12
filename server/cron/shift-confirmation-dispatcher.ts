@@ -80,6 +80,12 @@ function isDuplicateEntry(error: unknown): boolean {
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
 
 let running = false;
+/**
+ * O tick em andamento, para o shutdown esperar. Sem isto, o SIGTERM do
+ * deploy cortava a escalação entre o CAS do recheck e o outbox — o timer
+ * sumia e ninguém era avisado.
+ */
+let activeTick: Promise<void> | null = null;
 
 /**
  * Falhas consecutivas por etapa, para a espera crescente.
@@ -152,53 +158,68 @@ async function runStep(
   }
 }
 
-export async function tick(now: Date = new Date()) {
+/**
+ * Devolve a MESMA promise do trabalho em andamento (não um wrapper): é o que
+ * `stopConfirmationCron` entrega ao shutdown, e um tick concorrente recebe
+ * a mesma, em vez de disparar um segundo processamento.
+ */
+export function tick(now: Date = new Date()): Promise<void> {
   // Ticks concorrentes (tick longo + setInterval) processavam a mesma
   // confirmação duas vezes.
-  if (running) return;
+  if (running) return activeTick ?? Promise.resolve();
   running = true;
-  try {
-    // 1. Discovery due-based: catch-up de assignment tardio, swap,
-    // publicação tardia e restart. Idempotente (unique assignment_id).
-    await runStep("dispatchConfirmations", now, () =>
-      dispatchConfirmations(now),
-    );
+  let work!: Promise<void>;
+  work = (async () => {
+    try {
+      await runTickSteps(now);
+    } finally {
+      running = false;
+      if (activeTick === work) activeTick = null;
+    }
+  })();
+  activeTick = work;
+  return work;
+}
 
-    // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
-    // depois: se o CAS perder para uma decisão humana, a autoridade de status
-    // do outbox suprime o alerta obsoleto antes da rede.
-    await runStep("processRechecks", now, () => processRechecks(now));
+async function runTickSteps(now: Date): Promise<void> {
+  // 1. Discovery due-based: catch-up de assignment tardio, swap,
+  // publicação tardia e restart. Idempotente (unique assignment_id).
+  await runStep("dispatchConfirmations", now, () =>
+    dispatchConfirmations(now),
+  );
 
-    // 2b. Terminal: o plantão terminou e ninguém respondeu. Encerra sem
-    // aviso — decisão do PO (12/09/2026). É também o caminho que descarta as
-    // pendências antigas na primeira rodada após o deploy.
-    await runStep("expireStaleConfirmations", now, () =>
-      expireStaleConfirmations(now),
-    );
+  // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
+  // depois: se o CAS perder para uma decisão humana, a autoridade de status
+  // do outbox suprime o alerta obsoleto antes da rede.
+  await runStep("processRechecks", now, () => processRechecks(now));
 
-    // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
-    // lease/CAS próprio; indisponibilidade externa não pode atrasar a
-    // escalação local de confirmações. Isolados entre si: um provedor fora do
-    // ar não pode levar os outros dois junto.
-    await Promise.all([
-      runStep("processPendingPushDeliveries", now, () =>
-        processPendingPushDeliveries(now),
-      ),
-      runStep("processPendingDutySyncs", now, () =>
-        processPendingDutySyncs(now),
-      ),
-      runStep("processPendingComunicaPlusOutbox", now, () =>
-        processPendingComunicaPlusOutbox(now),
-      ),
-    ]);
+  // 2b. Terminal: o plantão terminou e ninguém respondeu. Encerra sem
+  // aviso — decisão do PO (12/09/2026). É também o caminho que descarta as
+  // pendências antigas na primeira rodada após o deploy.
+  await runStep("expireStaleConfirmations", now, () =>
+    expireStaleConfirmations(now),
+  );
 
-    // 4. Push de início de plantão (confirmados cujo plantão começou agora)
-    await runStep("processShiftStartPushes", now, () =>
-      processShiftStartPushes(now),
-    );
-  } finally {
-    running = false;
-  }
+  // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
+  // lease/CAS próprio; indisponibilidade externa não pode atrasar a
+  // escalação local de confirmações. Isolados entre si: um provedor fora do
+  // ar não pode levar os outros dois junto.
+  await Promise.all([
+    runStep("processPendingPushDeliveries", now, () =>
+      processPendingPushDeliveries(now),
+    ),
+    runStep("processPendingDutySyncs", now, () =>
+      processPendingDutySyncs(now),
+    ),
+    runStep("processPendingComunicaPlusOutbox", now, () =>
+      processPendingComunicaPlusOutbox(now),
+    ),
+  ]);
+
+  // 4. Push de início de plantão (confirmados cujo plantão começou agora)
+  await runStep("processShiftStartPushes", now, () =>
+    processShiftStartPushes(now),
+  );
 }
 
 // ── Push de início de plantão ───────────────────────────────────────────────
@@ -880,12 +901,35 @@ export async function processRechecks(now: Date) {
       );
       continue;
     }
-    if (
-      escalation.managerCount === 0 ||
-      escalation.intentCount !== escalation.managerCount
-    ) {
-      console.error(
-        `[ConfirmationCron] Confirmação ${conf.id} mantém recheck: ${escalation.intentCount}/${escalation.managerCount} alertas persistidos`,
+    // Quem NÃO avisou ninguém pode ter quatro motivos, e eles pedem respostas
+    // opostas: política desligada (#492) e confirmação já respondida são
+    // estado normal, e a própria função os registra na origem; ausência de
+    // gestor e banco fora são alarme. `ESCALATION_ALARMS` é quem decide.
+    if (escalation.outcome !== "NOTIFIED") {
+      const alarm = ESCALATION_ALARMS[escalation.outcome];
+      if (alarm) {
+        logger.error(
+          {
+            event: alarm.event,
+            confirmationId: conf.id,
+            institutionId: conf.institutionId,
+            shiftInstanceId: conf.shiftInstanceId,
+          },
+          alarm.message,
+        );
+      }
+      continue;
+    }
+    if (escalation.intentCount !== escalation.managerCount) {
+      logger.error(
+        {
+          event: "confirmation_escalation_partial",
+          confirmationId: conf.id,
+          institutionId: conf.institutionId,
+          intentCount: escalation.intentCount,
+          managerCount: escalation.managerCount,
+        },
+        "[ConfirmationCron] escalation intents not fully persisted; recheck kept",
       );
       continue;
     }
@@ -899,12 +943,70 @@ export async function processRechecks(now: Date) {
 
 export type ConfirmationEscalationReason = "PUSH_UNCONFIRMED" | "NO_RESPONSE";
 
+/**
+ * Por que a escalação terminou como terminou.
+ *
+ * A raiz do problema que este tipo resolve: `managerCount === 0` era um sinal
+ * SOBRECARREGADO. Quatro situações diferentes devolviam zero, e duas delas são
+ * estado normal enquanto as outras duas são alarme — quem chamava não tinha
+ * como separar, e acabava tratando todas igual.
+ *
+ * - `NOTIFIED`: há gestor e as intenções foram persistidas. Os contadores
+ *   dizem se foi por inteiro ou pela metade.
+ * - `SUPPRESSED_BY_POLICY`: a instituição desligou o aviso ao gestor (#492).
+ *   Estado configurado, não falha. A própria função registra em nível info e
+ *   limpa o recheck.
+ * - `NO_LONGER_OPEN`: a confirmação saiu dos status abertos entre o CAS e a
+ *   escalação — alguém respondeu. Não há o que escalar.
+ * - `NO_MANAGER`: existe o que escalar e não há a quem avisar. **O único caso
+ *   que merece alarme de negócio.**
+ * - `DB_UNAVAILABLE`: o banco sumiu no meio; nem se sabe se há gestor.
+ *
+ * Sem essa separação, o alerta de "ninguém para avisar" tocaria para todo
+ * grupo que apenas exerceu uma opção do produto — e alarme que toca à toa é
+ * alarme que ninguém lê.
+ */
+export type ConfirmationEscalationOutcome =
+  | "NOTIFIED"
+  | "SUPPRESSED_BY_POLICY"
+  | "NO_LONGER_OPEN"
+  | "NO_MANAGER"
+  | "DB_UNAVAILABLE";
+
+export type ConfirmationEscalationResult = {
+  outcome: ConfirmationEscalationOutcome;
+  managerCount: number;
+  intentCount: number;
+};
+
+/**
+ * Quais desfechos viram alarme, e com que nome. O que não está aqui é estado
+ * normal, já explicado na origem — a tabela existe para essa decisão ficar
+ * legível num lugar só, em vez de espalhada em `if`s.
+ */
+const ESCALATION_ALARMS: Partial<
+  Record<ConfirmationEscalationOutcome, { event: string; message: string }>
+> = {
+  NO_MANAGER: {
+    event: "confirmation_escalation_no_manager",
+    message:
+      "[ConfirmationCron] no eligible manager for escalation; recheck kept",
+  },
+  DB_UNAVAILABLE: {
+    event: "confirmation_escalation_db_unavailable",
+    message:
+      "[ConfirmationCron] database unavailable during escalation; recheck kept",
+  },
+};
+
 export async function notifyManagersConfirmationEscalation(
   confirmationId: number,
   reason: ConfirmationEscalationReason,
-) {
+): Promise<ConfirmationEscalationResult> {
   const db = await getDb();
-  if (!db) return { managerCount: 0, intentCount: 0 };
+  if (!db) {
+    return { outcome: "DB_UNAVAILABLE", managerCount: 0, intentCount: 0 };
+  }
   const [snapshot] = await db
     .select({ status: dutyConfirmations.status })
     .from(dutyConfirmations)
@@ -916,7 +1018,7 @@ export async function notifyManagersConfirmationEscalation(
       snapshot.status as OpenConfirmationStatus,
     )
   ) {
-    return { managerCount: 0, intentCount: 0 };
+    return { outcome: "NO_LONGER_OPEN", managerCount: 0, intentCount: 0 };
   }
   const valid = await requireValidDutyConfirmation(db, confirmationId, {
     allowedStatuses: [snapshot.status],
@@ -955,7 +1057,7 @@ export async function notifyManagersConfirmationEscalation(
       },
       "manager escalation suppressed by institution policy",
     );
-    return { managerCount: 0, intentCount: 0 };
+    return { outcome: "SUPPRESSED_BY_POLICY", managerCount: 0, intentCount: 0 };
   }
 
   // Find managers for this hospital/sector via manager_scope
@@ -1131,7 +1233,11 @@ export async function notifyManagersConfirmationEscalation(
   console.log(
     `[ConfirmationCron] Escalation ${reason}: ${intentCount}/${managerUserIds.size} intent(s) persisted`,
   );
-  return { managerCount: managerUserIds.size, intentCount };
+  return {
+    outcome: managerUserIds.size === 0 ? "NO_MANAGER" : "NOTIFIED",
+    managerCount: managerUserIds.size,
+    intentCount,
+  };
 }
 
 // ── Start the cron interval ─────────────────────────────────────────────────
@@ -1174,10 +1280,12 @@ export function startConfirmationCron() {
   }, 60_000);
 }
 
-export function stopConfirmationCron() {
+/** Para o timer e devolve o tick em andamento, para o shutdown drenar. */
+export function stopConfirmationCron(): Promise<void> {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
     console.log("[ConfirmationCron] Stopped");
   }
+  return activeTick ?? Promise.resolve();
 }
