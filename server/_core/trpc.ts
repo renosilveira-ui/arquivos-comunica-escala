@@ -16,21 +16,42 @@ export function isDriverErrorMessage(message: string): boolean {
   );
 }
 
+/**
+ * O que o usuário lê quando o servidor quebra de um jeito que ninguém previu.
+ *
+ * `INTERNAL_SERVER_ERROR` é, por definição, o erro que NÃO foi planejado para
+ * ser lido por gente. Erro de produto tem código próprio — CONFLICT,
+ * PRECONDITION_FAILED, FORBIDDEN — e mensagem escrita em português para o
+ * médico. Se chegou aqui, é invariante interna, e o texto dela foi escrito
+ * para quem mantém o código.
+ */
+export const INTERNAL_ERROR_USER_MESSAGE =
+  "Erro interno no servidor. Tente novamente em instantes.";
+
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
   errorFormatter({ shape, error }) {
-    if (
-      error.code === "INTERNAL_SERVER_ERROR" &&
-      isDriverErrorMessage(error.message)
-    ) {
+    // Todo INTERNAL_SERVER_ERROR é mascarado, não só o do driver.
+    //
+    // Antes, só mensagem com cara de SQL era trocada; qualquer outra
+    // invariante interna ia inteira para a tela. Em 12/09/2026 um médico
+    // tocou "Sim, confirmo" e leu "Envelope imutável inválido no duty-sync"
+    // — texto escrito para quem mantém o código, não para quem está
+    // entrando de plantão. O detalhe continua no log, com diagnóstico
+    // seguro; o que muda é o que a pessoa lê.
+    //
+    // Erro de produto não passa por aqui: ele tem código próprio (CONFLICT,
+    // PRECONDITION_FAILED, FORBIDDEN, NOT_FOUND) e mensagem em português
+    // escrita para o médico. Esses seguem intactos.
+    if (error.code === "INTERNAL_SERVER_ERROR") {
       logger.error(
-        safeErrorDiagnostic(error, "database"),
-        "tRPC internal driver error masked",
+        safeErrorDiagnostic(
+          error,
+          isDriverErrorMessage(error.message) ? "database" : "application",
+        ),
+        "tRPC internal error masked",
       );
-      return {
-        ...shape,
-        message: "Erro interno no servidor. Tente novamente em instantes.",
-      };
+      return { ...shape, message: INTERNAL_ERROR_USER_MESSAGE };
     }
     return shape;
   },
