@@ -1,7 +1,22 @@
 import {
+  cleanupStepNames,
   isSessionTerminationLocalCleanupError,
   isSessionTerminationNotDurableError,
 } from "./session-cleanup";
+
+/**
+ * Acrescenta as etapas que não concluíram.
+ *
+ * Sem isto o aviso manda não entregar o aparelho a ninguém e não diz o que
+ * ficou para trás — nem quem usa nem o suporte consegue agir. Em build de
+ * loja (TestFlight) não há console para consultar: se a tela não disser,
+ * ninguém descobre.
+ */
+function withFailedSteps(message: string, error: unknown): string {
+  const steps = cleanupStepNames(error);
+  if (steps.length === 0) return message;
+  return `${message}\n\nNão concluído: ${steps.join(", ")}.`;
+}
 
 export type LogoutFailureFeedback = Readonly<{
   title: string;
@@ -19,14 +34,18 @@ export function logoutFailureFeedback(error: unknown): LogoutFailureFeedback {
   if (isSessionTerminationLocalCleanupError(error)) {
     return {
       title: "Sessão encerrada; limpeza incompleta",
-      message:
+      message: withFailedSteps(
         "O servidor confirmou a saída, mas este aparelho não concluiu toda a limpeza local. Feche e reabra o app antes de entregá-lo a outra pessoa.",
+        error,
+      ),
     };
   }
   return {
     title: "Não foi possível concluir a saída",
-    message:
+    message: withFailedSteps(
       "Não foi possível confirmar o resultado completo da saída. Tente novamente e, se o aviso persistir, feche o app e procure o suporte.",
+      error,
+    ),
   };
 }
 

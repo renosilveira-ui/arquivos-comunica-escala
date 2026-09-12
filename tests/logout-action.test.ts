@@ -5,6 +5,7 @@ import {
   runGuardedLogoutAction,
 } from "../lib/logout-action";
 import {
+  SessionCleanupIncompleteError,
   SessionTerminationLocalCleanupError,
   SessionTerminationNotDurableError,
 } from "../lib/session-cleanup";
@@ -107,5 +108,49 @@ describe("ação compartilhada de logout", () => {
     await expect(runGuardedLogoutAction(options)).resolves.toBe("SUCCESS");
     expect(logout).toHaveBeenCalledTimes(2);
     expect(onSuccess).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("logoutFailureFeedback — nomear o que ficou para trás", () => {
+  it("a mensagem diz quais etapas não concluíram", () => {
+    // Em build de loja (TestFlight) não há console: se a tela não disser,
+    // ninguém descobre qual etapa falhou — nem quem usa, nem o suporte.
+    const aggregate = new SessionCleanupIncompleteError(
+      [new Error("keychain"), new Error("cofre")],
+      ["token de sessão", "registro push"],
+    );
+    const feedback = logoutFailureFeedback(
+      new SessionTerminationLocalCleanupError(aggregate),
+    );
+    expect(feedback.title).toBe("Sessão encerrada; limpeza incompleta");
+    expect(feedback.message).toContain("token de sessão");
+    expect(feedback.message).toContain("registro push");
+    // O aviso original não se perde: ele é o que diz o que FAZER.
+    expect(feedback.message).toContain("Feche e reabra o app");
+  });
+
+  it("sem nomes conhecidos, a mensagem não ganha linha vazia", () => {
+    const feedback = logoutFailureFeedback(
+      new SessionTerminationLocalCleanupError(new Error("causa opaca")),
+    );
+    expect(feedback.message).not.toContain("Não concluído");
+  });
+
+  it("erro desconhecido também aproveita os nomes, se houver", () => {
+    // O ramo genérico é o que aparece quando a falha não foi classificada —
+    // justamente quando saber a etapa importa mais.
+    const feedback = logoutFailureFeedback(
+      new SessionCleanupIncompleteError([new Error("x")], ["cache persistido"]),
+    );
+    expect(feedback.title).toBe("Não foi possível concluir a saída");
+    expect(feedback.message).toContain("cache persistido");
+  });
+
+  it("o agregado preserva os erros originais para quem já os inspeciona", () => {
+    const original = new Error("keychain");
+    const aggregate = new SessionCleanupIncompleteError([original], ["token de sessão"]);
+    expect(aggregate.name).toBe("AggregateError");
+    expect(aggregate.errors).toEqual([original]);
+    expect(aggregate.stepNames).toEqual(["token de sessão"]);
   });
 });

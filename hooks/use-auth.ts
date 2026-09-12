@@ -30,7 +30,9 @@ import {
 import {
   AccountDeletionLocalCleanupError,
   createAccountScopedNotificationCleanupSteps,
+  cleanupStepNames,
   runSessionCleanup,
+  SessionCleanupIncompleteError,
   SessionTerminationLocalCleanupError,
   SessionTerminationNotDurableError,
 } from "@/lib/session-cleanup";
@@ -157,9 +159,12 @@ function aggregateLocalCleanupErrors(
         ? error.errors
         : [error],
   );
-  return new AggregateError(
+  // Os nomes das etapas seguem junto: achatar duas fontes não pode apagar a
+  // única informação que a tela de erro tem para mostrar a quem está com o
+  // aparelho na mão.
+  return new SessionCleanupIncompleteError(
     present,
-    "A revogação foi confirmada, mas a limpeza local ficou incompleta",
+    sources.flatMap((error) => [...cleanupStepNames(error)]),
   );
 }
 

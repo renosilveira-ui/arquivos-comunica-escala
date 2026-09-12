@@ -4,6 +4,62 @@ import {
 } from "./_core/web-session-workflow";
 import { enqueueNativeBadgeWrite } from "./native-badge-write-queue";
 
+/**
+ * Falha agregada da limpeza, COM os nomes das etapas.
+ *
+ * Os nomes já existiam na mensagem, mas mensagem é texto: quem precisa deles
+ * — a tela de erro — teria de fazer parsing. Aqui eles viajam como dado.
+ *
+ * `name` continua "AggregateError" de propósito: o contrato com quem já trata
+ * esse erro (inclusive testes) não muda, e `errors` segue trazendo os erros
+ * originais sem embrulho.
+ */
+export class SessionCleanupIncompleteError extends AggregateError {
+  readonly stepNames: readonly string[];
+
+  constructor(errors: readonly unknown[], stepNames: readonly string[]) {
+    super(
+      [...errors],
+      `Limpeza local da sessão incompleta: ${stepNames.join(", ")}`,
+    );
+    this.name = "AggregateError";
+    this.stepNames = stepNames;
+  }
+}
+
+/**
+ * Colhe os nomes das etapas que não concluíram, de qualquer profundidade.
+ *
+ * O erro chega embrulhado de formas diferentes conforme o caminho —
+ * `SessionTerminationLocalCleanupError` guarda a causa em `reason`, e duas
+ * fontes independentes de falha viram um agregado novo. Andar pela estrutura
+ * é mais barato do que exigir que todos os caminhos preservem uma forma só.
+ */
+export function cleanupStepNames(error: unknown): readonly string[] {
+  const seen = new Set<unknown>();
+  const names: string[] = [];
+
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    const candidate = value as {
+      stepNames?: unknown;
+      errors?: unknown;
+      reason?: unknown;
+    };
+    if (Array.isArray(candidate.stepNames)) {
+      for (const name of candidate.stepNames) {
+        if (typeof name === "string" && !names.includes(name)) names.push(name);
+      }
+    }
+    if (Array.isArray(candidate.errors)) candidate.errors.forEach(visit);
+    visit(candidate.reason);
+  };
+
+  visit(error);
+  return names;
+}
+
 export type SessionCleanupStep = {
   name: string;
   run: () => void | Promise<void>;
@@ -172,9 +228,9 @@ export async function runSessionCleanup(
   }
 
   if (failures.length > 0) {
-    throw new AggregateError(
+    throw new SessionCleanupIncompleteError(
       failures.map(({ error }) => error),
-      `Limpeza local da sessão incompleta: ${failures.map(({ name }) => name).join(", ")}`,
+      failures.map(({ name }) => name),
     );
   }
 }
