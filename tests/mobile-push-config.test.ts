@@ -25,20 +25,45 @@ describe("build nativo de push", () => {
     expect(eas.submit?.preview?.ios?.ascAppId).toBe("6802868138");
   });
 
-  it("nenhum perfil chamado production fala com o backend de staging", () => {
-    // O perfil de loja apontava para staging com o nome `production`: o
-    // binário da loja falaria com staging sem ninguém perceber. Um perfil
-    // `production` de verdade pode existir — desde que a URL acompanhe.
+  it("todo texto de permissão está em português, não no padrão da biblioteca", () => {
+    // O médico lê estes textos no diálogo do sistema, antes de decidir se
+    // concede. "$(PRODUCT_NAME)" é o placeholder da Apple que as bibliotecas
+    // usam no texto padrão — sempre em inglês. Nenhum texto escrito por nós
+    // usa: todos dizem "O Escala+" por extenso.
+    const source = readFileSync("app.config.ts", "utf8");
+    const strings = [
+      ...source.matchAll(
+        /(\w*(?:Permission|UsageDescription)):\s*\n?\s*"((?:[^"\\]|\\.)*)"/g,
+      ),
+    ];
+    // Se a extração parar de achar nada, o teste vira decorativo.
+    expect(strings.length).toBeGreaterThanOrEqual(9);
+    for (const [, key, value] of strings) {
+      expect(value, key).not.toContain("$(PRODUCT_NAME)");
+      expect(value, key).toContain("Escala+");
+    }
+  });
+
+  it("perfil de produção não pode dividir backend com o preview", () => {
+    // A guarda anterior procurava a palavra "staging" na URL. O domínio
+    // próprio (#505) tirou essa palavra, e ela passaria VAZIA — o perfil
+    // continuaria mentindo e o teste continuaria verde.
+    //
+    // A invariante que sobrevive à renomeação é outra: se `production` fala
+    // com o MESMO servidor que o `preview`, então um dos dois não é o que o
+    // nome diz. Um production de verdade pode existir — desde que tenha
+    // backend próprio.
     const eas = JSON.parse(readFileSync("eas.json", "utf8")) as {
       build: Record<string, { env?: Record<string, string> }>;
     };
-    for (const [name, profile] of Object.entries(eas.build)) {
-      const url = profile.env?.EXPO_PUBLIC_API_URL ?? "";
-      if (url.includes("staging")) {
-        expect(name, `perfil "${name}" aponta para ${url}`).not.toBe(
-          "production",
-        );
-      }
+    const preview = eas.build.preview?.env?.EXPO_PUBLIC_API_URL;
+    const production = eas.build.production?.env?.EXPO_PUBLIC_API_URL;
+    expect(preview, "preview precisa declarar a URL").toBeTruthy();
+    if (production !== undefined) {
+      expect(
+        production,
+        `production aponta para o mesmo backend do preview (${production})`,
+      ).not.toBe(preview);
     }
   });
 

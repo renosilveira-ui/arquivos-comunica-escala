@@ -154,10 +154,14 @@ const config: ExpoConfig = {
       },
     ],
     [
+      // Mesmo texto do expo-speech-recognition de propósito: os dois
+      // declaram NSMicrophoneUsageDescription e só um valor vai para o
+      // Info.plist. Iguais, a ordem dos plugins deixa de decidir o que o
+      // médico lê no diálogo do iOS.
       "expo-audio",
       {
         microphonePermission:
-          "Allow $(PRODUCT_NAME) to access your microphone.",
+          "O Escala+ usa o microfone para comandos de voz (ex.: solicitar troca de plantão).",
       },
     ],
     [
