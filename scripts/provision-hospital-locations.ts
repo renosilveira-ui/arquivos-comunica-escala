@@ -251,10 +251,14 @@ async function main(): Promise<void> {
           );
         }
       }
+      // `COALESCE(time_zone, ?)` aqui era um no-op silencioso: a coluna é
+      // NOT NULL DEFAULT 'America/Sao_Paulo', então nunca esteve nula e o
+      // fuso de Fortaleza nunca foi gravado. As três instituições ficaram
+      // meses dizendo São Paulo, sendo todas de Fortaleza (12/09/2026).
       for (const spec of INSTITUTION_RENAMES) {
         const [result] = await conn.query<mysql.ResultSetHeader>(
           `UPDATE institutions
-              SET name = ?, legal_name = ?, trade_name = ?, time_zone = COALESCE(time_zone, ?)
+              SET name = ?, legal_name = ?, trade_name = ?, time_zone = ?
             WHERE id = ? AND name IN (?, ?)`,
           [
             spec.name,
