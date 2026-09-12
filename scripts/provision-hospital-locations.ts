@@ -251,14 +251,22 @@ async function main(): Promise<void> {
           );
         }
       }
-      // `COALESCE(time_zone, ?)` aqui era um no-op silencioso: a coluna é
-      // NOT NULL DEFAULT 'America/Sao_Paulo', então nunca esteve nula e o
-      // fuso de Fortaleza nunca foi gravado. As três instituições ficaram
-      // meses dizendo São Paulo, sendo todas de Fortaleza (12/09/2026).
+      // O `COALESCE(time_zone, ?)` abaixo é deliberado e está travado por
+      // teste: provisionamento não pode pisar num fuso que alguém escolheu.
+      //
+      // Só que ele nunca dispara: `institutions.time_zone` é NOT NULL DEFAULT
+      // 'America/Sao_Paulo', então a coluna jamais está nula e o parâmetro de
+      // fuso deste script é inócuo. Foi assim que as três instituições, todas
+      // de Fortaleza, ficaram meses gravadas como São Paulo (12/09/2026).
+      //
+      // A correção NÃO é aqui — sobrescrever aqui quebraria a garantia que o
+      // teste protege. Quem corrige é a migração
+      // 2026-09-12-institution-time-zone-from-hospitals.sql, que deduz o fuso
+      // dos hospitais da instituição e só age quando eles são unânimes.
       for (const spec of INSTITUTION_RENAMES) {
         const [result] = await conn.query<mysql.ResultSetHeader>(
           `UPDATE institutions
-              SET name = ?, legal_name = ?, trade_name = ?, time_zone = ?
+              SET name = ?, legal_name = ?, trade_name = ?, time_zone = COALESCE(time_zone, ?)
             WHERE id = ? AND name IN (?, ?)`,
           [
             spec.name,
