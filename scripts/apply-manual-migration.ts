@@ -94,7 +94,43 @@ export async function applyManualMigration(sqlPath: string): Promise<void> {
 
   const connection = await mysql.createConnection(buildConnectionOptions());
   try {
-    await connection.query(sql);
+    try {
+      await connection.query(sql);
+    } catch (error) {
+      // O ledger continua registrando só sucesso — um ledger que registra
+      // tentativa é um ledger que mente, e "aplicada" precisa significar
+      // aplicada. O que faltava era o operador SABER o que ficou para trás.
+      //
+      // DDL no MySQL faz commit implícito: um arquivo com vários passos que
+      // falha no meio deixa os anteriores aplicados e nada no ledger. Sem
+      // esta mensagem, quem roda vê só um stack trace e não tem como saber
+      // que o banco pode estar a meio caminho.
+      //
+      // A saída é a mesma de sempre: corrigir o arquivo e rodar de novo.
+      // Toda migração manual deste repositório é guardada e rerodável por
+      // contrato — é exatamente para este momento que essa regra existe.
+      console.error(
+        [
+          "",
+          "MIGRAÇÃO FALHOU NO MEIO DO CAMINHO.",
+          `Arquivo: ${basename(absolutePath)}`,
+          "",
+          "O que isso significa:",
+          "  - o banco PODE estar parcialmente alterado (DDL no MySQL faz",
+          "    commit implícito, então os passos anteriores ao erro já valem);",
+          "  - NADA foi gravado no ledger: ele só registra sucesso, de propósito.",
+          "",
+          "O que fazer:",
+          "  1. ler o erro abaixo e corrigir a causa;",
+          "  2. rodar o mesmo comando de novo — as migrações deste repositório",
+          "     são guardadas e rerodáveis, então repetir é seguro e retoma de",
+          "     onde parou;",
+          "  3. conferir o resultado com `pnpm schema:drift` antes de mergear.",
+          "",
+        ].join("\n"),
+      );
+      throw error;
+    }
     // Só depois do sucesso: um ledger que registra tentativa é um ledger
     // que mente. Hash do conteúdo aplicado, para denunciar arquivo editado
     // depois. Ver docs/operations/migrations-ledger-and-drift.md.

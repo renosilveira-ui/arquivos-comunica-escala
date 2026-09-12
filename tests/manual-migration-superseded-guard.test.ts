@@ -54,3 +54,48 @@ describe("executor genérico — migração substituída", () => {
     expect(v2).toContain("__push_tokens_contract_mismatch__");
   });
 });
+
+/**
+ * O que o operador lê quando uma migração morre no meio.
+ *
+ * O ledger continua registrando só sucesso — um ledger que registra
+ * tentativa é um ledger que mente. Mas DDL no MySQL faz commit implícito:
+ * um arquivo com vários passos que falha no meio deixa os anteriores
+ * aplicados e nada no ledger. Antes, quem rodava via só um stack trace e
+ * não tinha como saber que o banco podia estar a meio caminho.
+ *
+ * Achado do segundo parecer de bancos (M5), reparado sem mexer na semântica
+ * do ledger.
+ */
+describe("falha de migração avisa o que ficou para trás", () => {
+  const fonte = readFileSync(
+    new URL("../scripts/apply-manual-migration.ts", import.meta.url),
+    "utf8",
+  );
+
+  it("o ledger continua gravando só depois do sucesso", () => {
+    const corpo = fonte.slice(fonte.indexOf("export async function applyManualMigration"));
+    const posQuery = corpo.indexOf("await connection.query(sql)");
+    const posLedger = corpo.indexOf("recordManualMigration(connection");
+    expect(posQuery).toBeGreaterThan(-1);
+    expect(posLedger).toBeGreaterThan(posQuery);
+  });
+
+  it("a falha explica o estado do banco e o caminho de saída", () => {
+    expect(fonte).toContain("MIGRAÇÃO FALHOU NO MEIO DO CAMINHO");
+    // Precisa dizer que o banco pode estar parcialmente alterado.
+    expect(fonte).toMatch(/parcialmente alterado/);
+    // E que o ledger não registrou nada, para ninguém procurar lá.
+    expect(fonte).toMatch(/NADA foi gravado no ledger/);
+    // E o que fazer: rodar de novo é seguro, porque são rerodáveis.
+    expect(fonte).toMatch(/rerod[aá]ve/i);
+    expect(fonte).toMatch(/schema:drift/);
+  });
+
+  it("o erro original continua subindo, não é engolido", () => {
+    const trecho = fonte.slice(
+      fonte.indexOf("MIGRAÇÃO FALHOU NO MEIO DO CAMINHO"),
+    );
+    expect(trecho).toMatch(/throw error;/);
+  });
+});
