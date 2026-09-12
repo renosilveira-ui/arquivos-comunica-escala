@@ -15,7 +15,10 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle } from "lucide-react-native";
 import { confirmAction } from "@/lib/ui/confirm";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTimeRange,
+} from "@/lib/hospital-time";
 
 /**
  * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`.
@@ -51,7 +54,11 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
 };
 
 function formatDate(d: Date): string {
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" });
+  return formatHospitalDateLong(d, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function formatTimeRange(start: Date, end: Date): string {

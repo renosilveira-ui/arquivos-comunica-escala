@@ -18,7 +18,10 @@ import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { toLocalISODateString } from "@/lib/datetime-utils";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTimeRange,
+} from "@/lib/hospital-time";
 import {
   applyExplicitFromShiftChange,
   applyExplicitOperationTypeChange,
@@ -229,7 +232,11 @@ export default function RequestSwapScreen() {
 
   const formatShiftDate = (value: Date | string) => {
     const d = new Date(value);
-    return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+    return formatHospitalDateLong(d, {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+    });
   };
 
   const formatShiftTime = (startValue: Date | string, endValue: Date | string) =>

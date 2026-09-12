@@ -13,7 +13,10 @@ import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  formatHospitalDateLong,
+  formatHospitalTimeRange,
+} from "@/lib/hospital-time";
 import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
 import {
   canDisplayOperationalListCount,
@@ -59,7 +62,11 @@ interface Props {
 }
 
 const fmtDate = (value: Date | string) =>
-  new Date(value).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+  formatHospitalDateLong(value, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
 
 const fmtTime = (s: Date | string, e: Date | string) => formatHospitalTimeRange(s, e);
 

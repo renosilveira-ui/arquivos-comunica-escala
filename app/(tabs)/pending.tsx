@@ -12,6 +12,7 @@ import {
   ShiftFilters,
   type ShiftFilterValues,
 } from "@/components/shift-filters";
+import { formatHospitalDateLong } from "@/lib/hospital-time";
 import { trpc } from "@/lib/trpc";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
@@ -266,7 +267,7 @@ export default function PendingScreen() {
   );
 
   const formatDate = (date: Date) => {
-    return new Date(date).toLocaleDateString("pt-BR", {
+    return formatHospitalDateLong(date, {
       day: "2-digit",
       month: "short",
       hour: "2-digit",
