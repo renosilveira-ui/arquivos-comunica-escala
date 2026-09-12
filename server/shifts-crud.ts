@@ -92,7 +92,6 @@ import {
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
 import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
-import { buildShiftTimestamps as buildHospitalShiftTimestamps } from "../lib/hospital-time";
 import { civilDateTimeToInstant } from "./personal-calendar-domain";
 import {
   civilPartsInZone,
@@ -1627,12 +1626,20 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
       }
     }
 
+    // O relógio que vale é o de quem opera o plantão, não o do processo.
+    // Resolvido uma vez fora do `map`, que é síncrono.
+    const hospitalTimeZone = await readHospitalTimeZone(
+      tx,
+      ctx.institutionId,
+      input.hospitalId,
+    );
     const candidates = planned.map((slot) => {
       const template = templateByName.get(slot.template.name)!;
-      const [startAt, endAt] = buildHospitalShiftTimestamps(
+      const [startAt, endAt] = buildShiftTimestamps(
         slot.dayKey,
         clockFromTemplate(template.startTime),
         clockFromTemplate(template.endTime),
+        hospitalTimeZone,
       );
       return {
         label: template.name,
