@@ -22,17 +22,12 @@ export const REPORT_SHIFTS_RETRY_LABEL = "Tentar novamente";
 export const REPORT_SHIFTS_LOADING_LABEL = "Carregando dados...";
 
 export function resolveReportShiftsState(input: {
-  isDemo: boolean;
-  demoCount: number;
   isLoading: boolean;
   isPending: boolean;
   isError: boolean;
   data: readonly unknown[] | undefined;
   error?: unknown;
 }): ReportShiftsQueryState {
-  if (input.isDemo) {
-    return input.demoCount > 0 ? "READY" : "EMPTY";
-  }
   return resolveOperationalListState({
     isLoading: input.isLoading,
     isPending: input.isPending,

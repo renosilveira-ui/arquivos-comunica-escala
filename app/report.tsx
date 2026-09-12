@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { View, TouchableOpacity, ActivityIndicator } from "react-native";
 import { Text } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -11,7 +11,6 @@ import { trpc } from "@/lib/trpc";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, FileText, Download, Calendar } from "lucide-react-native";
-import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { formatHospitalTime, formatHospitalTimeRange } from "@/lib/hospital-time";
 import { format } from "date-fns";
@@ -66,29 +65,6 @@ function mapApiShift(item: ReportApiShift): UnifiedShift {
   };
 }
 
-function mapDemoShifts(
-  items: typeof DEMO_SHIFTS,
-  selectedMonth: number,
-  selectedYear: number,
-): UnifiedShift[] {
-  return items
-    .filter((s) => {
-      const shiftDate = new Date(s.shift.startTime);
-      return (
-        shiftDate.getMonth() === selectedMonth &&
-        shiftDate.getFullYear() === selectedYear
-      );
-    })
-    .map((item) => ({
-      id: item.shift.id,
-      startTime: new Date(item.shift.startTime),
-      endTime: new Date(item.shift.endTime),
-      status: item.shift.status,
-      turnLabel: item.shiftType === "manha" ? "Manhã" : item.shiftType === "tarde" ? "Tarde" : "Noite",
-      sectorName: item.sector?.name || "Setor não definido",
-    }));
-}
-
 /**
  * Tela de Relatório de Escalas
  * Mostra estatísticas e permite exportação em PDF
@@ -96,13 +72,8 @@ function mapDemoShifts(
 export default function ReportScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const [isDemo, setIsDemo] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-
-  useEffect(() => {
-    isDemoMode().then(setIsDemo);
-  }, []);
 
   const startDate = new Date(selectedYear, selectedMonth, 1);
   const endDate = new Date(selectedYear, selectedMonth + 1, 0);
@@ -118,16 +89,10 @@ export default function ReportScreen() {
     refetch: refetchShifts,
   } = trpc.shifts.listByPeriod.useQuery(
     { startDate: startDateIso, endDate: endDateIso },
-    { enabled: !!user?.id && !isDemo },
+    { enabled: !!user?.id },
   );
 
-  const demoShifts = isDemo
-    ? mapDemoShifts(DEMO_SHIFTS, selectedMonth, selectedYear)
-    : [];
-
   const contentState = resolveReportShiftsState({
-    isDemo,
-    demoCount: demoShifts.length,
     isLoading: apiLoading,
     isPending: apiPending,
     isError: apiError,
@@ -136,9 +101,8 @@ export default function ReportScreen() {
   });
   const surface = reportShiftsSurface(contentState);
 
-  const shifts: UnifiedShift[] = isDemo
-    ? demoShifts
-    : canDisplayReportStatistics(contentState) && Array.isArray(apiShifts)
+  const shifts: UnifiedShift[] =
+    canDisplayReportStatistics(contentState) && Array.isArray(apiShifts)
       ? apiShifts.map(mapApiShift)
       : [];
 
@@ -169,10 +133,6 @@ export default function ReportScreen() {
 
   const handleExportPDF = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (isDemo) {
-      alert("📄 Exportação de PDF disponível apenas com login");
-      return;
-    }
     // TODO: Implementar exportação PDF
     alert("📄 Funcionalidade de exportação PDF em desenvolvimento");
   };
@@ -197,7 +157,7 @@ export default function ReportScreen() {
     }
   };
 
-  if (!user && !isDemo) {
+  if (!user) {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
