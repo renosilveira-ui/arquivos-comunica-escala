@@ -5,7 +5,10 @@ import { getDb } from "./db";
 import { activeShiftCounts } from "./shift-capacity";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { ForbiddenError } from "../shared/_core/errors";
-import { assertMonthEditableForUpdate } from "./month-guards";
+import {
+  assertMonthEditableForUpdate,
+  assertMonthsEditableForUpdate,
+} from "./month-guards";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { and, eq, inArray } from "drizzle-orm";
@@ -27,10 +30,17 @@ import {
 } from "./shift-validations-v2";
 import {
   ALLOCATION_REPEAT_RULES,
-  listRepeatAssignmentCandidates,
+  planAllocationRepeat,
+  repeatSlotAt,
   selectRepeatTargets,
   type AllocationRepeatRule,
 } from "./allocation-repeat";
+import {
+  DEFAULT_ALLOCATION_REPEAT_MONTHS,
+  MAX_ALLOCATION_REPEAT_MONTHS,
+  allocationRepeatConflictMessage,
+} from "../lib/allocation-repeat";
+import { dayKeyBrt } from "./local-time";
 import {
   enqueueShiftAssignedPush,
   enqueueShiftUnassignedPush,
@@ -276,8 +286,92 @@ function selectLockedRepeatTargets(
   source: ShiftTarget,
   lockedById: Map<number, ShiftTarget>,
   rule: AllocationRepeatRule,
+  lastDayKey: string,
 ): ShiftTarget[] {
-  return selectRepeatTargets(source, [...lockedById.values()], rule);
+  return selectRepeatTargets(
+    source,
+    [...lockedById.values()],
+    rule,
+    lastDayKey,
+  );
+}
+
+/**
+ * Abre na escala as vagas que a repetição alcança e que ainda não existem.
+ * A vaga nova é cópia do plantão de origem — mesmo setor, contexto,
+ * rótulo, especialidade, capacidade, modalidade e modelo de pagamento —
+ * com a janela deslocada para o dia alvo. O offset do hospital é fixo
+ * (-03:00), então deslocar por dias inteiros preserva o horário de parede.
+ */
+async function createRepeatSlots(
+  tx: AssignmentWriteTx,
+  input: {
+    source: ShiftTarget;
+    dayKeys: readonly string[];
+    userId: number;
+    /** Papel institucional do gestor, como a trilha de SHIFT_CREATED registra. */
+    actorRole: string;
+    actorName?: string;
+  },
+): Promise<number[]> {
+  if (input.dayKeys.length === 0) return [];
+  const [full] = await tx
+    .select({
+      requiredCapacity: shiftInstances.requiredCapacity,
+      modality: shiftInstances.modality,
+      coverageType: shiftInstances.coverageType,
+      paymentModel: shiftInstances.paymentModel,
+      productivityCapBrl: shiftInstances.productivityCapBrl,
+    })
+    .from(shiftInstances)
+    .where(eq(shiftInstances.id, input.source.id))
+    .limit(1);
+  if (!full) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "O turno não está mais disponível.",
+    });
+  }
+  const created: number[] = [];
+  for (const dayKey of input.dayKeys) {
+    const slot = repeatSlotAt(input.source, dayKey);
+    const [inserted] = await tx.insert(shiftInstances).values({
+      institutionId: input.source.institutionId,
+      hospitalId: input.source.hospitalId,
+      sectorId: input.source.sectorId,
+      scheduleContextId: input.source.scheduleContextId,
+      requiredCapacity: full.requiredCapacity,
+      label: input.source.label,
+      specialty: input.source.specialty,
+      startAt: slot.startAt,
+      endAt: slot.endAt,
+      status: "VAGO",
+      modality: full.modality,
+      coverageType: full.coverageType,
+      paymentModel: full.paymentModel,
+      productivityCapBrl: full.productivityCapBrl,
+      createdBy: input.userId,
+    });
+    const createdId = inserted.insertId;
+    await recordAudit(
+      {
+        actorUserId: input.userId,
+        actorRole: input.actorRole,
+        actorName: input.actorName,
+        action: "SHIFT_CREATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: createdId,
+        description: `Vaga aberta pela repetição do plantonista (${input.source.label} em ${dayKey})`,
+        institutionId: input.source.institutionId,
+        hospitalId: input.source.hospitalId,
+        sectorId: input.source.sectorId,
+        shiftInstanceId: createdId,
+      },
+      { db: tx, strict: true },
+    );
+    created.push(createdId);
+  }
+  return created;
 }
 
 async function insertDirectAssignment(
@@ -411,11 +505,18 @@ export const editorRouter = router({
         assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]),
         reason: z.string().optional(),
         repeatRule: z.enum(ALLOCATION_REPEAT_RULES).default("none"),
+        repeatMonths: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_ALLOCATION_REPEAT_MONTHS)
+          .default(DEFAULT_ALLOCATION_REPEAT_MONTHS),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const { shiftInstanceId, professionalId, assignmentType, reason } = input;
       const repeatRule: AllocationRepeatRule = input.repeatRule;
+      const repeatMonths = input.repeatMonths;
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -448,21 +549,63 @@ export const editorRouter = router({
       // Guarda mensal, revalidação/CAS do alvo, alocação, status e ambas as
       // trilhas de auditoria formam um único commit.
       const result = await db.transaction(async (tx) => {
-        await assertMonthEditableForUpdate(
+        const plan = await planAllocationRepeat(
           tx,
-          { user: { id: userId } },
-          shift.institutionId,
-          shift.hospitalId,
-          shift.startAt,
-          reason,
+          shift,
+          repeatRule,
+          repeatMonths,
         );
+        // A escala daquele dia já diz outra coisa na mesma janela: abrir a
+        // vaga ali criaria dois plantões no mesmo horário do mesmo contexto.
+        if (plan.blockedDayKeys.length > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: allocationRepeatConflictMessage(plan.blockedDayKeys),
+          });
+        }
 
-        const previewTargets =
-          repeatRule === "none"
-            ? []
-            : await listRepeatAssignmentCandidates(tx, shift, repeatRule);
+        const repeatDates = [
+          ...plan.targets.map((row) => dayKeyBrt(row.startAt)),
+          ...plan.missingDayKeys,
+        ].map((dayKey) => repeatSlotAt(shift, dayKey).startAt);
+
+        // O horizonte não vence a autoridade sobre a data: GESTOR_MEDICO
+        // alcança o mês corrente e o seguinte, GESTOR_PLUS vai além.
+        for (const date of repeatDates) {
+          assertCanEditScheduleDate(actor, date);
+        }
+
+        // Repetir além do mês de origem abre a escala dos meses seguintes —
+        // o roster ausente é materializado como DRAFT pela própria guarda.
+        await assertMonthsEditableForUpdate(tx, { user: { id: userId } }, [
+          {
+            institutionId: shift.institutionId,
+            hospitalId: shift.hospitalId,
+            date: shift.startAt,
+            reason,
+          },
+          ...repeatDates.map((date) => ({
+            institutionId: shift.institutionId,
+            hospitalId: shift.hospitalId,
+            date,
+            reason,
+          })),
+        ]);
+
+        const createdIds = await createRepeatSlots(tx, {
+          source: shift,
+          dayKeys: plan.missingDayKeys,
+          userId,
+          actorRole: actor.roleInInstitution,
+          actorName: ctx.user.name ?? undefined,
+        });
+
         const lockIds = Array.from(
-          new Set([shiftInstanceId, ...previewTargets.map((row) => row.id)]),
+          new Set([
+            shiftInstanceId,
+            ...plan.targets.map((row) => row.id),
+            ...createdIds,
+          ]),
         ).sort((left, right) => left - right);
 
         const lockedById = new Map<number, ShiftTarget>();
@@ -493,6 +636,7 @@ export const editorRouter = router({
           lockedShift,
           lockedById,
           repeatRule,
+          plan.lastDayKey,
         );
         const capacityCounts = await activeShiftCounts(tx, [
           ...matchingTargets.map((row) => row.id),
@@ -582,6 +726,7 @@ export const editorRouter = router({
           assignmentId: sourceAssignmentId,
           allocatedCount: toAssign.length,
           skippedOccupiedCount,
+          createdSlotCount: createdIds.length,
         };
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
