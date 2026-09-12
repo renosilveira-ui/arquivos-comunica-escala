@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALERT_OFFSET_OPTIONS,
+  MAX_ALERT_SELECTION,
   PERSONAL_CALENDAR_KIND_LABELS,
   accessibilityLabelForOccurrence,
   addDaysToDayKey,
@@ -460,11 +461,34 @@ describe("recorrência e alertas", () => {
     );
   });
 
-  it("as opções de alerta cabem no teto de 8 regras do domínio", () => {
-    expect(ALERT_OFFSET_OPTIONS.length).toBeLessThanOrEqual(8);
-    expect(ALERT_OFFSET_OPTIONS.every((option) => option.minutes >= 0)).toBe(
-      true,
-    );
+  it("o teto de seleção acompanha o do domínio, não o tamanho do catálogo", () => {
+    // Antes o catálogo tinha 8 opções e estourar era impossível; a garantia
+    // vinha de manter a lista pequena. Com 12 opções ela precisa vir daqui:
+    // o número da tela e o do servidor não podem se soltar.
+    const domain = readFileSync("server/personal-calendar-domain.ts", "utf8");
+    const declared = /const MAX_ALERT_RULES = (\d+);/.exec(domain);
+    expect(declared, "MAX_ALERT_RULES não encontrado no domínio").not.toBeNull();
+    expect(Number(declared![1])).toBe(MAX_ALERT_SELECTION);
+
+    // E a tela precisa de fato cortar nesse número — uma constante que
+    // ninguém aplica é decoração.
+    const screen = readFileSync("app/personal-event.tsx", "utf8");
+    expect(screen).toContain("slice(0, MAX_ALERT_SELECTION)");
+  });
+
+  it("toda opção de alerta é aceita pelo servidor", () => {
+    // O schema do domínio aceita inteiros de 0 a 525.600 minutos (um ano).
+    expect(
+      ALERT_OFFSET_OPTIONS.every(
+        (option) =>
+          Number.isInteger(option.minutes) &&
+          option.minutes >= 0 &&
+          option.minutes <= 525_600,
+      ),
+    ).toBe(true);
+    // Sem duplicata: o servidor recusa a lista inteira se houver.
+    const minutes = ALERT_OFFSET_OPTIONS.map((option) => option.minutes);
+    expect(new Set(minutes).size).toBe(minutes.length);
   });
 });
 
