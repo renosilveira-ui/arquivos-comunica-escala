@@ -29,6 +29,8 @@ export function TopBar({ onMenuToggle, title }: TopBarProps) {
       {/* Hambúrguer (mobile/tablet) */}
       <TouchableOpacity
         onPress={onMenuToggle}
+        accessibilityRole="button"
+        accessibilityLabel="Abrir menu"
         className="mr-4 active:opacity-70 md:hidden"
       >
         <Menu size={24} color={theme.colors.onDark.text} />
@@ -47,6 +49,8 @@ export function TopBar({ onMenuToggle, title }: TopBarProps) {
       {/* Perfil */}
       <TouchableOpacity
         onPress={() => router.push("/profile")}
+        accessibilityRole="button"
+        accessibilityLabel="Abrir seu perfil"
         className="ml-auto active:opacity-70"
       >
         <View
