@@ -1,11 +1,11 @@
-import { and, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import {
   ALLOCATION_REPEAT_RULES,
   clampAllocationRepeatMonths,
   type AllocationRepeatRule,
 } from "../lib/allocation-repeat";
 import { formatHospitalTime } from "../lib/hospital-time";
-import { shiftAssignmentsV2, shiftInstances } from "../drizzle/schema";
+import { shiftInstances } from "../drizzle/schema";
 import { getDb } from "./db";
 import {
   addDaysToKey,
@@ -284,23 +284,4 @@ export async function planAllocationRepeat(
     else if (scope.kind === "horizon") missingDayKeys.push(dayKey);
   }
   return { lastDayKey, targets, missingDayKeys, blockedDayKeys };
-}
-
-export async function listActiveAssignmentShiftIds(
-  db: RepeatDb,
-  institutionId: number,
-  shiftInstanceIds: readonly number[],
-): Promise<Set<number>> {
-  if (shiftInstanceIds.length === 0) return new Set();
-  const rows = await db
-    .select({ shiftInstanceId: shiftAssignmentsV2.shiftInstanceId })
-    .from(shiftAssignmentsV2)
-    .where(
-      and(
-        eq(shiftAssignmentsV2.institutionId, institutionId),
-        eq(shiftAssignmentsV2.isActive, true),
-        inArray(shiftAssignmentsV2.shiftInstanceId, [...shiftInstanceIds]),
-      ),
-    );
-  return new Set(rows.map((row) => row.shiftInstanceId));
 }
