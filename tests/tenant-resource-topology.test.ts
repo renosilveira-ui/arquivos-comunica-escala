@@ -1890,7 +1890,11 @@ describe("hierarquia institution → hospital → sector", () => {
           confirmationWithoutOriginalMembership,
           "NO_RESPONSE",
         ),
-      ).resolves.toEqual({ managerCount: 4, intentCount: 4 });
+      ).resolves.toEqual({
+        outcome: "NOTIFIED",
+        managerCount: 4,
+        intentCount: 4,
+      });
       expect(
         new Set(queuedPushMock.mock.calls.map(([input]) => input.userId)),
       ).toEqual(

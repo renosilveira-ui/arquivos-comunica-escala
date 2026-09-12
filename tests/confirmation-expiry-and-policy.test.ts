@@ -249,7 +249,14 @@ describe("confirmações: encerramento e política do aviso ao gestor", () => {
     });
 
     const result = await notifyManagersConfirmationEscalation(id, "NO_RESPONSE");
-    expect(result).toMatchObject({ managerCount: 0, intentCount: 0 });
+    // O desfecho precisa dizer POR QUE ninguém foi avisado: sem isto, o
+    // chamador confunde "a instituição desligou o aviso" com "não existe
+    // gestor" e toca alarme para quem só exerceu uma opção do produto.
+    expect(result).toEqual({
+      outcome: "SUPPRESSED_BY_POLICY",
+      managerCount: 0,
+      intentCount: 0,
+    });
 
     const row = await statusOf(id);
     expect(row?.status).toBe("PENDING");
