@@ -40,6 +40,7 @@ import {
   rosterMonthKey,
 } from "./roster-read-visibility";
 import { listManageableTopology } from "./sector-scale";
+import { resolveScheduleTimeZone } from "./institution-time-zone";
 import {
   actionableVacancyFiltersSchema,
   countActionableVacancies,
@@ -105,6 +106,9 @@ export const professionalsRouter = router({
       .select({
         institutionId: institutions.id,
         institutionName: institutions.name,
+        // Fuso da instituição, para o app parar de assumir -03:00 fixo.
+        // Aditivo: cliente antigo ignora o campo e segue funcionando.
+        institutionTimeZone: institutions.timeZone,
         roleInInstitution: professionalInstitutions.roleInInstitution,
         isPrimary: professionalInstitutions.isPrimary,
         active: professionalInstitutions.active,
@@ -152,6 +156,11 @@ export const professionalsRouter = router({
       .map((r) => ({
         id: r.institutionId,
         name: r.institutionName,
+        // Sempre um IANA válido: valor corrompido no banco cai no padrão em
+        // vez de chegar ao aparelho como lixo.
+        timeZone: resolveScheduleTimeZone({
+          institutionTimeZone: r.institutionTimeZone,
+        }),
         roleInInstitution: r.roleInInstitution,
         isPrimary: r.isPrimary,
       }));

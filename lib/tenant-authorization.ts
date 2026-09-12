@@ -3,6 +3,14 @@ import type { ActiveTenantSnapshot } from "./tenant-state";
 export type AuthorizedInstitution = Readonly<{
   id: number;
   name: string;
+  /**
+   * Fuso IANA da instituição, vindo do servidor.
+   *
+   * Existe para o app parar de assumir `-03:00` fixo ao mostrar horário de
+   * plantão. Quem consome ainda é o servidor; a troca das telas vem depois,
+   * e precisa de build nova. Este campo é o pré-requisito dela.
+   */
+  timeZone: string;
   roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
   isPrimary: boolean;
 }>;

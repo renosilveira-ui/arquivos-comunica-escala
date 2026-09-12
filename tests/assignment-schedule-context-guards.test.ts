@@ -380,7 +380,11 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     const nomination = block(
       confirmation,
       "const candidateQuery = tx",
-      "const TZ =",
+      // Âncora trocada em 12/09/2026: o `const TZ = "America/Sao_Paulo"` que
+      // marcava o fim deste bloco era a quarta cópia do fuso fixo e foi
+      // removida. A resolução do fuso do hospital ocupa o mesmo lugar e
+      // delimita o mesmo trecho.
+      "const shiftTimeZone = await readHospitalTimeZone(",
     );
     expect(nomination).toContain(
       "if (current.shift.scheduleContextId === null)",
