@@ -137,6 +137,57 @@ export async function selectGoogleSyncCandidates(
     .limit(limit);
 }
 
+function affectedRows(result: unknown): number {
+  const header = Array.isArray(result) ? result[0] : result;
+  const value = (header as { affectedRows?: unknown } | null)?.affectedRows;
+  return typeof value === "number" ? value : 0;
+}
+
+/**
+ * Reserva a conta para ESTE processo antes de falar com o Google.
+ *
+ * ## Por que uma reserva, e não só a seleção
+ *
+ * A seleção lê quem está vencido; a guarda contra repetição era uma tabela
+ * em memória (`lastAttemptAtMs`), que só vale dentro de um processo. Havendo
+ * mais de um processo sobre o mesmo banco — e há: o serviço antigo de Oregon
+ * e o novo da Virginia rodam os mesmos workers enquanto os dois estiverem no
+ * ar — os dois leem a mesma conta vencida e sincronizam a mesma agenda ao
+ * mesmo tempo.
+ *
+ * O estrago não é teórico. Os dois partem do MESMO cursor do Google, recebem
+ * a mesma lista de mudanças e a importam duas vezes; e quem grava o cursor
+ * por último apaga o avanço do outro, de modo que o ciclo seguinte relê o
+ * que já foi lido. O Google também invalida um cursor usado em paralelo.
+ *
+ * A reserva é o idioma de transição de estado do projeto: UPDATE com guarda
+ * no WHERE e decisão pelo `affectedRows`. Quem consegue mover `last_synced_at`
+ * para agora ganha a janela; o outro recebe 0 linhas e desiste sem tocar na
+ * agenda de ninguém. Vale para qualquer número de processos, porque quem
+ * arbitra é o banco.
+ */
+export async function claimGoogleSyncCandidate(
+  db: Db,
+  userId: number,
+  now: Date,
+): Promise<boolean> {
+  const staleBefore = new Date(now.getTime() - GOOGLE_SYNC_INTERVAL_MS);
+  const result = await db
+    .update(userExternalCredentials)
+    .set({ lastSyncedAt: now })
+    .where(
+      and(
+        eq(userExternalCredentials.userId, userId),
+        eq(userExternalCredentials.provider, EXTERNAL_PROVIDERS.googleCalendar),
+        or(
+          isNull(userExternalCredentials.lastSyncedAt),
+          lte(userExternalCredentials.lastSyncedAt, staleBefore),
+        ),
+      ),
+    );
+  return affectedRows(result) === 1;
+}
+
 export async function tickGoogleCalendarSync(
   now = new Date(),
   deps: GoogleCalendarSyncDeps = {},
@@ -189,6 +240,13 @@ export async function tickGoogleCalendarSync(
           continue;
         }
         lastAttemptAtMs.set(candidate.userId, now.getTime());
+
+        // Outro processo pode ter pegado esta conta entre a seleção e agora.
+        // Quem não ganha a reserva não fala com o Google.
+        if (!(await claimGoogleSyncCandidate(db, candidate.userId, now))) {
+          skipped += 1;
+          continue;
+        }
 
         try {
           const timeZone = await resolveUserTimeZone(db, candidate.userId);
