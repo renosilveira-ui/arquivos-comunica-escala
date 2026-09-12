@@ -1,5 +1,6 @@
 import {
   formatHospitalDate,
+  formatHospitalTime,
   formatHospitalTimeRange,
 } from "../lib/hospital-time";
 
@@ -38,6 +39,12 @@ export type AssignmentLifecyclePresentationPurpose =
 export type SwapOfferPresentationAudience = "OPEN" | "DIRECTED";
 
 export type SwapTakenPresentationType = "SWAP" | "TRANSFER" | "CESSAO";
+
+/** O que o plano de deslocamento calculou, lido do banco no envio. */
+export type CanonicalDeparturePlanContext = Readonly<{
+  departAt: Date | string;
+  estimatedDurationSeconds: number | null;
+}>;
 
 const MAX_CONTEXT_LABEL_CHARACTERS = 80;
 
@@ -220,4 +227,53 @@ export function swapTakenPushPresentation(
         title,
         `Seu plantão de ${shift} foi assumido.`,
       );
+}
+
+/**
+ * Aviso de deslocamento: a única notificação cujo VALOR é o conteúdo.
+ *
+ * As outras podem dizer "abra o aplicativo" sem perder muito — a informação
+ * está lá dentro. Esta não: ela existe para dizer a que horas sair de casa, e
+ * chega uma hora antes do plantão, quando o médico está fazendo outra coisa.
+ * Um aviso genérico aqui é um aviso inútil, porque obriga a abrir o app
+ * justamente para descobrir se era urgente.
+ *
+ * Por isso ela ganhou apresentação contextual. Até 12/09/2026 não tinha
+ * nenhuma, e todo aviso de deslocamento saía como "Há uma atualização
+ * disponível. Abra o aplicativo para consultar." — o PO recebeu exatamente
+ * isso e não soube do que se tratava.
+ *
+ * Sem nome de pessoa, como as demais: hospital, setor, horário do plantão e
+ * a hora de sair. Tudo reconstruído do banco no envio, nada vindo do
+ * produtor da notificação.
+ */
+export function departurePushPresentation(
+  context: CanonicalShiftPushContext,
+  plan: CanonicalDeparturePlanContext,
+): ContextualPushPresentation | null {
+  const title = normalizedContextTitle(context);
+  if (!title) return null;
+
+  const departAt = new Date(plan.departAt);
+  if (!Number.isFinite(departAt.getTime())) return null;
+
+  const inicio = formatHospitalTime(context.startAt);
+  const saida = formatHospitalTime(departAt);
+  if (!inicio || !saida) return null;
+
+  const minutos =
+    plan.estimatedDurationSeconds !== null &&
+    Number.isFinite(plan.estimatedDurationSeconds) &&
+    plan.estimatedDurationSeconds > 0
+      ? Math.max(1, Math.round(plan.estimatedDurationSeconds / 60))
+      : null;
+
+  // Sem estimativa de trânsito o aviso ainda vale: a hora de sair é o que o
+  // médico precisa. A estimativa entra como justificativa, quando existe.
+  const corpo =
+    minutos === null
+      ? `Plantão às ${inicio}. Saia até ${saida}.`
+      : `Plantão às ${inicio}. Cerca de ${minutos} min de trajeto — saia até ${saida}.`;
+
+  return contextualPresentation(title, corpo);
 }

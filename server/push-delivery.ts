@@ -21,6 +21,7 @@ import {
 } from "./notifications-service";
 import {
   assignmentLifecyclePushPresentation,
+  departurePushPresentation,
   dutyConfirmationPushPresentation,
   swapOfferPushPresentation,
   swapTakenPushPresentation,
@@ -36,6 +37,12 @@ import {
   requireAuthorizedAssignmentLifecycleRecipient,
   type AssignmentLifecyclePushAuthority,
 } from "./assignment-push-authority";
+import {
+  departureAuthorityMatchesPayload,
+  parseDeparturePushAuthority,
+  requireAuthorizedDepartureRecipient,
+  type DeparturePushAuthority,
+} from "./departure-push-authority";
 import {
   isVacancyBroadcastPushPayload,
   parseVacancyBroadcastPushAuthority,
@@ -261,7 +268,8 @@ export type TrackedPushAuthority =
   | VacancyRequestPushAuthority
   | AssignmentLifecyclePushAuthority
   | VacancyBroadcastPushAuthority
-  | SwapPushAuthority;
+  | SwapPushAuthority
+  | DeparturePushAuthority;
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type EnqueueDb = Pick<Db, "insert" | "select" | "update">;
@@ -496,6 +504,12 @@ function parseAuthority(
       ? parsed
       : null;
   }
+  if (authority.kind === "DEPARTURE_ALERT") {
+    const parsed = parseDeparturePushAuthority(authority);
+    return parsed && departureAuthorityMatchesPayload(parsed, payloadData)
+      ? parsed
+      : null;
+  }
   if (authority.kind === "SWAP_OFFER" || authority.kind === "SWAP_TAKEN") {
     const parsed = parseSwapPushAuthority(authority);
     return parsed && swapPushAuthorityMatchesPayload(parsed, payloadData)
@@ -516,6 +530,9 @@ function trackedAuthorityMatchesPayload(
       payloadData,
       requirePayloadConfirmationId,
     );
+  }
+  if (authority.kind === "DEPARTURE_ALERT") {
+    return departureAuthorityMatchesPayload(authority, payloadData);
   }
   return authority.kind === "VACANCY_REQUEST"
     ? vacancyRequestAuthorityMatchesPayload(authority, payloadData)
@@ -790,7 +807,10 @@ function isSubmissionRetryable(result: PushSendResult): boolean {
 }
 
 function isManagerEscalation(state: Pick<TrackingBase, "authority">): boolean {
-  return state.authority?.purpose === "MANAGER_ESCALATION";
+  return (
+    state.authority?.kind === "DUTY_CONFIRMATION" &&
+    state.authority.purpose === "MANAGER_ESCALATION"
+  );
 }
 
 function shouldSyncAccountWideNativeBadge(
@@ -1090,6 +1110,38 @@ async function requireCurrentPushAuthority(
     throw new PersistedPushAuthorityBindingError(
       "Purpose ou destinatário do outbox não corresponde à autoridade persistida",
     );
+  }
+  if (state.authority.kind === "DEPARTURE_ALERT") {
+    if (
+      row.institutionId !== state.authority.institutionId ||
+      row.shiftInstanceId !== state.authority.shiftInstanceId
+    ) {
+      throw new PersistedPushAuthorityBindingError(
+        "Tenant ou plantão do outbox não corresponde ao aviso de deslocamento",
+      );
+    }
+    // Fora do lock a passagem só classifica autoridade e retry; a cópia que
+    // chega ao sistema operacional é resolvida uma vez só, sob lock.
+    if (!lockForUpdate) {
+      await requireAuthorizedDepartureRecipient(db, state.authority, false);
+      return;
+    }
+    const plan = await requireAuthorizedDepartureRecipient(
+      db,
+      state.authority,
+      lockForUpdate,
+    );
+    const context = await requireCanonicalShiftPushContext(
+      db,
+      {
+        institutionId: state.authority.institutionId,
+        hospitalId: state.authority.hospitalId,
+        sectorId: state.authority.sectorId,
+        shiftInstanceId: state.authority.shiftInstanceId,
+      },
+      lockForUpdate,
+    );
+    return departurePushPresentation(context, plan);
   }
   if (state.authority.kind === "VACANCY_REQUEST") {
     if (
@@ -1683,7 +1735,8 @@ async function processSubmission(
     }
     if (
       persisted.affectedRows === 1 &&
-      claimed.authority?.purpose === "CONFIRMATION_REQUEST" &&
+      claimed.authority?.kind === "DUTY_CONFIRMATION" &&
+      claimed.authority.purpose === "CONFIRMATION_REQUEST" &&
       isConfirmationRouteToken(claimed.payloadData.confirmationToken)
     ) {
       await db
@@ -1706,7 +1759,11 @@ async function processSubmission(
     }
     if (
       persisted.affectedRows === 1 &&
-      claimed.authority?.purpose === "SSO_READY"
+      // Estreita pelo `kind` antes do `purpose`: nem toda autoridade tem
+      // propósito (o aviso de deslocamento não tem), e ler o campo sobre a
+      // união inteira deixaria de estreitar.
+      claimed.authority?.kind === "DUTY_CONFIRMATION" &&
+      claimed.authority.purpose === "SSO_READY"
     ) {
       // O worker também fecha a evidência de recovery. Se a tentativa
       // imediata caiu e o retry posterior obteve ticket, o timestamp não
@@ -2232,7 +2289,8 @@ async function persistTrackedPushIntent(
   assertSameTrackedIntent(row, input, insertedNew);
   if (
     row.status === "FAILED" &&
-    input.authority?.purpose === "MANAGER_ESCALATION"
+    input.authority?.kind === "DUTY_CONFIRMATION" &&
+    input.authority.purpose === "MANAGER_ESCALATION"
   ) {
     // Revogação temporária do gestor ou exaustão de uma versão anterior não
     // pode apagar o handoff. A mesma intenção exata volta ao worker; qualquer
