@@ -9,6 +9,7 @@ import {
 // para dentro de uma suíte que não usa banco.
 import type { getDb } from "./db";
 import { civilDateTimeToInstant } from "./personal-calendar-domain";
+import { addDaysToKey, addMonthsYearMonth, weekdayOfKey } from "./local-time";
 
 /**
  * Fuso IANA por instituição e por hospital.
@@ -27,6 +28,8 @@ import { civilDateTimeToInstant } from "./personal-calendar-domain";
  */
 
 export const DEFAULT_SCHEDULE_TIME_ZONE = "America/Sao_Paulo";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const timeZoneSupportCache = new Map<string, boolean>();
 const MAX_TIME_ZONE_CACHE_ENTRIES = 512;
@@ -183,3 +186,112 @@ export function dayWindowInTimeZone(
   const end = civilDateTimeToInstant(nextDayKey, "00:00:00", zone).instant;
   return { start, end };
 }
+
+// ---------------------------------------------------------------------------
+// Aritmética de calendário no fuso de quem opera o plantão
+//
+// Estes auxiliares saíram de server/shifts-crud.ts em 12/09/2026, quando o
+// offset fixo -03:00 de lá foi removido. Moram aqui porque este módulo já é
+// a fonte da verdade de fuso, e porque a migração dos demais chamadores de
+// server/local-time.ts vai precisar exatamente deles.
+// ---------------------------------------------------------------------------
+
+/** Meia-noite de um dia "YYYY-MM-DD" no fuso de quem opera o plantão. */
+export function dayStartInZone(dayKey: string, timeZone: string): Date {
+  return civilDateTimeToInstant(dayKey, "00:00:00", timeZone).instant;
+}
+
+/**
+ * Primeira segunda-feira em ou depois de uma data civil.
+ *
+ * Trabalha em CHAVE de dia, não em instante, de propósito: o dia da semana
+ * de uma data do calendário não depende de fuso nenhum — 03/03/2028 é uma
+ * sexta-feira em Fortaleza, em Lisboa e em Tóquio. A versão anterior
+ * convertia para instante e subtraía três horas fixas para ler o dia da
+ * semana, o que amarrava esta conta a UTC-3 sem necessidade.
+ */
+export function firstMondayKeyOnOrAfter(dayKey: string): string {
+  const dow = weekdayOfKey(dayKey);
+  return addDaysToKey(dayKey, (8 - dow) % 7);
+}
+
+/**
+ * Mesma hora de parede, N dias depois, no fuso de quem opera o plantão.
+ *
+ * A versão anterior somava `N × 24 h` ao instante. Sem horário de verão isso
+ * coincide; com ele, replicar uma escala por cima de uma virada moveria todo
+ * plantão em uma hora — a escala inteira do mês seguinte sairia deslocada,
+ * sem erro nenhum aparecer.
+ */
+export function shiftInstantByDays(
+  instant: Date,
+  days: number,
+  timeZone: string,
+): Date {
+  const [dateKey, timeKey] = civilPartsInZone(instant, timeZone);
+  return civilDateTimeToInstant(addDaysToKey(dateKey, days), timeKey, timeZone)
+    .instant;
+}
+
+/**
+ * Janela [início, fim) de um mês "YYYY-MM" no fuso de quem opera o plantão.
+ *
+ * O equivalente fixo em `local-time.ts` (`monthWindowBrt`) segue valendo para
+ * quem ainda não migrou; aqui o mês é o do hospital.
+ */
+export function monthWindowInZone(
+  yearMonth: string,
+  timeZone: string,
+): { start: Date; end: Date } {
+  const startKey = `${yearMonth}-01`;
+  const nextKey = `${addMonthsYearMonth(yearMonth, 1)}-01`;
+  return {
+    start: dayStartInZone(startKey, timeZone),
+    end: dayStartInZone(nextKey, timeZone),
+  };
+}
+
+/** "YYYY-MM-DD" e "HH:MM:SS" de um instante, no fuso informado. */
+export function civilPartsInZone(instant: Date, timeZone: string): [string, string] {
+  // sv-SE entrega exatamente "YYYY-MM-DD HH:MM:SS".
+  const formatted = new Intl.DateTimeFormat("sv-SE", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(instant);
+  const [dateKey, timeKey] = formatted.split(" ");
+  return [dateKey, timeKey];
+}
+
+/**
+ * Distância em dias entre duas datas civis.
+ *
+ * Também sem fuso: a diferença entre 01/03 e 08/03 é sete dias em qualquer
+ * lugar do mundo, inclusive num dia de mudança de horário de verão, quando
+ * a diferença em HORAS não seria 168.
+ */
+export function daysBetweenKeys(fromKey: string, toKey: string): number {
+  const asUtc = (key: string) => {
+    const [y, m, d] = key.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((asUtc(toKey) - asUtc(fromKey)) / DAY_MS);
+}
+
+/**
+ * Janela de origem [fromStart, fromEnd), janela de destino e o
+ * deslocamento em dias locais.
+ *
+ * - week: 7 dias a partir de from.start → 7 dias a partir de to.start.
+ * - month: mês civil de from.start → mês civil de to.start. O
+ *   deslocamento alinha a primeira segunda-feira da origem à primeira
+ *   segunda-feira do destino, para que cada turno caia no MESMO DIA DA
+ *   SEMANA (escala hospitalar é semanal por natureza). Turnos que, com
+ *   esse deslocamento, caem fora do mês de destino não são copiados e
+ *   contam em outOfRange.
+ */

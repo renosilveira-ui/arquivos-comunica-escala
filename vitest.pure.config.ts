@@ -16,6 +16,7 @@ export default defineConfig({
     environment: "node",
     setupFiles: [],
     include: [
+      "tests/schedule-time-zone-arithmetic.test.ts",
       "tests/typography.test.ts",
       "tests/departure-push-presentation.test.ts",
       "tests/screens-scrollable.test.ts",
