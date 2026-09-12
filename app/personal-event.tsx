@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { KeyboardAvoidingView, Platform, TouchableOpacity, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Switch,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { Text, TextInput } from "@/components/ui/Text";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Trash2 } from "lucide-react-native";
@@ -10,10 +16,18 @@ import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { AppButton } from "@/components/ui/AppButton";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import {
+  brToIso,
+  isoToBr,
+  isValidTimeHHMM,
+  maskBrDate,
+  maskTimeHHMM,
+} from "@/lib/form-masks-br";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import {
   ALERT_OFFSET_OPTIONS,
+  MAX_ALERT_SELECTION,
   PERSONAL_CALENDAR_KIND_LABELS,
   WEEKDAY_SHORT_LABELS,
   conflictSummaryText,
@@ -127,6 +141,94 @@ function Input({
         textAlignVertical: multiline ? "top" : "center",
       }}
     />
+  );
+}
+
+/**
+ * Data em DD/MM/AAAA na tela, ISO no estado.
+ *
+ * O estado continua ISO porque o formulário compara datas como TEXTO
+ * (`endDate > startDate`) — correto só enquanto ISO ordena lexicograficamente.
+ *
+ * O que se vê é o que se grava. Data incompleta zera o estado em vez de
+ * deixar o valor anterior lá: senão o campo mostra "12/09/202" e o Salvar
+ * grava silenciosamente a data de antes — troca de falha barulhenta (o
+ * servidor recusava o texto cru) por falha silenciosa, que é pior.
+ *
+ * Quem barra o vazio é o `submit`, com mensagem.
+ */
+function DateFieldBR({
+  label,
+  value,
+  onChange,
+  accessibilityLabel,
+}: {
+  label: string;
+  value: string;
+  onChange: (iso: string) => void;
+  accessibilityLabel: string;
+}) {
+  const [text, setText] = useState(() => isoToBr(value));
+
+  useEffect(() => {
+    setText(isoToBr(value));
+  }, [value]);
+
+  return (
+    <Field label={label} hint="DD/MM/AAAA">
+      <Input
+        value={text}
+        onChangeText={(raw) => {
+          const masked = maskBrDate(raw);
+          setText(masked);
+          onChange(brToIso(masked));
+        }}
+        keyboardType="numeric"
+        accessibilityLabel={accessibilityLabel}
+        maxLength={10}
+      />
+    </Field>
+  );
+}
+
+/**
+ * Hora em HH:MM, 24 h. Mesmo contrato do campo de data: hora incompleta ou
+ * impossível zera o estado, e quem barra o vazio é o `submit`.
+ *
+ * O campo era texto livre com `maxLength={5}` — "8:0" chegava ao servidor só
+ * para ser recusado lá, depois do toque em Salvar.
+ */
+function TimeFieldBR({
+  label,
+  value,
+  onChange,
+  accessibilityLabel,
+}: {
+  label: string;
+  value: string;
+  onChange: (time: string) => void;
+  accessibilityLabel: string;
+}) {
+  const [text, setText] = useState(() => value);
+
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  return (
+    <Field label={label} hint="HH:MM">
+      <Input
+        value={text}
+        onChangeText={(raw) => {
+          const masked = maskTimeHHMM(raw);
+          setText(masked);
+          onChange(isValidTimeHHMM(masked) ? masked : "");
+        }}
+        keyboardType="numeric"
+        accessibilityLabel={accessibilityLabel}
+        maxLength={5}
+      />
+    </Field>
   );
 }
 
@@ -465,6 +567,28 @@ export default function PersonalEventScreen() {
       feedback.error("Informe um título para o compromisso.");
       return;
     }
+    if (kind !== "BIRTHDAY") {
+      // O campo zera quando a data está incompleta. Sem esta guarda o Salvar
+      // seguiria com a data anterior, que não é a que está na tela.
+      if (!startDate) {
+        feedback.error("Informe a data de início no formato DD/MM/AAAA.");
+        return;
+      }
+      if (kind === "APPOINTMENT" && !endDate) {
+        feedback.error("Informe a data de término no formato DD/MM/AAAA.");
+        return;
+      }
+      if (!allDay) {
+        if (!startTime) {
+          feedback.error("Informe a hora de início no formato HH:MM.");
+          return;
+        }
+        if (kind === "APPOINTMENT" && !endTime) {
+          feedback.error("Informe a hora de término no formato HH:MM.");
+          return;
+        }
+      }
+    }
     const item = buildItem();
     const recurrence = buildRecurrence();
     if (isEditing && itemId && expectedVersion !== null) {
@@ -486,6 +610,12 @@ export default function PersonalEventScreen() {
   }, [
     external,
     title,
+    kind,
+    allDay,
+    startDate,
+    endDate,
+    startTime,
+    endTime,
     buildItem,
     buildRecurrence,
     isEditing,
@@ -632,47 +762,54 @@ export default function PersonalEventScreen() {
             </View>
           ) : (
             <>
-              <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-                <Chip
-                  label={allDay ? "Dia inteiro" : "Com horário"}
-                  selected
-                  onPress={() => setAllDay((previous) => !previous)}
-                  accessibilityLabel={
-                    allDay
-                      ? "Dia inteiro. Toque para definir horário."
-                      : "Com horário. Toque para marcar dia inteiro."
-                  }
+              {/* Booleano é switch, não chip: chip parece escolha entre
+                  opções, e "Com horário / Ocupa horário" faziam a pessoa
+                  decidir duas coisas para conseguir uma. */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: theme.space[3],
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: theme.text.body.fontSize,
+                    color: theme.colors.textPrimary,
+                  }}
+                >
+                  Ocupar dia inteiro
+                </Text>
+                <Switch
+                  value={allDay}
+                  onValueChange={setAllDay}
+                  accessibilityLabel="Ocupar dia inteiro"
+                  trackColor={{
+                    false: theme.colors.border,
+                    true: theme.colors.primary,
+                  }}
+                  thumbColor={theme.colors.surface}
                 />
-                {kind === "APPOINTMENT" ? (
-                  <Chip
-                    label={busy ? "Ocupa horário" : "Não ocupa"}
-                    selected={busy}
-                    onPress={() => setBusy((previous) => !previous)}
-                  />
-                ) : null}
               </View>
 
               <View style={{ flexDirection: "row", gap: theme.space[3] }}>
                 <View style={{ flex: 2 }}>
-                  <Field label="Início" hint="AAAA-MM-DD">
-                    <Input
-                      value={startDate}
-                      onChangeText={setStartDate}
-                      accessibilityLabel="Data de início"
-                      maxLength={10}
-                    />
-                  </Field>
+                  <DateFieldBR
+                    label="Início"
+                    value={startDate}
+                    onChange={setStartDate}
+                    accessibilityLabel="Data de início"
+                  />
                 </View>
                 {!allDay ? (
                   <View style={{ flex: 1 }}>
-                    <Field label="Hora" hint="HH:MM">
-                      <Input
-                        value={startTime}
-                        onChangeText={setStartTime}
-                        accessibilityLabel="Hora de início"
-                        maxLength={5}
-                      />
-                    </Field>
+                    <TimeFieldBR
+                      label="Hora"
+                      value={startTime}
+                      onChange={setStartTime}
+                      accessibilityLabel="Hora de início"
+                    />
                   </View>
                 ) : null}
               </View>
@@ -680,25 +817,21 @@ export default function PersonalEventScreen() {
               {kind === "APPOINTMENT" ? (
                 <View style={{ flexDirection: "row", gap: theme.space[3] }}>
                   <View style={{ flex: 2 }}>
-                    <Field label="Fim" hint="AAAA-MM-DD">
-                      <Input
-                        value={endDate}
-                        onChangeText={setEndDate}
-                        accessibilityLabel="Data de término"
-                        maxLength={10}
-                      />
-                    </Field>
+                    <DateFieldBR
+                      label="Fim"
+                      value={endDate}
+                      onChange={setEndDate}
+                      accessibilityLabel="Data de término"
+                    />
                   </View>
                   {!allDay ? (
                     <View style={{ flex: 1 }}>
-                      <Field label="Hora" hint="HH:MM">
-                        <Input
-                          value={endTime}
-                          onChangeText={setEndTime}
-                          accessibilityLabel="Hora de término"
-                          maxLength={5}
-                        />
-                      </Field>
+                      <TimeFieldBR
+                        label="Hora"
+                        value={endTime}
+                        onChange={setEndTime}
+                        accessibilityLabel="Hora de término"
+                      />
                     </View>
                   ) : null}
                 </View>
@@ -747,7 +880,14 @@ export default function PersonalEventScreen() {
             />
           </Field>
 
-          <Field label="Alertas">
+          <Field
+            label="Alertas"
+            hint={
+              alertOffsets.length >= MAX_ALERT_SELECTION
+                ? `Máximo de ${MAX_ALERT_SELECTION}. Desmarque um para trocar.`
+                : `Até ${MAX_ALERT_SELECTION}`
+            }
+          >
             <View
               style={{
                 flexDirection: "row",
@@ -764,7 +904,7 @@ export default function PersonalEventScreen() {
                     setAlertOffsets((previous) =>
                       previous.includes(option.minutes)
                         ? previous.filter((value) => value !== option.minutes)
-                        : [...previous, option.minutes].slice(0, 8),
+                        : [...previous, option.minutes].slice(0, MAX_ALERT_SELECTION),
                     )
                   }
                 />
