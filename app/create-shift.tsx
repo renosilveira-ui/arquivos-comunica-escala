@@ -525,6 +525,8 @@ export default function CreateShiftScreen() {
         <View style={styles.header}>
           <TouchableOpacity
             onPress={handleBack}
+            accessibilityRole="button"
+            accessibilityLabel="Voltar"
             activeOpacity={0.7}
             style={styles.backButton}
           >
@@ -1172,6 +1174,8 @@ function WebCalendarModal({
           <View style={styles.calendarHeader}>
             <TouchableOpacity
               onPress={onPreviousMonth}
+              accessibilityRole="button"
+              accessibilityLabel="Mês anterior"
               activeOpacity={0.78}
               style={styles.calendarNavButton}
             >
@@ -1185,6 +1189,8 @@ function WebCalendarModal({
             </View>
             <TouchableOpacity
               onPress={onNextMonth}
+              accessibilityRole="button"
+              accessibilityLabel="Próximo mês"
               activeOpacity={0.78}
               style={styles.calendarNavButton}
             >

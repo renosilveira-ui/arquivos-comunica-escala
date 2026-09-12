@@ -16,24 +16,26 @@ import {
   getTableName,
   gt,
   gte,
-  lte,
   inArray,
   isNull,
+  lt,
+  lte,
   or,
 } from "drizzle-orm";
 import { logger } from "../_core/logger";
 import { safeErrorDiagnostic } from "../_core/safe-error";
 import { getDb } from "../db";
 import {
-  shiftInstances,
-  shiftAssignmentsV2,
-  professionals,
   dutyConfirmations,
   hospitals,
+  institutions,
   managerScope as managerScopeTable,
   professionalInstitutions,
+  professionals,
   scheduleContexts,
   sectors,
+  shiftAssignmentsV2,
+  shiftInstances,
   users,
 } from "../../drizzle/schema";
 import { plantonistaAccessCoversShiftSql } from "../plantonista-shift-eligibility";
@@ -165,6 +167,13 @@ export async function tick(now: Date = new Date()) {
     // depois: se o CAS perder para uma decisão humana, a autoridade de status
     // do outbox suprime o alerta obsoleto antes da rede.
     await runStep("processRechecks", now, () => processRechecks(now));
+
+    // 2b. Terminal: o plantão terminou e ninguém respondeu. Encerra sem
+    // aviso — decisão do PO (12/09/2026). É também o caminho que descarta as
+    // pendências antigas na primeira rodada após o deploy.
+    await runStep("expireStaleConfirmations", now, () =>
+      expireStaleConfirmations(now),
+    );
 
     // 3. Retenta pushes/receipts e integrações externas. Cada worker usa
     // lease/CAS próprio; indisponibilidade externa não pode atrasar a
@@ -418,6 +427,8 @@ export async function dispatchConfirmations(now: Date) {
             // push com a MESMA chave do push original que falhou — colisão,
             // rollback, e o tick morria antes das outras alocações.
             eq(dutyConfirmations.managerNotified, false),
+            // Aviso desligado pela instituição: tratado como escalado.
+            isNull(dutyConfirmations.escalationSuppressedAt),
           ),
         ),
         plantonistaAccessCoversShiftSql(
@@ -706,6 +717,51 @@ export async function dispatchConfirmations(now: Date) {
 
 // ── Recheck: escala silêncio para decisão humana ───────────────────────────
 
+/**
+ * Confirmações abertas cujo plantão já terminou viram EXPIRED — estado
+ * terminal, sem notificação. Lotes de 500: um acúmulo de semanas (o staging
+ * tinha 79) é encerrado em poucas rodadas.
+ */
+export async function expireStaleConfirmations(now = new Date()): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const stale = await db
+    .select({ id: dutyConfirmations.id })
+    .from(dutyConfirmations)
+    .innerJoin(
+      shiftInstances,
+      eq(shiftInstances.id, dutyConfirmations.shiftInstanceId),
+    )
+    .where(
+      and(
+        inArray(dutyConfirmations.status, OPEN_CONFIRMATION_STATUSES),
+        lt(shiftInstances.endAt, now),
+      ),
+    )
+    .limit(500);
+  if (!stale.length) return 0;
+  const [updated] = await db
+    .update(dutyConfirmations)
+    .set({ status: "EXPIRED", expiredAt: now, recheckAt: null })
+    .where(
+      and(
+        inArray(
+          dutyConfirmations.id,
+          stale.map((row) => row.id),
+        ),
+        inArray(dutyConfirmations.status, OPEN_CONFIRMATION_STATUSES),
+      ),
+    );
+  const count = updated?.affectedRows ?? 0;
+  if (count > 0) {
+    logger.info(
+      { event: "confirmation_expired", count },
+      "stale confirmations expired",
+    );
+  }
+  return count;
+}
+
 const OPEN_CONFIRMATION_STATUSES = [
   "PENDING",
   "NOMINATED",
@@ -849,6 +905,37 @@ export async function notifyManagersConfirmationEscalation(
     requireOriginalAccess: false,
   });
   const shift = valid.shift;
+
+  // Decisão do PO (12/09/2026): avisar o gestor é escolha do grupo de
+  // trabalho. Desligado, a confirmação fica aberta até o plantão terminar
+  // (EXPIRED), sem avisar ninguém — e a descoberta não a re-arma.
+  const [policy] = await db
+    .select({ notify: institutions.notifyManagerOnUnconfirmed })
+    .from(institutions)
+    .where(eq(institutions.id, valid.shift.institutionId))
+    .limit(1);
+  if (policy && !policy.notify) {
+    await db
+      .update(dutyConfirmations)
+      .set({ escalationSuppressedAt: new Date(), recheckAt: null })
+      .where(
+        and(
+          eq(dutyConfirmations.id, confirmationId),
+          inArray(dutyConfirmations.status, OPEN_CONFIRMATION_STATUSES),
+          isNull(dutyConfirmations.escalationSuppressedAt),
+        ),
+      );
+    logger.info(
+      {
+        event: "confirmation_escalation_suppressed",
+        confirmationId,
+        institutionId: valid.shift.institutionId,
+        reason,
+      },
+      "manager escalation suppressed by institution policy",
+    );
+    return { managerCount: 0, intentCount: 0 };
+  }
 
   // Find managers for this hospital/sector via manager_scope
   const managers = await db

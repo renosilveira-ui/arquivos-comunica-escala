@@ -9,7 +9,16 @@ import {
   QueryClientProvider,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Redirect, Stack, usePathname } from "expo-router";
+import {
+  Redirect,
+  Stack,
+  useGlobalSearchParams,
+  usePathname,
+} from "expo-router";
+import {
+  buildHref,
+  rememberIntendedRoute,
+} from "@/lib/post-login-redirect";
 import { StatusBar } from "expo-status-bar";
 import {
   createContext,
@@ -684,6 +693,7 @@ function TenantAuthorizationBoundary({
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, refetch, sessionValidation } = useAuth();
   const pathname = usePathname();
+  const globalSearchParams = useGlobalSearchParams();
   const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
   const attestation = useContext(TenantAuthorizationContext);
   const institutions = attestation?.receipt.institutions;
@@ -743,6 +753,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     ) {
       return <>{children}</>;
     }
+    // Guardar aqui, e não num efeito: o `Redirect` navega na montagem e o
+    // efeito correria tarde demais. A função é idempotente e o valor só é
+    // consumido depois de um login bem-sucedido.
+    rememberIntendedRoute(buildHref(pathname, globalSearchParams));
     return <Redirect href="/login" />;
   }
 

@@ -324,7 +324,12 @@ export function VoiceCommandButton({
               <Text style={{ fontSize: 18, fontWeight: "800", color: theme.colors.textPrimary }}>
                 Comando de voz
               </Text>
-              <TouchableOpacity onPress={close} hitSlop={12}>
+              <TouchableOpacity
+                onPress={close}
+                accessibilityRole="button"
+                accessibilityLabel="Fechar"
+                hitSlop={12}
+              >
                 <X size={22} color={theme.colors.textSecondary} />
               </TouchableOpacity>
             </View>

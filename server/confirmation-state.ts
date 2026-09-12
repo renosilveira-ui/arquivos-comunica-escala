@@ -73,6 +73,8 @@ export const DUTY_CONFIRMATION_TRANSITIONS = {
   // Legado somente para leitura. Silêncio ou falha de push não têm mais
   // autoridade para produzir este estado.
   AUTO_CONFIRMED: [],
+  // Terminal: o plantão terminou sem resposta (cron). Ninguém sai daqui.
+  EXPIRED: [],
 } as const satisfies Record<DutyConfirmationStatus, readonly DutyConfirmationStatus[]>;
 
 export function isAllowedDutyConfirmationTransition(
