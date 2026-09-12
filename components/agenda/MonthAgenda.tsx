@@ -19,13 +19,8 @@
 //     cobre (antes ficava entre a grade e o detalhe, sob a barra de abas).
 
 import { useMemo, useState, useEffect, type ReactElement } from "react";
-import {
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { Pressable, ScrollView, View, type RefreshControlProps } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftTickColor } from "@/lib/shift-visual";

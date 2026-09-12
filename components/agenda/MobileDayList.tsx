@@ -8,12 +8,8 @@
 //   - carregando = skeleton com a forma do conteúdo, não spinner.
 
 import { useMemo, type ReactElement } from "react";
-import {
-  ScrollView,
-  Text,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { ScrollView, View, type RefreshControlProps } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 import {
   findMobileAgendaDay,

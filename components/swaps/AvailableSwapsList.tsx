@@ -6,7 +6,8 @@
 // em web e nativo; resultado vira toast (use-action-feedback).
 
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ArrowRightLeft, Check, X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";

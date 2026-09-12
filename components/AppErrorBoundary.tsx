@@ -11,7 +11,8 @@
 // remoto (Sentry).
 
 import React from "react";
-import { View, Text, TouchableOpacity, ScrollView } from "react-native";
+import { View, TouchableOpacity, ScrollView } from "react-native";
+import { Text } from "@/components/ui/Text";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { theme } from "@/lib/theme";
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Plus } from "lucide-react-native";
 
 import {

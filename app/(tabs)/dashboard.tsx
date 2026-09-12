@@ -1,4 +1,5 @@
-import { View, Text, ScrollView, ActivityIndicator } from "react-native";
+import { View, ScrollView, ActivityIndicator } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useMemo, useState } from "react";
 import { Calendar, AlertCircle, Clock, CheckCircle } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";

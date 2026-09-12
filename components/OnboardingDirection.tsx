@@ -1,6 +1,7 @@
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useState, type ReactNode } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Redirect, useRouter } from "expo-router";
 import { useAuth } from "@/hooks/use-auth";
 import { useLogoutAction } from "@/hooks/use-logout-action";

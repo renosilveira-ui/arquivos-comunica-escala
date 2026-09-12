@@ -1,4 +1,5 @@
-import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView, TextInput } from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useState, useMemo } from "react";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

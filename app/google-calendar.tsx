@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Platform, Text, View } from "react-native";
+import { Platform, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useLocalSearchParams } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import {

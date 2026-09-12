@@ -10,7 +10,8 @@
 // de <Surface padded={false}> e desenha só o divisor de topo.
 
 import type { ReactNode } from "react";
-import { Pressable, Switch, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, Switch, View, type StyleProp, type ViewStyle } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ChevronRight, type LucideIcon } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 

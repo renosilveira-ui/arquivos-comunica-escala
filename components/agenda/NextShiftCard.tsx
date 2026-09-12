@@ -16,7 +16,8 @@
 //     bem menor para não roubar a visão panorâmica; trocar fica no detalhe.
 //   - "full": card grande com título, local e botões empilhados.
 
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { AlertCircle, ArrowRightLeft, CheckCircle2, ChevronRight, Clock, ExternalLink, MapPin, PlayCircle } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { formatHospitalTime } from "@/lib/hospital-time";

@@ -1,12 +1,6 @@
 import { useMemo, useState } from "react";
-import {
-  FlatList,
-  Modal,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { FlatList, Modal, TouchableOpacity, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { Check, ChevronDown, Search, X } from "lucide-react-native";
 import {
   MEDICAL_SPECIALTIES,

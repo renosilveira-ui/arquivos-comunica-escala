@@ -1,14 +1,6 @@
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, KeyRound, Check, AlertCircle } from "lucide-react-native";

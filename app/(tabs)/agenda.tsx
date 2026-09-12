@@ -1,11 +1,5 @@
-import {
-  Text,
-  View,
-  TouchableOpacity,
-  RefreshControl,
-  useWindowDimensions,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, RefreshControl, useWindowDimensions, Platform } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import {
   ChevronLeft,

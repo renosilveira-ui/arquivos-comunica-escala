@@ -1,16 +1,6 @@
 import { useState, useEffect } from "react";
-import {
-  ScrollView,
-  Text,
-  View,
-  TouchableOpacity,
-  TextInput,
-  ActivityIndicator,
-  Platform,
-  Modal,
-  Pressable,
-  Keyboard,
-} from "react-native";
+import { ScrollView, View, TouchableOpacity, ActivityIndicator, Platform, Modal, Pressable, Keyboard } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";

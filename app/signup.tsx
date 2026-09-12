@@ -9,16 +9,8 @@ import {
 // O gestor escolhe quem entra e o sistema envia um convite nominal de 24 h.
 
 import { useState } from "react";
-import {
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { CheckCircle2 } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

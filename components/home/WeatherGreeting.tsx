@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { Linking, Text, TouchableOpacity, View } from "react-native";
+import { Linking, TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 
 import { useAuth } from "@/hooks/use-auth";
 import { buildWeatherGreeting } from "@/lib/weather-greeting";

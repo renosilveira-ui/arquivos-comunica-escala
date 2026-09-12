@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ActivityIndicator, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";

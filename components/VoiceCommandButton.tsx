@@ -9,14 +9,8 @@
 // O áudio nunca sai do aparelho: só o TEXTO transcrito vai ao servidor.
 
 import { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Modal,
-  Platform,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { ActivityIndicator, Modal, Platform, TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,

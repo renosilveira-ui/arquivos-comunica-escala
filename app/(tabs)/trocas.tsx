@@ -6,14 +6,8 @@
 // visita e permanecem prontas para a próxima alternância.
 
 import { useCallback, useState } from "react";
-import {
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { Platform, Pressable, ScrollView, View, useWindowDimensions } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Info } from "lucide-react-native";

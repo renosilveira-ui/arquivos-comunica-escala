@@ -1,12 +1,5 @@
-import {
-  View,
-  Text,
-  ActivityIndicator,
-  TextInput,
-  TouchableOpacity,
-  FlatList,
-  Platform,
-} from "react-native";
+import { View, ActivityIndicator, TouchableOpacity, FlatList, Platform } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState, useMemo } from "react";
 import { UserPlus, Search, Check } from "lucide-react-native";

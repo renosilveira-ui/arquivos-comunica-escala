@@ -1,12 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, TouchableOpacity, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { BellRing, MapPin, Trash2 } from "lucide-react-native";
 
 import { AppButton } from "@/components/ui/AppButton";

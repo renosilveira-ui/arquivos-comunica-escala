@@ -3,6 +3,14 @@ import { isUnlinkedAccountRoute } from "@/lib/onboarding-direction";
 import "@/global.css";
 import { theme } from "@/lib/theme";
 import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  Inter_800ExtraBold,
+} from "@expo-google-fonts/inter";
+import { useFonts } from "expo-font";
+import {
   MutationCache,
   QueryCache,
   QueryClient,
@@ -31,14 +39,8 @@ import {
 } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import {
-  ActivityIndicator,
-  AppState,
-  Platform,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { ActivityIndicator, AppState, Platform, TouchableOpacity, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import NetInfo from "@react-native-community/netinfo";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
@@ -865,6 +867,22 @@ function QueryCachePersistence({
 }
 
 export default function RootLayout() {
+  // Tipografia do produto. Os arquivos vêm no pacote do app, não da rede,
+  // então a carga é de alguns quadros.
+  //
+  // Deliberadamente NÃO seguramos a primeira tela esperando por isto. O app
+  // foi otimizado para abrir do cache (perf de 23/08) e trocar isso por uma
+  // espera de fonte seria desfazer aquele trabalho por um detalhe estético.
+  // No intervalo, o texto sai na fonte do sistema e troca sozinho — os
+  // tamanhos e entrelinhas são os mesmos, então nada salta de lugar.
+  useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+
   const initialInsets = initialWindowMetrics?.insets ?? DEFAULT_WEB_INSETS;
   const initialFrame = initialWindowMetrics?.frame ?? DEFAULT_WEB_FRAME;
 

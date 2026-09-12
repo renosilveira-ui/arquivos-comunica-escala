@@ -8,7 +8,8 @@
 // antes de confirmar; o resultado vira toast e a Agenda recarrega.
 
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, Switch, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import * as Haptics from "expo-haptics";
 import { CalendarRange, CopyPlus, Lock, Send, Settings2, X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";

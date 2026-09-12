@@ -1,4 +1,5 @@
-import { StyleSheet, Text, TextInput, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 import type { MonthlyRosterStatus } from "@/hooks/use-published-month-roster";
 import { requiresPublishedMonthReason } from "@/hooks/use-published-month-roster";

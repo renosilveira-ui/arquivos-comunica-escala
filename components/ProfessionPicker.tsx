@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import {
   PROFESSION_DEFINITION_LIST,
   getProfessionDefinition,

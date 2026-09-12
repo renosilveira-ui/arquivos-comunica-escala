@@ -1,18 +1,6 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
-import {
-  Text,
-  View,
-  TouchableOpacity,
-  TextInput,
-  ActivityIndicator,
-  Switch,
-  Platform,
-  Modal,
-  Pressable,
-  Keyboard,
-  StyleSheet,
-  useWindowDimensions,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, StyleSheet, useWindowDimensions } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

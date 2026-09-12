@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";

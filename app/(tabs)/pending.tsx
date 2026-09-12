@@ -1,11 +1,5 @@
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  ActivityIndicator,
-  ScrollView,
-  TextInput,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import {

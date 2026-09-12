@@ -5,7 +5,8 @@
  * A lista é projeção. A escrita continua em `swaps.offer` /
  * `createSwapOffer`. Homônimos irresolvidos não são selecionáveis.
  */
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
   directedOfferRecipientCopy,

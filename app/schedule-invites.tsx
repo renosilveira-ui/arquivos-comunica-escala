@@ -1,11 +1,6 @@
 import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { AppButton } from "@/components/ui/AppButton";

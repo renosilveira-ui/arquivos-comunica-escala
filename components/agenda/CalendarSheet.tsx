@@ -14,7 +14,8 @@
 //   numeral         estilo de texto tabular (hora, contagem, dia)
 
 import type { ReactNode } from "react";
-import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import { View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { theme } from "@/lib/theme";
 
 /** Numeral tabular: hora, duração, contagem, dia do mês. */

@@ -4,15 +4,8 @@
 // Sem token, explica e oferece pedir um novo link. Sucesso → login.
 
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CheckCircle2, KeyRound } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";

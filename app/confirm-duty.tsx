@@ -1,4 +1,5 @@
-import { View, Text, ActivityIndicator, Platform } from "react-native";
+import { View, ActivityIndicator, Platform } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Check, X, Clock } from "lucide-react-native";
 import * as Haptics from "expo-haptics";

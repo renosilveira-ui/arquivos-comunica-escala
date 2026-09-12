@@ -6,7 +6,8 @@
 // rota redireciona para o login.
 
 import { Redirect } from "expo-router";
-import { RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { RefreshControl, ScrollView, View, useWindowDimensions } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Surface, type SurfaceLevel, type SurfaceTone } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";

@@ -1,15 +1,6 @@
 import { useCallback, useState } from "react";
-import {
-  Text,
-  View,
-  TouchableOpacity,
-  ActivityIndicator,
-  TextInput,
-  Modal,
-  Platform,
-  RefreshControl,
-  KeyboardAvoidingView,
-} from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, Modal, Platform, RefreshControl, KeyboardAvoidingView } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
