@@ -880,20 +880,23 @@ export async function processRechecks(now: Date) {
       );
       continue;
     }
-    if (escalation.managerCount === 0) {
-      // Ninguém para avisar: nem gestor de escopo, nem GESTOR_PLUS da
-      // instituição, nem admin global. O recheck fica de pé (o próximo tick
-      // tenta de novo), e o evento estruturado é o que um alerta de
-      // observabilidade consegue capturar — texto solto no console não.
-      logger.error(
-        {
-          event: "confirmation_escalation_no_manager",
-          confirmationId: conf.id,
-          institutionId: conf.institutionId,
-          shiftInstanceId: conf.shiftInstanceId,
-        },
-        "[ConfirmationCron] no eligible manager for escalation; recheck kept",
-      );
+    // Quem NÃO avisou ninguém pode ter quatro motivos, e eles pedem respostas
+    // opostas: política desligada (#492) e confirmação já respondida são
+    // estado normal, e a própria função os registra na origem; ausência de
+    // gestor e banco fora são alarme. `ESCALATION_ALARMS` é quem decide.
+    if (escalation.outcome !== "NOTIFIED") {
+      const alarm = ESCALATION_ALARMS[escalation.outcome];
+      if (alarm) {
+        logger.error(
+          {
+            event: alarm.event,
+            confirmationId: conf.id,
+            institutionId: conf.institutionId,
+            shiftInstanceId: conf.shiftInstanceId,
+          },
+          alarm.message,
+        );
+      }
       continue;
     }
     if (escalation.intentCount !== escalation.managerCount) {
@@ -919,12 +922,70 @@ export async function processRechecks(now: Date) {
 
 export type ConfirmationEscalationReason = "PUSH_UNCONFIRMED" | "NO_RESPONSE";
 
+/**
+ * Por que a escalação terminou como terminou.
+ *
+ * A raiz do problema que este tipo resolve: `managerCount === 0` era um sinal
+ * SOBRECARREGADO. Quatro situações diferentes devolviam zero, e duas delas são
+ * estado normal enquanto as outras duas são alarme — quem chamava não tinha
+ * como separar, e acabava tratando todas igual.
+ *
+ * - `NOTIFIED`: há gestor e as intenções foram persistidas. Os contadores
+ *   dizem se foi por inteiro ou pela metade.
+ * - `SUPPRESSED_BY_POLICY`: a instituição desligou o aviso ao gestor (#492).
+ *   Estado configurado, não falha. A própria função registra em nível info e
+ *   limpa o recheck.
+ * - `NO_LONGER_OPEN`: a confirmação saiu dos status abertos entre o CAS e a
+ *   escalação — alguém respondeu. Não há o que escalar.
+ * - `NO_MANAGER`: existe o que escalar e não há a quem avisar. **O único caso
+ *   que merece alarme de negócio.**
+ * - `DB_UNAVAILABLE`: o banco sumiu no meio; nem se sabe se há gestor.
+ *
+ * Sem essa separação, o alerta de "ninguém para avisar" tocaria para todo
+ * grupo que apenas exerceu uma opção do produto — e alarme que toca à toa é
+ * alarme que ninguém lê.
+ */
+export type ConfirmationEscalationOutcome =
+  | "NOTIFIED"
+  | "SUPPRESSED_BY_POLICY"
+  | "NO_LONGER_OPEN"
+  | "NO_MANAGER"
+  | "DB_UNAVAILABLE";
+
+export type ConfirmationEscalationResult = {
+  outcome: ConfirmationEscalationOutcome;
+  managerCount: number;
+  intentCount: number;
+};
+
+/**
+ * Quais desfechos viram alarme, e com que nome. O que não está aqui é estado
+ * normal, já explicado na origem — a tabela existe para essa decisão ficar
+ * legível num lugar só, em vez de espalhada em `if`s.
+ */
+const ESCALATION_ALARMS: Partial<
+  Record<ConfirmationEscalationOutcome, { event: string; message: string }>
+> = {
+  NO_MANAGER: {
+    event: "confirmation_escalation_no_manager",
+    message:
+      "[ConfirmationCron] no eligible manager for escalation; recheck kept",
+  },
+  DB_UNAVAILABLE: {
+    event: "confirmation_escalation_db_unavailable",
+    message:
+      "[ConfirmationCron] database unavailable during escalation; recheck kept",
+  },
+};
+
 export async function notifyManagersConfirmationEscalation(
   confirmationId: number,
   reason: ConfirmationEscalationReason,
-) {
+): Promise<ConfirmationEscalationResult> {
   const db = await getDb();
-  if (!db) return { managerCount: 0, intentCount: 0 };
+  if (!db) {
+    return { outcome: "DB_UNAVAILABLE", managerCount: 0, intentCount: 0 };
+  }
   const [snapshot] = await db
     .select({ status: dutyConfirmations.status })
     .from(dutyConfirmations)
@@ -936,7 +997,7 @@ export async function notifyManagersConfirmationEscalation(
       snapshot.status as OpenConfirmationStatus,
     )
   ) {
-    return { managerCount: 0, intentCount: 0 };
+    return { outcome: "NO_LONGER_OPEN", managerCount: 0, intentCount: 0 };
   }
   const valid = await requireValidDutyConfirmation(db, confirmationId, {
     allowedStatuses: [snapshot.status],
@@ -975,7 +1036,7 @@ export async function notifyManagersConfirmationEscalation(
       },
       "manager escalation suppressed by institution policy",
     );
-    return { managerCount: 0, intentCount: 0 };
+    return { outcome: "SUPPRESSED_BY_POLICY", managerCount: 0, intentCount: 0 };
   }
 
   // Find managers for this hospital/sector via manager_scope
@@ -1151,7 +1212,11 @@ export async function notifyManagersConfirmationEscalation(
   console.log(
     `[ConfirmationCron] Escalation ${reason}: ${intentCount}/${managerUserIds.size} intent(s) persisted`,
   );
-  return { managerCount: managerUserIds.size, intentCount };
+  return {
+    outcome: managerUserIds.size === 0 ? "NO_MANAGER" : "NOTIFIED",
+    managerCount: managerUserIds.size,
+    intentCount,
+  };
 }
 
 // ── Start the cron interval ─────────────────────────────────────────────────

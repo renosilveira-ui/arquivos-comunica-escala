@@ -60,4 +60,43 @@ describe("shutdown drena o tick de confirmação", () => {
     expect(dispatcherSource).toContain('event: "confirmation_escalation_no_manager"');
     expect(dispatcherSource).not.toContain("mantém recheck:");
   });
+
+  /**
+   * A raiz da regressão da #492: `managerCount === 0` era um sinal
+   * sobrecarregado. Quatro situações devolviam zero — política desligada,
+   * confirmação já respondida, ausência de gestor e banco fora —, duas delas
+   * normais e duas alarme. Estes testes travam a separação: cada saída tem
+   * nome, e só as duas que merecem alarme estão na tabela.
+   */
+  it("cada desfecho da escalação tem nome próprio", () => {
+    for (const outcome of [
+      "NOTIFIED",
+      "SUPPRESSED_BY_POLICY",
+      "NO_LONGER_OPEN",
+      "NO_MANAGER",
+      "DB_UNAVAILABLE",
+    ]) {
+      expect(dispatcherSource).toContain(`"${outcome}"`);
+    }
+    // Nenhum caminho devolve o resultado sem dizer qual é o desfecho.
+    const returns =
+      dispatcherSource.match(/return \{[^}]*managerCount:[^}]*\}/g) ?? [];
+    expect(returns.length).toBeGreaterThan(0);
+    for (const statement of returns) {
+      expect(statement).toContain("outcome:");
+    }
+  });
+
+  it("só ausência de gestor e banco fora viram alarme", () => {
+    const table = dispatcherSource.slice(
+      dispatcherSource.indexOf("const ESCALATION_ALARMS"),
+      dispatcherSource.indexOf("export async function notifyManagers"),
+    );
+    expect(table).toContain("NO_MANAGER");
+    expect(table).toContain("DB_UNAVAILABLE");
+    // Política desligada e confirmação já respondida são estado normal: se
+    // entrarem na tabela, o alarme volta a tocar para quem não tem problema.
+    expect(table).not.toContain("SUPPRESSED_BY_POLICY");
+    expect(table).not.toContain("NO_LONGER_OPEN");
+  });
 });
