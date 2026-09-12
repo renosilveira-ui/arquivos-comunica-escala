@@ -974,6 +974,18 @@ export type DepartureSender = (input: {
   title: string;
   body: string;
   deepLink: string;
+  /**
+   * Topologia que permite ao envio provar o destinatário e mandar o texto
+   * de verdade. Nula quando alguma peça sumiu entre o cálculo e o envio; aí
+   * o aviso sai com a apresentação neutra, como saía antes.
+   */
+  authority: {
+    planId: number;
+    assignmentId: number;
+    professionalId: number;
+    hospitalId: number;
+    sectorId: number;
+  } | null;
 }) => Promise<void>;
 
 /**
@@ -1014,9 +1026,32 @@ export async function dispatchDueDepartures(input: {
       attemptCount: departurePlans.attemptCount,
       version: departurePlans.version,
       ownerDeletedAt: users.deletedAt,
+      // Topologia do aviso, para o push poder provar o destinatário e enviar
+      // o texto de verdade em vez da apresentação neutra. `leftJoin` de
+      // propósito: se a alocação tiver sumido, o aviso ainda sai (como saía
+      // antes), só que sem autoridade — nunca deixa de sair por causa disto.
+      assignmentId: departurePlans.assignmentId,
+      professionalId: shiftAssignmentsV2.professionalId,
+      hospitalId: shiftInstances.hospitalId,
+      sectorId: shiftInstances.sectorId,
     })
     .from(departurePlans)
     .innerJoin(users, eq(users.id, departurePlans.userId))
+    .leftJoin(
+      shiftAssignmentsV2,
+      and(
+        eq(shiftAssignmentsV2.id, departurePlans.assignmentId),
+        eq(shiftAssignmentsV2.institutionId, departurePlans.institutionId),
+        eq(shiftAssignmentsV2.shiftInstanceId, departurePlans.shiftInstanceId),
+      ),
+    )
+    .leftJoin(
+      shiftInstances,
+      and(
+        eq(shiftInstances.id, departurePlans.shiftInstanceId),
+        eq(shiftInstances.institutionId, departurePlans.institutionId),
+      ),
+    )
     .where(
       and(
         eq(departurePlans.status, "SCHEDULED"),
@@ -1126,6 +1161,19 @@ export async function dispatchDueDepartures(input: {
         title: message.title,
         body: message.body,
         deepLink: `/shift-details?shiftInstanceId=${plan.shiftInstanceId}`,
+        // Só quando a topologia inteira está de pé. Falta de qualquer peça
+        // mantém o comportamento antigo (apresentação neutra), em vez de
+        // engolir o aviso.
+        authority:
+          plan.professionalId && plan.hospitalId && plan.sectorId
+            ? {
+                planId: plan.id,
+                assignmentId: plan.assignmentId,
+                professionalId: plan.professionalId,
+                hospitalId: plan.hospitalId,
+                sectorId: plan.sectorId,
+              }
+            : null,
       });
       summary.sent += 1;
     } catch {
