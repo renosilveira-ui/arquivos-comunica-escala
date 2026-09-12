@@ -10,10 +10,14 @@ import { Image, KeyboardAvoidingView, Platform, Pressable, View } from "react-na
 import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { Surface } from "@/components/ui/Surface";
+import { Surface, tonedText } from "@/components/ui/Surface";
 import { AppButton } from "@/components/ui/AppButton";
 import type { Href } from "expo-router";
-import { takeIntendedRoute } from "@/lib/post-login-redirect";
+import {
+  pendingDestinationNotice,
+  peekIntendedRoute,
+  takeIntendedRoute,
+} from "@/lib/post-login-redirect";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -23,6 +27,10 @@ export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Lido uma vez: o destino é armado pelo guard ANTES desta tela montar e
+  // não muda enquanto ela está aberta. Ler no render chamaria o módulo a
+  // cada tecla digitada no formulário.
+  const [notice] = useState(() => pendingDestinationNotice(peekIntendedRoute()));
   const [submitting, setSubmitting] = useState(false);
   const [focused, setFocused] = useState<Field | null>(null);
 
@@ -96,6 +104,32 @@ export default function LoginScreen() {
             />
             <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Gestão de plantões hospitalares</Text>
           </View>
+
+          {/* Quem chegou por um link de convite tocou no link certo. Sem este
+              aviso, a tela de login é idêntica a qualquer outra e parece que o
+              link não funcionou. */}
+          {notice ? (
+            <Surface level="card" tone="primary" padded="compact">
+              <Text
+                accessibilityRole="header"
+                style={{
+                  ...theme.text.titleSm,
+                  color: tonedText("primary").strong,
+                }}
+              >
+                {notice.title}
+              </Text>
+              <Text
+                style={{
+                  ...theme.text.body,
+                  color: tonedText("primary").soft,
+                  marginTop: theme.space[1],
+                }}
+              >
+                {notice.body}
+              </Text>
+            </Surface>
+          ) : null}
 
           <Surface level="raised" style={{ padding: theme.space[6] }}>
             <View style={{ gap: theme.space[5] }}>
