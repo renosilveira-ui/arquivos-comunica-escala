@@ -212,6 +212,8 @@ export default function ReportScreen() {
         <View className="flex-row items-center justify-between">
           <TouchableOpacity
             onPress={handleBack}
+            accessibilityRole="button"
+            accessibilityLabel="Voltar"
             className="w-10 h-10 items-center justify-center"
             style={{ marginLeft: -8 }}
           >

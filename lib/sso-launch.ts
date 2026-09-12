@@ -12,8 +12,9 @@
 //   - useSsoHandoff (botão manual "Abrir Comunica+", branch mobile)
 
 import { Linking, Platform } from "react-native";
+import { isAllowedSsoLaunchUrl } from "@/lib/sso-launch-url";
 import * as Auth from "@/lib/_core/auth";
-import { apiFetch } from "@/lib/_core/api";
+import { apiFetch, getApiBaseUrl } from "@/lib/_core/api";
 
 export interface SsoLaunchResult {
   ok: boolean;
@@ -111,6 +112,13 @@ export async function openComunicaViaLaunchCode(
       return { ok: false, error: SSO_CANCELLED_MESSAGE };
     }
     if (typeof data?.launchUrl !== "string" || !data.launchUrl) {
+      return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
+    }
+    // A URL vem do corpo da resposta e o passo seguinte é irreversível. Por
+    // contrato ela é do PRÓPRIO servidor do Escala; exigir a mesma origem da
+    // API custa uma comparação e tira o navegador externo da mão de quem
+    // conseguisse adulterar a resposta.
+    if (!isAllowedSsoLaunchUrl(data.launchUrl, getApiBaseUrl())) {
       return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
     }
 

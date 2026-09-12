@@ -142,7 +142,12 @@ export function ScheduleContextAccessPicker({
                   referência clínica é apenas informativa.
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => setVisible(false)} hitSlop={12}>
+              <TouchableOpacity
+                onPress={() => setVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Fechar"
+                hitSlop={12}
+              >
                 <X size={22} color={theme.colors.textSecondary} />
               </TouchableOpacity>
             </View>

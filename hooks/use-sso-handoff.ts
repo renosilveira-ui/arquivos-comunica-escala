@@ -1,5 +1,6 @@
 import { apiFetch } from "@/lib/_core/api";
 import * as Auth from "@/lib/_core/auth";
+import { isAllowedSsoTargetUrl } from "@/lib/sso-launch-url";
 import { getActiveTenantSnapshot } from "@/lib/tenant-state";
 // hooks/use-sso-handoff.ts — SSO handoff flow: Escala → Comunica+
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -201,6 +202,10 @@ export async function runWebSsoHandoff(
       if (
         typeof data?.targetUrl !== "string" ||
         !data.targetUrl ||
+        // `targetUrl` vira `action` de um form. Um `javascript:` aqui é
+        // execução de script, não navegação. O host é o Comunica+, que o
+        // cliente não conhece — dá para exigir https absoluto, não a origem.
+        !isAllowedSsoTargetUrl(data.targetUrl) ||
         typeof data.handoffToken !== "string" ||
         !data.handoffToken
       ) {
