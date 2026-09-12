@@ -15,6 +15,11 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import {
+  requireAuthorizedDepartureRecipient,
+  type DeparturePushAuthority,
+} from "../server/departure-push-authority";
+import { PersistedPushAuthorityBindingError } from "../server/push-authority-rejection";
 import { sendDeparture } from "../server/cron/departure-dispatcher";
 import {
   dispatchDueDepartures,
@@ -1328,6 +1333,91 @@ describe("motor de aviso de saída", () => {
       expect(row.sealed).not.toContain("-3.74");
       expect(row.sealed).not.toContain("Rua Exemplo");
       expect(row.sealed).toMatch(/^v1\./);
+    });
+  });
+  /**
+   * A autoridade do aviso tem DOIS desfechos, e confundi-los foi o defeito da
+   * #529: o aviso passou a ser engolido em silêncio quando a rota não
+   * calculava. Perder a titularidade do plantão é motivo para não avisar.
+   * Faltar dado não é — aí o aviso sai neutro, como saía antes de existir
+   * autoridade aqui.
+   */
+  describe("autoridade do aviso: o que cala e o que sai neutro", () => {
+    const autoridade = (): DeparturePushAuthority => ({
+      kind: "DEPARTURE_ALERT",
+      planId: 0,
+      expectedUserId: userId,
+      professionalId: professionalIds[0],
+      assignmentId: assignmentIds[0],
+      institutionId: institutionIds[0],
+      hospitalId: hospitalIds[0],
+      sectorId: sectorIds[0],
+      shiftInstanceId: shiftIds[0],
+    });
+
+    async function planoComHora(departAt: Date | null): Promise<number> {
+      const [inserido] = await db.insert(departurePlans).values({
+        userId,
+        institutionId: institutionIds[0],
+        assignmentId: assignmentIds[0],
+        shiftInstanceId: shiftIds[0],
+        travelOriginId: originId,
+        status: "SCHEDULED",
+        noticeAt: NOTICE_AT,
+        departAt,
+        // `chk_departure_plan_estimate`: hora de saída e duração andam juntas,
+        // as duas nulas ou as duas preenchidas.
+        estimatedDurationSeconds: departAt ? 420 : null,
+        dedupKey: `autoridade-${assignmentIds[0]}-${Date.now()}`,
+      });
+      return inserido.insertId;
+    }
+
+    beforeEach(async () => {
+      // O plantão é desta pessoa: é a premissa de todos os casos abaixo.
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ status: "OCUPADO", isActive: true })
+        .where(eq(shiftAssignmentsV2.id, assignmentIds[0]));
+    });
+
+    it("sem hora de saída, devolve nulo em vez de derrubar o aviso", async () => {
+      const planId = await planoComHora(null);
+      await expect(
+        requireAuthorizedDepartureRecipient(db, { ...autoridade(), planId }),
+      ).resolves.toBeNull();
+    });
+
+    it("setor corrigido pelo gestor devolve nulo, e o aviso ainda sai", async () => {
+      const planId = await planoComHora(new Date(NOTICE_AT.getTime()));
+      await expect(
+        requireAuthorizedDepartureRecipient(db, {
+          ...autoridade(),
+          planId,
+          sectorId: sectorIds[1],
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it("com hora e topologia intactas, devolve o plano para o texto de verdade", async () => {
+      const departAt = new Date(NOTICE_AT.getTime());
+      const planId = await planoComHora(departAt);
+      const plano = await requireAuthorizedDepartureRecipient(db, {
+        ...autoridade(),
+        planId,
+      });
+      expect(plano?.departAt.getTime()).toBe(departAt.getTime());
+    });
+
+    it("plantão que trocou de mãos continua derrubando o aviso", async () => {
+      const planId = await planoComHora(new Date(NOTICE_AT.getTime()));
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ status: "VAGO" })
+        .where(eq(shiftAssignmentsV2.id, assignmentIds[0]));
+      await expect(
+        requireAuthorizedDepartureRecipient(db, { ...autoridade(), planId }),
+      ).rejects.toBeInstanceOf(PersistedPushAuthorityBindingError);
     });
   });
 });
