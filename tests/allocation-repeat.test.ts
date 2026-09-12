@@ -394,3 +394,17 @@ describe("wiring da tela de detalhes", () => {
     expect(screen).toContain("allocationRepeatPreviewText");
   });
 });
+
+describe("a tela de criar plantão não promete repetição", () => {
+  it("a seção morta não voltou", () => {
+    // Ela existia e não fazia nada: enableRepeat/repeatWeeks/repeatEndDate
+    // nunca chegavam ao servidor, só validavam a data limite e eram
+    // descartados. A repetição mora na alocação, que é onde o gestor pensa
+    // nela — prometer aqui era promessa sem entrega.
+    const screen = readFileSync("app/create-shift.tsx", "utf8");
+    expect(screen).not.toContain("enableRepeat");
+    expect(screen).not.toContain("repeatWeeks");
+    expect(screen).not.toContain("repeatEndDate");
+    expect(screen).not.toContain('title="Repetição"');
+  });
+});

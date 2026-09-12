@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
-import { View, TouchableOpacity, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, StyleSheet, useWindowDimensions } from "react-native";
+import { View, TouchableOpacity, ActivityIndicator, Platform, Modal, Pressable, Keyboard, StyleSheet, useWindowDimensions } from "react-native";
 import { Text, TextInput } from "@/components/ui/Text";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
@@ -16,7 +16,6 @@ import {
   ChevronRight,
   Calendar,
   Clock,
-  Repeat,
   CheckCircle2,
   Building2,
   MapPin,
@@ -162,10 +161,6 @@ export default function CreateShiftScreen() {
   >(undefined);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Repetição automática
-  const [enableRepeat, setEnableRepeat] = useState(false);
-  const [repeatWeeks, setRepeatWeeks] = useState("1");
-  const [repeatEndDate, setRepeatEndDate] = useState("");
 
   const [notes, setNotes] = useState("");
   const [requiredCapacity, setRequiredCapacity] = useState("");
@@ -359,16 +354,6 @@ export default function CreateShiftScreen() {
     ) {
       showFormError(`Informe uma capacidade entre 1 e ${MAX_SHIFT_CAPACITY}.`);
       return;
-    }
-
-    // Validar data de término de repetição
-    if (enableRepeat && repeatEndDate) {
-      const startDate = fromLocalISODateString(selectedDate);
-      const endDate = fromLocalISODateString(repeatEndDate);
-      if (endDate <= startDate) {
-        showFormError("A data limite precisa ser posterior à data inicial.");
-        return;
-      }
     }
 
     // Validações de modalidade (light-touch — server enforça as regras duras).
@@ -891,58 +876,6 @@ export default function CreateShiftScreen() {
                   }
                 />
               </View>
-            </FormSection>
-
-            <FormSection
-              title="Repetição"
-              icon={<Repeat size={22} color={theme.colors.textPrimary} />}
-            >
-              <View style={styles.switchRow}>
-                <View style={styles.switchText}>
-                  <Text style={styles.bodyStrong}>Repetir Escala</Text>
-                  <Text style={styles.bodyMuted}>
-                    Cria novas escalas em semanas futuras.
-                  </Text>
-                </View>
-                <Switch
-                  value={enableRepeat}
-                  onValueChange={(value) => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setEnableRepeat(value);
-                  }}
-                  trackColor={{
-                    false: theme.colors.border,
-                    true: theme.colors.primary,
-                  }}
-                  thumbColor={theme.colors.surface}
-                />
-              </View>
-
-              {enableRepeat ? (
-                <View style={styles.fieldStack}>
-                  <View>
-                    <Text style={styles.label}>Repetir a cada (semanas)</Text>
-                    <TextInput
-                      value={repeatWeeks}
-                      onChangeText={setRepeatWeeks}
-                      placeholder="1"
-                      keyboardType="number-pad"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={styles.textInput}
-                    />
-                  </View>
-                  <View>
-                    <Text style={styles.label}>Data limite</Text>
-                    <TextInput
-                      value={repeatEndDate}
-                      onChangeText={setRepeatEndDate}
-                      placeholder="AAAA-MM-DD"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={styles.textInput}
-                    />
-                  </View>
-                </View>
-              ) : null}
             </FormSection>
 
             <FormSection title="Observações">
