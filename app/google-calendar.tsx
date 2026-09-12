@@ -230,7 +230,7 @@ export default function GoogleCalendarScreen() {
   const busy = startLink.isPending || disconnect.isPending || syncNow.isPending;
 
   return (
-    <ScreenGradient>
+    <ScreenGradient scrollable>
       <ScreenContainer>
         <View style={{ gap: theme.space[5], paddingBottom: theme.space[10] }}>
           <View style={{ gap: theme.space[2] }}>

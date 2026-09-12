@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Platform,
   Text,
   TextInput,
@@ -541,7 +542,14 @@ export default function PersonalEventScreen() {
   }
 
   return (
-    <ScreenGradient>
+    <ScreenGradient scrollable>
+      {/* Teclado: o campo de texto fica na metade de baixo do
+          formulário e, sem isto, o teclado cobre o que está sendo
+          digitado. Mesmo arranjo de app/whatsapp-contact.tsx. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
       <ScreenContainer>
         <View style={{ gap: theme.space[4], paddingBottom: theme.space[10] }}>
           <Text
@@ -895,6 +903,7 @@ export default function PersonalEventScreen() {
           ) : null}
         </View>
       </ScreenContainer>
+      </KeyboardAvoidingView>
     </ScreenGradient>
   );
 }
@@ -906,6 +915,3 @@ function addOneDay(dayKey: string): string {
     .slice(0, 10);
 }
 
-// Platform é importado para manter paridade de comportamento futura entre
-// web e nativo no seletor de data; nenhuma API web-only é usada aqui.
-void Platform;

@@ -60,7 +60,7 @@ export default function ConfirmationPolicyScreen() {
   const policy = policyQuery.data;
 
   return (
-    <ScreenGradient>
+    <ScreenGradient scrollable>
       {header}
       <ScreenContainer>
         <View style={{ gap: theme.space[4] }}>
