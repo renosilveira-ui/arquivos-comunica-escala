@@ -12,15 +12,28 @@
 | Desenvolvimento local | `pnpm dev` + Expo Go | QR code/Metro | Local apenas |
 | Beta staging iOS | `eas build --profile preview --platform ios` | `.ipa` ad hoc pela página interna do EAS; somente aparelhos registrados | Configurado |
 | Beta staging Android | `eas build --profile preview --platform android` | APK pela página interna do EAS | Configurado |
-| TestFlight | — | Requer perfil iOS com `distribution: "store"` | Não configurado |
-| Stores públicas | `production` | Não faz parte deste procedimento | Exige decisão e revisão próprias |
+| TestFlight | — | Requer perfil iOS com `distribution: "store"` e fluxo de submit aprovado | Não configurado |
+| Build de loja apontando para staging | `staging-store` | `distribution: "store"`, backend é o staging | Existe; **não** autorizado para submit |
+| Stores públicas | — | Não existe perfil de produção | Exige ambiente de produção e decisão próprias |
 
 O perfil `preview` usa `distribution: "internal"`, Android APK e
 `EXPO_PUBLIC_API_URL=https://app.comunicamais-escala.com.br`. No iOS ele é uma
 distribuição ad hoc: o UDID do aparelho precisa estar no provisioning profile.
 Ele **não** é elegível a TestFlight, Transporter nem `eas submit`.
 
-`preview` e `production` compartilham hoje a mesma identidade nativa
+Não existe perfil de produção. O perfil `staging-store` chamava-se
+`production` — um nome que prometia um ambiente que nunca existiu.
+
+O domínio próprio (`app.comunicamais-escala.com.br`, desde o #505) tornou o
+nome MAIS enganoso, não menos: antes a URL denunciava o staging por escrito;
+hoje ela não denuncia nada, e `preview` e `staging-store` apontam para o mesmo
+backend. É esse o sinal que vale — dois perfis no mesmo servidor significam
+que um deles não é o que o nome diz.
+
+Se um dia houver produção, ela entra como perfil novo, com URL própria e
+decisão explícita; renomear este de volta não é o caminho.
+
+`preview` e `staging-store` compartilham hoje a mesma identidade nativa
 (`com.comunicamais.escalas` e scheme `escalas`). Portanto, não se deve tentar
 instalar variantes lado a lado nem trocar identificador/scheme para simular um
 ambiente. Uma alteração de identidade exige migração e decisão aprovadas.
@@ -98,7 +111,7 @@ repetir uma build `preview` controlada após os gates.
 
 TestFlight requer um perfil separado com `distribution: "store"`, credenciais
 e fluxo de submissão aprovados. Não deduzir esse perfil a partir de
-`production`, nem usar o `ascAppId` já presente em `eas.json` como autorização
+`staging-store`, nem usar o `ascAppId` já presente em `eas.json` como autorização
 para submit. Esse é um trabalho novo, com decisão explícita sobre ambiente,
 identidade, público e publicação.
 
