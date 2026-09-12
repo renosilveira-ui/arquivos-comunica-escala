@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import { View, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, type ViewStyle } from "react-native";
 import { Text, TextInput } from "@/components/ui/Text";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -15,7 +15,6 @@ import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2, Bell } from "lucide-react-native";
-import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import {
@@ -44,16 +43,10 @@ export default function ShiftDetailsScreen() {
   const params = useLocalSearchParams();
   const { width } = useWindowDimensions();
   const shiftId = Number(params.id);
-  const [isDemo, setIsDemo] = useState(false);
   const [professionalSearch, setProfessionalSearch] = useState("");
   const [selectedProfessionalId, setSelectedProfessionalId] = useState<number | null>(null);
   const [repeatRule, setRepeatRule] = useState<AllocationRepeatRule>("none");
   const feedback = useActionFeedback();
-
-  // Verificar modo demo
-  useEffect(() => {
-    isDemoMode().then(setIsDemo);
-  }, []);
 
   // Buscar detalhes da escala (API ou demo)
   const {
@@ -64,7 +57,7 @@ export default function ShiftDetailsScreen() {
     refetch: refetchShift,
   } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: !!user?.id && !isDemo }
+    { enabled: !!user?.id }
   );
   const canManageShift = can("edit:shift");
   const canRequestSwap = can("request:swap");
@@ -73,12 +66,12 @@ export default function ShiftDetailsScreen() {
   // pessoa errada — mesmo padrão usado em app/(tabs)/pending.tsx.
   const { data: myProfessional } = trpc.professionals.getByUserId.useQuery(
     { userId: user?.id ?? 0 },
-    { enabled: !!user?.id && !isDemo },
+    { enabled: !!user?.id },
   );
   // Confirmação de presença pendente (cron D-1). Só vira ação aqui quando
   // for deste plantão; a tela /confirm-duty faz o resto.
   const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(undefined, {
-    enabled: !!user?.id && !isDemo,
+    enabled: !!user?.id,
   });
   const utils = trpc.useUtils();
   const {
@@ -86,7 +79,7 @@ export default function ShiftDetailsScreen() {
     isLoading: loadingAssignableProfessionals,
   } = trpc.professionals.listAssignableForShift.useQuery(
     { shiftInstanceId: shiftId },
-    { enabled: !!user?.id && !isDemo && canManageShift && Number.isFinite(shiftId) },
+    { enabled: !!user?.id && canManageShift && Number.isFinite(shiftId) },
   );
   const assignDirect = trpc.editor.assignDirect.useMutation({
     onSuccess: async (result) => {
@@ -141,36 +134,19 @@ export default function ShiftDetailsScreen() {
     );
   }, [assignableProfessionals, professionalSearch]);
 
-  // Dados demo
-  const demoShiftData = isDemo
-    ? DEMO_SHIFTS.find((s) => s.shift.id === shiftId)
+  const shiftData: any = apiShiftData
+    ? {
+        shift: apiShiftData,
+        sector: {
+          name: apiShiftData.sectorName,
+          category: apiShiftData.sectorCategory,
+          color: apiShiftData.sectorColor,
+        },
+        assignments: apiShiftData.assignments || [],
+      }
     : null;
 
-  const shiftData: any = isDemo
-    ? demoShiftData
-      ? {
-          shift: {
-            ...demoShiftData.shift,
-            startAt: demoShiftData.shift.startTime,
-            endAt: demoShiftData.shift.endTime,
-          },
-          sector: demoShiftData.sector,
-          assignments: (demoShiftData as any).assignments || [],
-        }
-      : null
-    : apiShiftData
-      ? {
-          shift: apiShiftData,
-          sector: {
-            name: apiShiftData.sectorName,
-            category: apiShiftData.sectorCategory,
-            color: apiShiftData.sectorColor,
-          },
-          assignments: apiShiftData.assignments || [],
-        }
-      : null;
-
-  const isLoading = isDemo ? false : apiLoading;
+  const isLoading = apiLoading;
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -233,7 +209,7 @@ export default function ShiftDetailsScreen() {
     notifyVacancy.mutate({ shiftInstanceId: shiftId });
   };
 
-  if (!user && !isDemo) {
+  if (!user) {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
@@ -256,7 +232,7 @@ export default function ShiftDetailsScreen() {
 
   // Erro de leitura não pode virar "Escala não encontrada": a tela afirmaria
   // que o plantão não existe quando o app apenas não conseguiu perguntar.
-  if (!isDemo && apiError) {
+  if (apiError) {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center">
@@ -481,7 +457,7 @@ export default function ShiftDetailsScreen() {
           </View>
 
           <View style={[styles.secondaryColumn, isWide ? styles.secondaryColumnWide : null]}>
-            {canManageShift && !isDemo && shift.status !== "cancelada" ? (
+            {canManageShift && shift.status !== "cancelada" ? (
               <TintedGlassCard variant="light" style={styles.allocationCard}>
                 <View style={styles.allocationHeader}>
                   <View style={styles.personAvatar}>
@@ -609,7 +585,7 @@ export default function ShiftDetailsScreen() {
                   const badgeLabel = isConfirmed ? "Confirmado" : isAllocated ? "Alocado" : "Pendente";
                   const badgeVariant = isConfirmed || isAllocated ? "success" : "warning";
                   const canRemoveAssignment =
-                    canManageShift && !isDemo && shift.status !== "cancelada" && !!assignment.id;
+                    canManageShift && shift.status !== "cancelada" && !!assignment.id;
 
                   return (
                     <TintedGlassCard key={assignment.id ?? index} variant="light" style={styles.personCard}>
