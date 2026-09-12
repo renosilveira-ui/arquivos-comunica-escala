@@ -25,6 +25,23 @@ describe("build nativo de push", () => {
     expect(eas.submit?.preview?.ios?.ascAppId).toBe("6802868138");
   });
 
+  it("nenhum perfil chamado production fala com o backend de staging", () => {
+    // O perfil de loja apontava para staging com o nome `production`: o
+    // binário da loja falaria com staging sem ninguém perceber. Um perfil
+    // `production` de verdade pode existir — desde que a URL acompanhe.
+    const eas = JSON.parse(readFileSync("eas.json", "utf8")) as {
+      build: Record<string, { env?: Record<string, string> }>;
+    };
+    for (const [name, profile] of Object.entries(eas.build)) {
+      const url = profile.env?.EXPO_PUBLIC_API_URL ?? "";
+      if (url.includes("staging")) {
+        expect(name, `perfil "${name}" aponta para ${url}`).not.toBe(
+          "production",
+        );
+      }
+    }
+  });
+
   it("hooks e lib de notificação não importam theme (Platform.select quebra SSO)", () => {
     const hook = readFileSync("hooks/use-notifications.ts", "utf8");
     const lib = readFileSync("lib/notifications.ts", "utf8");

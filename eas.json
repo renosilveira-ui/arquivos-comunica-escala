@@ -24,7 +24,7 @@
       },
       "autoIncrement": true
     },
-    "production": {
+    "staging-store": {
       "distribution": "store",
       "ios": {
         "simulator": false
@@ -47,7 +47,7 @@
         "track": "internal"
       }
     },
-    "production": {
+    "staging-store": {
       "ios": {
         "ascAppId": "6802868138"
       },
