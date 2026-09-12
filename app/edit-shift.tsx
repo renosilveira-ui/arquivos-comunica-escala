@@ -23,7 +23,12 @@ import * as Haptics from "expo-haptics";
 import { uiAlert } from "@/lib/ui/alert";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
+import { formatDateBR, formatTimeBR } from "@/lib/datetime";
+import {
+  formatHospitalTime,
+  hospitalDateTime,
+  toHospitalISODate,
+} from "@/lib/hospital-time";
 import {
   fromLocalISODateString,
   normalizeToNoon,
@@ -166,10 +171,13 @@ export default function EditShiftScreen() {
       );
       const start = new Date(shiftData.startAt);
       const end = new Date(shiftData.endAt);
-      setStartDate(toISODateString(start));
-      setStartTime(formatTimeBR(start));
-      setEndDate(toISODateString(end));
-      setEndTime(formatTimeBR(end));
+      // O instante vem em UTC; os campos são horário de parede do hospital.
+      // Ler com os getters locais fazia o gestor fora de -03:00 ver (e depois
+      // regravar) uma hora diferente da que o plantão tem de fato.
+      setStartDate(toHospitalISODate(start));
+      setStartTime(formatHospitalTime(start));
+      setEndDate(toHospitalISODate(end));
+      setEndTime(formatHospitalTime(end));
 
       // Hidratar modalidade vinda do backend (PR #61).
       const data = shiftData as typeof shiftData & {
@@ -272,23 +280,17 @@ export default function EditShiftScreen() {
   };
 
   const handleSave = () => {
+    if (updateShift.isPending) return;
     if (!startDate || !startTime || !endDate || !endTime) {
       uiAlert("Erro", "Preencha todos os campos obrigatórios");
       return;
     }
 
-    // Converter strings para Date
-    const [startHour, startMinute] = startTime.split(":");
-    const [endHour, endMinute] = endTime.split(":");
-
-    // "AAAA-MM-DD" em `new Date()` é meia-noite UTC (21h do dia anterior no
-    // Brasil): o setHours caía no dia errado e cada salvamento recuava o
-    // plantão um dia. fromLocalISODateString ancora no meio-dia LOCAL.
-    const startDateTime = fromLocalISODateString(startDate);
-    startDateTime.setHours(Number(startHour), Number(startMinute), 0, 0);
-
-    const endDateTime = fromLocalISODateString(endDate);
-    endDateTime.setHours(Number(endHour), Number(endMinute), 0, 0);
+    // Os campos são horário de parede do hospital; o instante é ancorado em
+    // -03:00. Antes isto passava pelo relógio do DISPOSITIVO (setHours), então
+    // um gestor em Manaus gravava 08:00 ao digitar 07:00.
+    const startDateTime = hospitalDateTime(startDate, startTime);
+    const endDateTime = hospitalDateTime(endDate, endTime);
 
     // Validar datas
     if (endDateTime <= startDateTime) {
@@ -1074,6 +1076,7 @@ export default function EditShiftScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleSave}
+              disabled={updateShift.isPending}
               style={{
                 flex: 1,
                 backgroundColor: theme.colors.primary,
@@ -1083,6 +1086,7 @@ export default function EditShiftScreen() {
                 flexDirection: "row",
                 justifyContent: "center",
                 gap: 8,
+                opacity: updateShift.isPending ? 0.6 : 1,
               }}
               activeOpacity={0.7}
             >
@@ -1094,7 +1098,7 @@ export default function EditShiftScreen() {
                   color: theme.colors.surface,
                 }}
               >
-                Salvar
+                {updateShift.isPending ? "Salvando..." : "Salvar"}
               </Text>
             </TouchableOpacity>
           </View>
