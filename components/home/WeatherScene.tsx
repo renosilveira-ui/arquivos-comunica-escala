@@ -1,4 +1,4 @@
-import { Image } from "react-native";
+import { Image, type ImageSourcePropType } from "react-native";
 
 import type { WeatherScene as SceneId } from "@/lib/weather-scene";
 
@@ -19,7 +19,15 @@ import type { WeatherScene as SceneId } from "@/lib/weather-scene";
  * A arte depende de `feTurbulence`, que o `react-native-svg` não implementa.
  * Ver `assets/weather/source/scenes.mjs`.
  */
-const SOURCES: Record<SceneId, ReturnType<typeof require>> = {
+// O tipo declarado pelo próprio React Native para a prop, em vez de
+// `ReturnType<typeof require>`.
+//
+// Aquele dependia de qual declaração de `require` o TypeScript encontrasse
+// primeiro: com a do Node vira `any` e passa; com uma resolução mais
+// estrita vira `unknown`, que não entra em `source`, e `typecheck:app`
+// reprova. O comportamento do app é o mesmo nos dois casos — o que muda é
+// se o erro aparece na sua máquina ou não.
+const SOURCES: Record<SceneId, ImageSourcePropType> = {
   limpo: require("@/assets/weather/limpo.png"),
   amanhecer: require("@/assets/weather/amanhecer.png"),
   entardecer: require("@/assets/weather/entardecer.png"),
