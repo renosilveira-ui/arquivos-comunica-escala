@@ -68,6 +68,11 @@ import {
   resolveManagerScopesForRole,
 } from "../manager-scope-write";
 import { isSafeBcryptHash } from "../password-credential";
+import {
+  readGoogleRefreshTokenForRevocation,
+  type GoogleRefreshTokenForRevocation,
+} from "../integrations/google/link-service";
+import { revokeGoogleToken } from "../integrations/google/oauth";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -2757,6 +2762,13 @@ adminRouter.post(
   "/pending-signups/:id/reject",
   async (req: Request, res: Response): Promise<void> => {
     const userId = Number(req.params.id);
+    // Usuário pendente tem sessão e pode ter vinculado o Google Agenda. A
+    // remoção física leva a credencial por CASCADE; o token é lido antes e
+    // revogado no Google depois do commit, sem segurar a resposta.
+    let googleCredential: GoogleRefreshTokenForRevocation = {
+      token: null,
+      state: "none",
+    };
     if (!Number.isInteger(userId) || userId <= 0) {
       res.status(400).json({ error: "ID inválido" });
       return;
@@ -2790,6 +2802,10 @@ adminRouter.post(
           expectedCallerSessionVersion: caller.sessionVersion,
         });
         const pending = locked.pending;
+        googleCredential = await readGoogleRefreshTokenForRevocation(
+          tx,
+          userId,
+        );
 
         // Auditar dentro da mesma transação antes da remoção; o entityId é histórico.
         await recordAudit(
@@ -2806,6 +2822,7 @@ adminRouter.post(
               approval: "REJECTED",
               selfSignup: true,
               membershipId: pending.membershipId,
+              googleCredential: googleCredential.state,
             },
           },
           { db: tx, strict: true },
@@ -2870,6 +2887,24 @@ adminRouter.post(
     } catch (error) {
       if (sendAdminTenantError(res, error)) return;
       throw error;
+    }
+
+    if (googleCredential.token) {
+      void revokeGoogleToken({ refreshToken: googleCredential.token })
+        .then((revocation) => {
+          if (!revocation.ok) {
+            console.warn(
+              "[reject-signup] Revogação no Google não confirmada",
+              JSON.stringify({ userId, reason: revocation.reason }),
+            );
+          }
+        })
+        .catch(() => {
+          console.warn(
+            "[reject-signup] Revogação no Google falhou",
+            JSON.stringify({ userId }),
+          );
+        });
     }
 
     res.json({ ok: true });

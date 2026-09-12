@@ -67,6 +67,15 @@ type MutationNotificationTargetInventory = Readonly<
 
 /** Inventário canônico de todas as mutations tRPC montadas no appRouter. */
 export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
+  "institutionPolicy.setConfirmationEscalation": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o gestor liga ou desliga o aviso de plantão não confirmado (auditado, sem push)",
+        audience: [],
+      },
+    ],
+  },
   "confirmations.acceptNomination": {
     targets: [
       {

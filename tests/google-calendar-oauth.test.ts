@@ -194,6 +194,16 @@ describe("callback é a fronteira inteira", () => {
     expect(callbackSource).toContain("resolveTrustedPublicBaseUrl");
   });
 
+  it("só grava o vínculo depois de conferir o escopo de criação de calendário", () => {
+    const scopeCheck = callbackSource.lastIndexOf("canCreateDedicatedCalendar(");
+    const persist = callbackSource.lastIndexOf("persistGoogleAuthorization(");
+    expect(scopeCheck).toBeGreaterThan(0);
+    expect(scopeCheck).toBeLessThan(persist);
+    // O fuso do calendário dedicado vem da conta, não de uma constante.
+    expect(callbackSource).toContain("resolveUserTimeZone(");
+    expect(callbackSource).not.toContain('timeZone: "America/Sao_Paulo"');
+  });
+
   it("não registra code, state nem token em log", () => {
     const logs = callbackSource.match(/logger\.[a-z]+\([\s\S]*?\)/g) ?? [];
     for (const entry of logs) {
