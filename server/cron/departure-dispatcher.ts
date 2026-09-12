@@ -98,6 +98,26 @@ export const sendDeparture: DepartureSender = async (input) => {
       shiftInstanceId: input.shiftInstanceId,
       dedupKey: input.dedupKey,
       deepLink: input.deepLink,
+      // Sem autoridade, o envio manda a apresentação neutra ("Há uma
+      // atualização disponível") por privacidade de tela bloqueada — e era
+      // exatamente isso que o médico recebia uma hora antes do plantão, no
+      // lugar da hora de sair. Com ela, o envio reconstrói o destinatário no
+      // banco, sob lock, e só então libera o texto de verdade.
+      ...(input.authority
+        ? {
+            authority: {
+              kind: "DEPARTURE_ALERT" as const,
+              planId: input.authority.planId,
+              expectedUserId: input.userId,
+              professionalId: input.authority.professionalId,
+              assignmentId: input.authority.assignmentId,
+              institutionId: input.institutionId,
+              hospitalId: input.authority.hospitalId,
+              sectorId: input.authority.sectorId,
+              shiftInstanceId: input.shiftInstanceId,
+            },
+          }
+        : {}),
       payload: {
         title: input.title,
         body: input.body,

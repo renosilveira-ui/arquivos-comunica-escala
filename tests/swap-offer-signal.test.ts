@@ -173,7 +173,10 @@ describe("sinal de oferta de plantão", () => {
   async function createOccupiedShift(
     owner: Identity,
     dayOffset: number,
-    specialty: string,
+    // `null` é "sem especialidade declarada" — a forma correta da ausência.
+    // O banco recusa string vazia desde
+    // 2026-09-12-shift-instances-specialty-blank.sql.
+    specialty: string | null,
     place?: { hospitalId: number; sectorId: number; scheduleContextId: number },
   ): Promise<{ shiftId: number; assignmentId: number }> {
     const startAt = at(dayOffset, 8);
@@ -2082,7 +2085,10 @@ describe("sinal de oferta de plantão", () => {
       expect(allowlistSignaled).not.toContain(otherHospitalPeer.userId);
 
       await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
-      const legacyShift = await createOccupiedShift(offerer, 38, "", {
+      // Setor legado, sem qualificação declarada. Ausência se escreve NULL:
+      // a string vazia que estava aqui é a mesma forma que travou a
+      // confirmação de 76 plantões no banco real (relato do PO, 12/09/2026).
+      const legacyShift = await createOccupiedShift(offerer, 38, null, {
         hospitalId,
         sectorId: legacySector.id,
         scheduleContextId: legacyContextId,

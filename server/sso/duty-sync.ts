@@ -202,6 +202,30 @@ export function canonicalizeDutySyncExternalSubject(value: unknown): string | nu
     : null;
 }
 
+/**
+ * Nome do serviço: em branco é ausência, não valor inválido.
+ *
+ * `shift_instances.specialty` aceita texto vazio, e no banco real 76 dos 453
+ * plantões estão assim — plantão sem especialidade declarada é o caso comum,
+ * não a exceção. O envelope tratava esse vazio como envelope corrompido e
+ * derrubava a confirmação inteira, dentro da transação: o médico tocava
+ * "Sim, confirmo" e recebia "Envelope imutável inválido no duty-sync", sem
+ * confirmar nada.
+ *
+ * A gravação logo abaixo já descartava o branco (`serviceName?.trim() ? ...`).
+ * Era só a guarda anterior a ela que explodia — o defeito estava na guarda,
+ * não no dado.
+ *
+ * Tipo errado também vira ausência: este campo é descritivo, vai para o
+ * Comunica+ como rótulo do serviço. Bloquear a confirmação de um plantão por
+ * causa de um rótulo seria trocar um problema cosmético por um operacional.
+ */
+export function canonicalizeDutySyncServiceName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function validDutySyncPurpose(
   action: DutySyncAction,
   expectedStatuses: readonly ConfirmationStatus[],
@@ -388,12 +412,14 @@ export async function enqueueDutySync(
   if (!validDutySyncPurpose(input.action, input.expectedStatuses)) {
     throw new Error("Purpose ou status esperado invalido no duty-sync");
   }
+  // `serviceName` é canonizado, não validado: branco e tipo errado viram
+  // ausência. Ver canonicalizeDutySyncServiceName.
+  const serviceName = canonicalizeDutySyncServiceName(input.serviceName);
   if (
     !input.expectedStatuses.includes(input.confirmationStatus) ||
     (input.dutyType !== "PLANTAO" && input.dutyType !== "SOBREAVISO") ||
     typeof input.dedupKey !== "string" ||
-    !input.dedupKey.trim() ||
-    (input.serviceName != null && !input.serviceName.trim())
+    !input.dedupKey.trim()
   ) {
     throw new Error("Envelope imutável inválido no duty-sync");
   }
@@ -433,7 +459,7 @@ export async function enqueueDutySync(
         externalSubject: externalSubject!,
         shiftSnapshot: input.shiftSnapshot,
         dutyType: input.dutyType,
-        ...(input.serviceName?.trim() ? { serviceName: input.serviceName.trim() } : {}),
+        ...(serviceName ? { serviceName } : {}),
         attemptCount: 0,
         availableAt: now.toISOString(),
       }
@@ -453,7 +479,7 @@ export async function enqueueDutySync(
         ...(externalSubject ? { externalSubject } : {}),
         shiftSnapshot: input.shiftSnapshot,
         dutyType: input.dutyType,
-        ...(input.serviceName?.trim() ? { serviceName: input.serviceName.trim() } : {}),
+        ...(serviceName ? { serviceName } : {}),
         attemptCount: 0,
         terminalAt: now.toISOString(),
         evidence: {
