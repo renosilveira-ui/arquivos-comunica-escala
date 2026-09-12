@@ -78,3 +78,44 @@ CI em 8.0.45 as faz falhar. Regra: o pino da CI e a versão exigida por essas
 provas mudam JUNTOS, quando o banco real mudar; depois, rodar
 `pnpm schema:drift`, porque a serialização de `CHECK_CLAUSE` pode variar
 entre patches.
+
+## Collation: uma só, e a checagem enxerga
+
+Até 12/09/2026 o banco real tinha **duas famílias de collation**: 10 tabelas
+criadas por migrações manuais em `utf8mb4_unicode_ci`, as outras 49 e o schema
+Drizzle em `utf8mb4_0900_ai_ci`. Um `JOIN`, `UNION` ou comparação entre colunas
+de texto das duas famílias devolve o erro **1267, "Illegal mix of collations"**.
+
+A checagem de drift não via, e não via **de propósito**: ela normalizava
+collation para apenas "binária ou não", justamente para acomodar essa
+divergência. O preço foi a divergência ficar invisível para a ferramenta criada
+para enxergar divergência.
+
+`2026-09-12-unify-table-collation.sql` converteu as 10 tabelas e
+`normalizeCollation` passou a comparar a collation **por inteiro**. Duas
+consequências práticas:
+
+- uma tabela nova em collation diferente aparece como drift, não passa batido;
+- perder uma collation **binária deliberada** também aparece.
+
+**A armadilha que essa migração teve de desviar**, e que vale para qualquer
+conversão futura: `ALTER TABLE ... CONVERT TO CHARACTER SET` **sobrescreve a
+collation de coluna**, inclusive as `utf8mb4_bin` que existem por decisão de
+segurança — `push_tokens.token`, `departure_plans.dedup_key`,
+`auth_recovery_requests.token_hash` e outras. Converter em bloco sem restaurar
+essas colunas transforma chave de deduplicação e token em *case-insensitive*,
+em silêncio. Ao escrever uma conversão, liste antes as colunas binárias da
+tabela (`INFORMATION_SCHEMA.COLUMNS`, `COLLATION_NAME = 'utf8mb4_bin'`),
+restaure-as depois e confira no postflight.
+
+## Quando uma migração falha no meio
+
+`pnpm apply:migration` passa a imprimir um aviso explícito antes de propagar o
+erro. O ledger **continua registrando só sucesso** — um ledger que registra
+tentativa é um ledger que mente. O que o aviso resolve é outra coisa: DDL no
+MySQL faz *commit* implícito, então um arquivo de vários passos que falha no
+meio deixa os anteriores aplicados e **nada** no ledger.
+
+O caminho de saída é sempre o mesmo: corrigir a causa, rodar o mesmo comando de
+novo (toda migração manual daqui é guardada e rerodável, é para este momento que
+a regra existe) e conferir com `pnpm schema:drift` antes de mergear.

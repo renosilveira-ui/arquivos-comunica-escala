@@ -10,8 +10,16 @@
  * O que é normalizado (ruído que não muda comportamento):
  *   - `now()` × `CURRENT_TIMESTAMP` × `CURRENT_TIMESTAMP(6)` no DEFAULT;
  *   - `DEFAULT_GENERATED` no EXTRA;
- *   - collation: só importa se é binária (`_bin`) ou não — o Drizzle usa a
- *     padrão do servidor e as migrações manuais fixam `utf8mb4_unicode_ci`;
+ *   - collation: NADA. Ela é comparada por inteiro desde 12/09/2026.
+ *
+ *     Até então normalizava para apenas "binária ou não", de propósito, para
+ *     acomodar 10 tabelas de migrações manuais que ficaram em
+ *     `utf8mb4_unicode_ci` enquanto o resto usava `utf8mb4_0900_ai_ci`. O
+ *     preço dessa acomodação: a divergência ficou invisível justamente para
+ *     a ferramenta criada para enxergar divergência — e um JOIN entre as duas
+ *     famílias devolve erro 1267. A migração
+ *     2026-09-12-unify-table-collation.sql removeu a divergência; aqui a
+ *     acomodação termina, para ela não poder voltar escondida;
  *   - crases e espaços em expressões geradas e cláusulas CHECK;
  *   - nomes de índice e de FK: compara-se a ESTRUTURA (colunas, unicidade,
  *     referência), não o nome — Drizzle e migrações manuais nomeiam
@@ -82,9 +90,16 @@ export function normalizeExtra(value: string | null): string {
     .trim();
 }
 
+/**
+ * Collation comparada por inteiro.
+ *
+ * Só normaliza caixa, que é ruído de catálogo entre servidores. Qualquer
+ * diferença real — `utf8mb4_unicode_ci` × `utf8mb4_0900_ai_ci`, ou a perda
+ * de um `_bin` deliberado — passa a aparecer como drift.
+ */
 export function normalizeCollation(value: string | null): string {
   if (!value) return "";
-  return /_bin$/i.test(value) ? "bin" : "ci";
+  return value.trim().toLowerCase();
 }
 
 export function normalizeExpression(value: string | null): string {

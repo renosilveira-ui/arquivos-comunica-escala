@@ -68,11 +68,24 @@ describe("drift schema ↔ banco: normalização", () => {
     expect(normalizeExtra("STORED GENERATED")).toBe("stored generated");
   });
 
-  it("collation: só importa binária ou não", () => {
-    expect(normalizeCollation("utf8mb4_0900_ai_ci")).toBe("ci");
-    expect(normalizeCollation("utf8mb4_unicode_ci")).toBe("ci");
-    expect(normalizeCollation("utf8mb4_bin")).toBe("bin");
+  /**
+   * Desde 12/09/2026 a collation é comparada por inteiro.
+   *
+   * Antes normalizava para "binária ou não", para acomodar 10 tabelas de
+   * migrações manuais em `utf8mb4_unicode_ci`. A acomodação escondia a
+   * divergência justamente da ferramenta feita para vê-la — e um JOIN entre
+   * as duas famílias devolve erro 1267.
+   */
+  it("collation é comparada por inteiro, só a caixa é ruído", () => {
+    expect(normalizeCollation("utf8mb4_0900_ai_ci")).toBe("utf8mb4_0900_ai_ci");
+    expect(normalizeCollation("utf8mb4_unicode_ci")).toBe("utf8mb4_unicode_ci");
+    expect(normalizeCollation("utf8mb4_bin")).toBe("utf8mb4_bin");
+    expect(normalizeCollation("  UTF8MB4_BIN  ")).toBe("utf8mb4_bin");
     expect(normalizeCollation(null)).toBe("");
+    // As duas famílias deixam de ser indistinguíveis.
+    expect(normalizeCollation("utf8mb4_unicode_ci")).not.toBe(
+      normalizeCollation("utf8mb4_0900_ai_ci"),
+    );
   });
 
   it("expressões: crases, escapes e espaços não contam", () => {
@@ -90,11 +103,44 @@ describe("drift schema ↔ banco: diferença", () => {
         columns: raw().columns.map((c) =>
           c.name === "created_at"
             ? { ...c, columnDefault: "CURRENT_TIMESTAMP", extra: "" }
-            : { ...c, collation: "utf8mb4_unicode_ci" },
+            : c,
         ),
       }),
     );
     expect(diffCatalogs(a, b).unexpected).toEqual([]);
+  });
+
+  /**
+   * O drift que a normalização antiga engolia: mesma coluna, famílias de
+   * collation diferentes. É o erro 1267 esperando uma consulta nova.
+   */
+  it("família de collation diferente é drift real", () => {
+    const schema = buildCatalog(raw());
+    const bank = buildCatalog(
+      raw({
+        columns: raw().columns.map((c) => ({
+          ...c,
+          collation: c.collation ? "utf8mb4_unicode_ci" : c.collation,
+        })),
+      }),
+    );
+    expect(diffCatalogs(schema, bank).unexpected.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * E a perda de uma binária deliberada — `push_tokens.token`,
+   * `departure_plans.dedup_key` — também precisa aparecer.
+   */
+  it("perder a collation binária é drift real", () => {
+    const schema = buildCatalog(
+      raw({
+        columns: raw().columns.map((c) =>
+          c.collation ? { ...c, collation: "utf8mb4_bin" } : c,
+        ),
+      }),
+    );
+    const bank = buildCatalog(raw());
+    expect(diffCatalogs(schema, bank).unexpected.length).toBeGreaterThan(0);
   });
 
   it("enum sem valores no banco é drift real", () => {
