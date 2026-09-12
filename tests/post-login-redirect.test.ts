@@ -3,6 +3,8 @@ import {
   buildHref,
   isSafeInternalRoute,
   forgetIntendedRoute,
+  peekIntendedRoute,
+  pendingDestinationNotice,
   rememberIntendedRoute,
   takeIntendedRoute,
 } from "../lib/post-login-redirect";
@@ -52,6 +54,39 @@ describe("post-login-redirect", () => {
     expect(buildHref("/x", { tag: ["a", "b"] })).toBe("/x?tag=a&tag=b");
     // Sem URLSearchParams: a codificação tem que ser nossa e correta.
     expect(buildHref("/x", { q: "a b&c=d" })).toBe("/x?q=a%20b%26c%3Dd");
+  });
+
+  it("peek lê sem consumir — a tela de login não pode gastar o destino", () => {
+    rememberIntendedRoute("/join-schedule?invite=ABC123");
+    expect(peekIntendedRoute()).toBe("/join-schedule?invite=ABC123");
+    // Duas leituras seguidas: uma tela que re-renderiza não perde o destino.
+    expect(peekIntendedRoute()).toBe("/join-schedule?invite=ABC123");
+    expect(takeIntendedRoute()).toBe("/join-schedule?invite=ABC123");
+    expect(peekIntendedRoute()).toBeNull();
+  });
+
+  it("o aviso do login nomeia o que veio de fora", () => {
+    const convite = pendingDestinationNotice("/join-schedule?invite=ABC123");
+    expect(convite?.title).toContain("convite");
+    // O e-mail manda entrar com o endereço que recebeu a mensagem; o aviso
+    // repete a mesma instrução, senão a pessoa entra com outra conta.
+    expect(convite?.body).toContain("e-mail");
+
+    const plantao = pendingDestinationNotice("/confirm-duty?token=x");
+    expect(plantao?.title).toContain("plantão");
+
+    // Destino sem nome próprio ainda ganha explicação: o silêncio é o que
+    // faz a pessoa achar que o link falhou.
+    expect(pendingDestinationNotice("/agenda")).not.toBeNull();
+  });
+
+  it("sem destino, ou com destino recusado, não há aviso", () => {
+    expect(pendingDestinationNotice(null)).toBeNull();
+    expect(pendingDestinationNotice("")).toBeNull();
+    // O mesmo filtro de open redirect: se a rota não passa, o aviso não sai.
+    expect(pendingDestinationNotice("https://exemplo.invalido")).toBeNull();
+    expect(pendingDestinationNotice("//exemplo.invalido")).toBeNull();
+    expect(pendingDestinationNotice("/login")).toBeNull();
   });
 
   it("um login, um salto: o destino é consumido e some", () => {
