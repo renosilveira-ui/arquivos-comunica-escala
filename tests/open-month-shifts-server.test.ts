@@ -521,4 +521,50 @@ describe("shifts.openMonthShifts", () => {
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
+  /**
+   * A #520 migrou a criação avulsa e a replicação para o relógio do hospital
+   * e deixou a abertura do mês para trás, com offset fixo (#528) — logo o
+   * caminho de maior volume de escrita do sistema.
+   *
+   * Santiago serve de prova porque TEM horário de verão: em julho está em
+   * UTC-4 e em janeiro em UTC-3. O mesmo 07:00 de parede precisa virar
+   * instantes diferentes. Offset fixo dá a mesma resposta nos dois e erra um
+   * deles.
+   */
+  it("hospital com horário de verão: a abertura do mês segue o relógio dele", async () => {
+    await db!
+      .update(hospitals)
+      .set({ timeZone: "America/Santiago" })
+      .where(eq(hospitals.id, hospitalId));
+    try {
+      const caller = callerFor(managerUserId, "manager");
+      for (const yearMonth of ["2027-07", "2028-01"]) {
+        await caller.openMonthShifts({
+          hospitalId,
+          sectorId,
+          scheduleContextId,
+          yearMonth,
+          mode: "all-applicable",
+        });
+      }
+
+      const horasUtcDaManha = async (yearMonth: string) => {
+        const manhas = (await countMonth(yearMonth)).filter(
+          (row) => row.label === "Manhã",
+        );
+        expect(manhas.length).toBeGreaterThan(0);
+        return [
+          ...new Set(manhas.map((row) => row.startAt.toISOString().slice(11, 16))),
+        ];
+      };
+
+      expect(await horasUtcDaManha("2027-07")).toEqual(["11:00"]);
+      expect(await horasUtcDaManha("2028-01")).toEqual(["10:00"]);
+    } finally {
+      await db!
+        .update(hospitals)
+        .set({ timeZone: null })
+        .where(eq(hospitals.id, hospitalId));
+    }
+  });
 });
