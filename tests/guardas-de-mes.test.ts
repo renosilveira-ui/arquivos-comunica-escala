@@ -5,6 +5,7 @@
 // auto-criação do calendário, o assumir-vaga e a lista de vagas.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { GESTOR_MEDICO_MONTH_WINDOW } from "../lib/schedule-authority";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
   auditTrail,
@@ -64,15 +65,17 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     const [y, m] = currentYm.split("-").map(Number);
     return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   })();
-  const plus2Ym = (() => {
+  // Primeiro mês fora do alcance do gestor, derivado da janela: se ela
+  // mudar, a fronteira testada anda junto.
+  const beyondWindowYm = (() => {
     const [y, m] = currentYm.split("-").map(Number);
-    const nm = m + 2;
+    const nm = m + GESTOR_MEDICO_MONTH_WINDOW;
     return nm > 12
-      ? `${y + 1}-${String(nm - 12).padStart(2, "0")}`
+      ? `${y + Math.floor((nm - 1) / 12)}-${String(((nm - 1) % 12) + 1).padStart(2, "0")}`
       : `${y}-${String(nm).padStart(2, "0")}`;
   })();
   const nextMonthStart = new Date(`${nextYm}-10T07:00:00-03:00`);
-  const plus2Start = new Date(`${plus2Ym}-10T07:00:00-03:00`);
+  const beyondWindowStart = new Date(`${beyondWindowYm}-10T07:00:00-03:00`);
 
   const ctxFor = (userId: number, role: "manager" | "doctor") =>
     ({ user: { id: userId, role, name: "T", email: `${userId}@test.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
@@ -894,11 +897,11 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     }
   });
 
-  it("M2: GESTOR_MEDICO não puxa turno de mês+2 para o corrente", async () => {
-    const future = await insertShift(plus2Start, "future");
+  it("M2: GESTOR_MEDICO não puxa turno de fora da janela para o corrente", async () => {
+    const future = await insertShift(beyondWindowStart, "future");
     await expect(asMedico().update({ id: future, startAt: currentStart.toISOString() })).rejects.toMatchObject({ code: "FORBIDDEN" });
     const [row] = await db.select({ startAt: shiftInstances.startAt }).from(shiftInstances).where(eq(shiftInstances.id, future));
-    expect(yearMonthBrt(row.startAt)).toBe(plus2Ym);
+    expect(yearMonthBrt(row.startAt)).toBe(beyondWindowYm);
   });
 
   it("M2: PUBLISHED sem turnos não exige motivo — status do roster é independente do calendário", async () => {

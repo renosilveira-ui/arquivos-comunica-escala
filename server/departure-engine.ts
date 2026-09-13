@@ -1029,7 +1029,13 @@ export async function dispatchDueDepartures(input: {
       // Topologia do aviso, para o push poder provar o destinatário e enviar
       // o texto de verdade em vez da apresentação neutra. `leftJoin` de
       // propósito: se a alocação tiver sumido, o aviso ainda sai (como saía
-      // antes), só que sem autoridade — nunca deixa de sair por causa disto.
+      // antes), só que sem autoridade.
+      //
+      // Com autoridade, o único caso em que o aviso NÃO sai é o plantão ter
+      // trocado de mãos — ver `requireAuthorizedDepartureRecipient`. Falha de
+      // dado (rota não calculou, setor mudou) devolve o texto neutro, nunca
+      // silêncio: `depart_at` nulo chega aqui porque o disparo não filtra por
+      // ele, e quem tem plantão precisa ser avisado de alguma forma.
       assignmentId: departurePlans.assignmentId,
       professionalId: shiftAssignmentsV2.professionalId,
       hospitalId: shiftInstances.hospitalId,

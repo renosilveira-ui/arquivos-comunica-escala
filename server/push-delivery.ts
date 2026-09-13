@@ -1131,6 +1131,9 @@ async function requireCurrentPushAuthority(
       state.authority,
       lockForUpdate,
     );
+    // Destinatário provado, contexto indisponível: sai o texto neutro em vez
+    // de nada. Sem autoridade nenhuma o caminho seria este mesmo.
+    if (!plan) return;
     const context = await requireCanonicalShiftPushContext(
       db,
       {

@@ -104,12 +104,23 @@ export function isDeparturePushPayload(
 /**
  * Reconstrói a autoridade do destinatário no envio, sem confiar no produtor,
  * e devolve o que a apresentação precisa.
+ *
+ * Dois desfechos, e a diferença entre eles importa para o médico:
+ *
+ * - LANÇA quando não dá para provar que o plantão ainda é desta pessoa. Aí o
+ *   aviso não sai, e é isso mesmo: mandar alguém sair de casa para um plantão
+ *   que trocou de mãos é pior do que o silêncio.
+ * - Devolve `null` quando a pessoa está provada mas o CONTEXTO não dá para
+ *   montar (topologia mudou, rota não calculou). O aviso sai com o texto
+ *   neutro, como saía antes de existir autoridade aqui. Falha de dado não
+ *   pode virar silêncio: quem tem plantão precisa ser avisado de alguma
+ *   forma.
  */
 export async function requireAuthorizedDepartureRecipient(
   db: AuthorityDb,
   authority: DeparturePushAuthority,
   lockForShare = false,
-): Promise<CanonicalDeparturePlan> {
+): Promise<CanonicalDeparturePlan | null> {
   const planQuery = db
     .select({
       planUserId: departurePlans.userId,
@@ -168,11 +179,14 @@ export async function requireAuthorizedDepartureRecipient(
   }
 
   // Topologia: hospital e setor do plantão precisam bater com os persistidos.
+  // A identidade já foi provada acima, então isto não é perda de titularidade
+  // — é um gestor tendo corrigido o setor. O texto contextual não vale mais,
+  // o aviso vale.
   if (
     plan.shiftHospitalId !== authority.hospitalId ||
     plan.shiftSectorId !== authority.sectorId
   ) {
-    invalid("Hospital ou setor do plantão mudou desde o cálculo do aviso");
+    return null;
   }
 
   // Trocou de mãos entre o cálculo e o envio: não avisa ninguém.
@@ -180,14 +194,13 @@ export async function requireAuthorizedDepartureRecipient(
     invalid("Alocação não está mais ativa para o aviso de deslocamento");
   }
 
-  if (!plan.departAt) {
-    invalid("Plano de deslocamento sem hora de saída calculada");
-  }
+  // Sem hora de saída não há o que dizer sobre trajeto — a chamada de rota
+  // falhou no recálculo e o plano seguiu para o disparo assim. O plantão
+  // continua sendo desta pessoa, então o aviso sai neutro.
+  if (!plan.departAt) return null;
 
   const departAt = new Date(plan.departAt);
-  if (!Number.isFinite(departAt.getTime())) {
-    invalid("Hora de saída do plano é inválida");
-  }
+  if (!Number.isFinite(departAt.getTime())) return null;
 
   return {
     departAt,
