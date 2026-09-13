@@ -17,7 +17,7 @@ function actor(roleInInstitution: TenantActor["roleInInstitution"], isGlobalAdmi
   };
 }
 
-describe("policy - current month schedule editing", () => {
+describe("policy - janela de edição de escala do gestor", () => {
   it("permite gestor medico editar dia anterior dentro do mes corrente", () => {
     expect(() =>
       assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-05-01T07:00:00-03:00"), now),
@@ -36,10 +36,39 @@ describe("policy - current month schedule editing", () => {
     ).not.toThrow();
   });
 
-  it("bloqueia gestor medico em mes+2", () => {
+  it("permite gestor medico ate o quarto mes seguinte", () => {
+    // Janela de 5 meses a partir de maio: maio a setembro.
     expect(() =>
       assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-07-01T07:00:00-03:00"), now),
-    ).toThrow(/mês corrente ou do próximo/i);
+    ).not.toThrow();
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-09-30T19:00:00-03:00"), now),
+    ).not.toThrow();
+  });
+
+  it("o horizonte de 4 meses da repeticao cabe na janela do gestor", () => {
+    // Repetir por 4 meses a partir de uma data de maio cai em setembro. Se
+    // esta expectativa quebrar, a opcao "4 meses" da tela vira recusa para
+    // o gestor de hospital — que e exatamente o que ela nao pode ser.
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-09-13T12:00:00-03:00"), now),
+    ).not.toThrow();
+  });
+
+  it("bloqueia gestor medico no quinto mes seguinte", () => {
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-10-01T07:00:00-03:00"), now),
+    ).toThrow(/mês corrente e dos 4 seguintes/i);
+  });
+
+  it("a janela atravessa a virada do ano", () => {
+    const dezembro = new Date("2026-12-15T12:00:00-03:00");
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2027-04-01T07:00:00-03:00"), dezembro),
+    ).not.toThrow();
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2027-05-01T07:00:00-03:00"), dezembro),
+    ).toThrow(/mês corrente/i);
   });
 
   it("permite gestor plus em qualquer mes", () => {
